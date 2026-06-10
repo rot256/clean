@@ -21,10 +21,13 @@ constraints, so the design is compatible with R1CS-style backends.
 ## Templates
 
 - `BitwiseOps.lean`: shared word, state, block, and schedule types; pure helpers
-  for constants, bit interpretation, rotations, shifts, and normalization.
+  for constants, bit interpretation, rotations, shifts, complement, and normalization.
 - `And32.lean`: bitwise 32-bit AND.
 - `Xor32.lean`: bitwise 32-bit XOR.
 - `Add32.lean`: 32-bit addition modulo `2^32`.
+- `AddMod32.lean`: multi-operand 32-bit addition modulo `2^32` with a single
+  bit-decomposition, a minimal-width carry, and an optional constant addend
+  (which makes subtracting an operand free via `x − d ≡ x + ¬d + 1`).
 - `Ch32.lean`: SHA-256 choice function.
 - `Maj32.lean`: SHA-256 majority function.
 - `LowerSigma0.lean`: message schedule `sigma0`.

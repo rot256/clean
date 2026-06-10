@@ -74,6 +74,8 @@ def checkOf {Input Output : TypeMap} [ProvableType Input] [ProvableType Output]
   checkCost (c.main (varFromOffset Input 0)) expected 0
 
 #eval ("Maj32 checked", checkOf Maj32.circuit { witnesses := 32, constraints := 32, lookups := 0 })
+#eval ("Round checked", checkOf SHA256Round.circuit
+  { witnesses := 197, constraints := 199, lookups := 0 })
 
 /-
 Current pure-R1CS bit-level implementation, lookups = 0 throughout:
@@ -82,16 +84,22 @@ Current pure-R1CS bit-level implementation, lookups = 0 throughout:
   Xor32 / Ch32   witnesses  32   constraints  32
   Σ₀/Σ₁/σ₀/σ₁    witnesses  32   constraints  32
   Maj32          witnesses  32   constraints  32
-  SHA256Round    witnesses 198   constraints 200
+  SHA256Round    witnesses 197   constraints 199
   Schedule       witnesses  4704 constraints  4752
-  64 rounds      witnesses 12672 constraints 12800
-  CompressBlock  witnesses 17640 constraints 17824
+  64 rounds      witnesses 12608 constraints 12736
+  CompressBlock  witnesses 17576 constraints 17760
 
-`AddMod32` uses the minimal carry width `cw` per call: the operand sum is `< n·2^32`, so its
-quotient by `2^32` is `≤ n - 1` and `cw` bits suffice when `n ≤ 2^cw`.  The round adds
-(`n = 6, 7`) need `cw = 3`, but the schedule add (`n = 4`) needs only `cw = 2`, saving one
-carry witness/constraint on each of the 48 schedule steps (`-48` witnesses, `-48` constraints
-versus a uniform 3-bit carry).
+`AddMod32` adds `n` words plus a compile-time constant `cst` with a `cw`-bit carry, under
+the sharp bound `n·(2^32 − 1) + cst < 2^(32+cw)`.  Callers pick the minimal `cw`: the round
+e-add (`n = 6`) needs `cw = 3`, the schedule add (`n = 4`) only `cw = 2` (`-48` witnesses
+and constraints versus a uniform 3-bit carry).
+
+The round's second add exploits that `T1 = h + Σ₁ + Ch + k + w` is already pinned by the
+first: `new_a = T1 + T2 ≡ (new_e − d) + Σ₀ + Maj (mod 2^32)`, and the subtraction is free
+as `new_e + ¬d + 1` with `¬d` a linear rewiring and `1` the constant addend.  That makes the
+a-add a 4-operand, 2-carry-bit add (`34` witnesses / `35` constraints) instead of the naive
+7-operand re-summation of `T1`'s operands (`35` / `36`), saving one witness and one
+constraint per round (`-64` each per block).
 
 Both the four Σ/σ functions (3-input XORs) and `Maj` (3-input majority) use a *single* R1CS
 constraint per output bit.  Rather than the carry-save fold (two boolean asserts per bit), each

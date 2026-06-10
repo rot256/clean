@@ -9,11 +9,10 @@ variable {p : ℕ} [Fact p.Prime] [Fact (p > 2^35)]
 
 namespace Gadgets.SHA256
 
-private instance fact_four_le_eight : Fact ((4 : ℕ) ≤ 8) := ⟨by norm_num⟩
--- Carry-width facts for the schedule's `AddMod32` add (`n = 4`, `cw = 2`): a 4-operand sum is
--- `< 4·2^32`, so its quotient by `2^32` is `≤ 3`, which fits in 2 carry bits.
-private instance fact_four_le_pow_two : Fact ((4 : ℕ) ≤ 2^2) := ⟨by norm_num⟩
-private instance fact_pow_two_le_eight : Fact ((2 : ℕ)^2 ≤ 8) := ⟨by norm_num⟩
+-- Sharp `AddMod32` bound fact for the schedule's add (`n = 4`, `cw = 2`, no constant):
+-- a 4-operand sum is `≤ 4·(2^32 − 1) < 2^34`, so 2 carry bits suffice.
+private instance : Fact ((4 : ℕ) * (2^32 - 1) + 0 < 2^(32 + 2)) := ⟨by norm_num⟩
+private instance : Fact ((2 : ℕ) ≤ 3) := ⟨by norm_num⟩
 
 /-!
 # SHA-256 Message Schedule
@@ -38,7 +37,7 @@ private def scheduleStep (w : Schedule (p := p)) (i : Fin 48) :
   let j := i.val + 16
   let s1   ← subcircuit LowerSigma1.circuit (w.get ⟨j - 2,  by omega⟩)
   let s0   ← subcircuit LowerSigma0.circuit (w.get ⟨j - 15, by omega⟩)
-  let wj   ← AddMod32.circuit (n := 4) (cw := 2)
+  let wj   ← AddMod32.circuit (n := 4) (cw := 2) (cst := 0)
     #v[s1, w.get ⟨j - 7, by omega⟩, s0, w.get ⟨j - 16, by omega⟩]
   return w.set (⟨j, by omega⟩ : Fin 64) wj
 
@@ -136,16 +135,20 @@ private lemma addMod32_assum_iff (env : Environment (F p))
     · exact hd
 
 omit [Fact (p > 2 ^ 35)] in
-/-- `opsValueSum` of a 4-operand vector expands to four `valueBits` summands. -/
+/-- `opsValueSum` of a 4-operand vector (plus the schedule add's zero constant addend)
+expands to four `valueBits` summands.  The `+ 0` is folded into the statement so a single
+targeted rewrite absorbs the constant; rewriting with `Nat.add_zero` inside the large
+constraint hypothesis instead sends the kernel into deep recursion. -/
 private lemma addMod32_opsValueSum (env : Environment (F p))
     (a b c d : Var (fields 32) (F p)) :
     opsValueSum (eval env (#v[a, b, c, d] :
         Var (ProvableVector (fields 32) 4) (F p)) :
-        ProvableVector (fields 32) 4 (F p)) =
+        ProvableVector (fields 32) 4 (F p)) + 0 =
       valueBits (Vector.map (Expression.eval env) a) +
       valueBits (Vector.map (Expression.eval env) b) +
       valueBits (Vector.map (Expression.eval env) c) +
       valueBits (Vector.map (Expression.eval env) d) := by
+  rw [Nat.add_zero]
   unfold opsValueSum
   rw [eval_v4, Fin.sum_univ_four]
   norm_num [Vector.getElem_mk, List.getElem_toArray, List.getElem_cons_zero,
@@ -431,7 +434,7 @@ private lemma soundness_inv (i₀ : ℕ) (input_var : SHA256Block (Expression (F
     obtain ⟨v_sig1, n_sig1⟩ := c_sig1 h_norm_m2
     rw [h_eval_get] at c_sig0
     obtain ⟨v_sig0, n_sig0⟩ := c_sig0 h_norm_m15
-    -- Apply the 4-operand AddMod32 spec.
+    -- Apply the 4-operand AddMod32 spec (`addMod32_opsValueSum` absorbs the `+ 0` addend).
     simp only [AddMod32.circuit, AddMod32.Assumptions, AddMod32.Spec,
       addMod32_assum_iff, addMod32_opsValueSum] at c_wj
     obtain ⟨v_wj, n_wj⟩ := c_wj ⟨n_sig1, by rw [h_eval_get]; exact h_norm_m7,
