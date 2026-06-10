@@ -28,7 +28,11 @@ constraints, so the design is compatible with R1CS-style backends.
 - `AddMod32.lean`: multi-operand 32-bit addition modulo `2^32` with a single
   bit-decomposition, a minimal-width carry, and an optional constant addend
   (which makes subtracting an operand free via `x − d ≡ x + ¬d + 1`).
-- `Ch32.lean`: SHA-256 choice function.
+- `ChAddMod32.lean`: the choice function fused with a multi-operand addition —
+  `Ch`'s bit-31 product rides in the (otherwise affine) sum row, saving one
+  witness and one constraint versus `Ch32` + `AddMod32`.
+- `Ch32.lean`: SHA-256 choice function (standalone; the round uses the fused
+  `ChAddMod32`).
 - `Maj32.lean`: SHA-256 majority function.
 - `LowerSigma0.lean`: message schedule `sigma0`.
 - `LowerSigma1.lean`: message schedule `sigma1`.
