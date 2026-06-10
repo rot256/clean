@@ -137,7 +137,7 @@ private lemma ch_finsum_eq (e f g z : Fin 32 → ℕ)
         Nat.testBit_eq_false_of_lt (Nat.lt_of_lt_of_le hChS pow_le)]
 
 /-- Spec holds for any vector `z` whose bits satisfy the per-bit constraint. -/
-private lemma spec_of_constraint
+lemma spec_of_constraint
     (input_e input_f input_g z : fields 32 (F p))
     (he : Normalized input_e) (hf : Normalized input_f) (hg : Normalized input_g)
     (h_eq : ∀ i : Fin 32, z[i] = input_g[i] + input_e[i] * (input_f[i] - input_g[i])) :

@@ -46,22 +46,22 @@ def main (input : Var Inputs (F p)) : Circuit (F p) (Var SHA256State (F p)) :=
 /-- The variable-level state after `k` rounds. Used as the explicit `output` for the
     SHA256Rounds elaborated instance, mirroring how Keccak Permutation provides `stateVar`.
 
-    Offsets track `SHA256Round.elaborated`: round `k` occupies `[i₀ + k*197, …)` (197 =
+    Offsets track `SHA256Round.elaborated`: round `k` occupies `[i₀ + k*196, …)` (196 =
     round `localLength`), and within a round the AddMod32 outputs `new_a`/`new_e` sit at
-    `+163`/`+128` (see `SHA256Round.elaborated.output`). If those change, these must too. -/
+    `+162`/`+127` (see `SHA256Round.elaborated.output`). If those change, these must too. -/
 def stateVar (i₀ : ℕ) (input_var_state : Var SHA256State (F p)) :
     ℕ → Var SHA256State (F p)
   | 0 => input_var_state
   | k + 1 =>
     let prev := stateVar i₀ input_var_state k
-    #v[Vector.mapRange 32 fun j => var { index := i₀ + k * 197 + 163 + j },
+    #v[Vector.mapRange 32 fun j => var { index := i₀ + k * 196 + 162 + j },
        prev[0], prev[1], prev[2],
-       Vector.mapRange 32 fun j => var { index := i₀ + k * 197 + 128 + j },
+       Vector.mapRange 32 fun j => var { index := i₀ + k * 196 + 127 + j },
        prev[4], prev[5], prev[6]]
 
 instance elaborated : ElaboratedCircuit (F p) Inputs SHA256State where
   main := main
-  localLength _ := 64 * 197
+  localLength _ := 64 * 196
   output input i₀ := stateVar i₀ input.state 64
   localLength_eq _ _ := by
     simp +arith [circuit_norm, main, SHA256Round.circuit]
@@ -74,9 +74,9 @@ instance elaborated : ElaboratedCircuit (F p) Inputs SHA256State where
     suffices h : ∀ k,
         Fin.foldl k
           (fun (acc : Var SHA256State (F p)) (i : Fin k) =>
-            #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 197 + 163 + i_1 },
+            #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 196 + 162 + i_1 },
                acc[0], acc[1], acc[2],
-               Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 197 + 128 + i_1 },
+               Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 196 + 127 + i_1 },
                acc[4], acc[5], acc[6]]) input.state = stateVar i₀ input.state k by
       exact h 64
     intro k
@@ -88,15 +88,15 @@ instance elaborated : ElaboratedCircuit (F p) Inputs SHA256State where
       rw [stateVar]
       rw [show Fin.foldl k
           (fun (acc : Var SHA256State (F p)) (i : Fin k) =>
-            #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.castSucc.val * 197 + 163 + i_1 },
+            #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.castSucc.val * 196 + 162 + i_1 },
                acc[0], acc[1], acc[2],
-               Vector.mapRange 32 fun i_1 => var { index := i₀ + i.castSucc.val * 197 + 128 + i_1 },
+               Vector.mapRange 32 fun i_1 => var { index := i₀ + i.castSucc.val * 196 + 127 + i_1 },
                acc[4], acc[5], acc[6]]) input.state =
           Fin.foldl k
             (fun (acc : Var SHA256State (F p)) (i : Fin k) =>
-              #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 197 + 163 + i_1 },
+              #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 196 + 162 + i_1 },
                  acc[0], acc[1], acc[2],
-                 Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 197 + 128 + i_1 },
+                 Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 196 + 127 + i_1 },
                  acc[4], acc[5], acc[6]]) input.state from rfl, ih]
   subcircuitsConsistent _ _ := by
     simp +arith [circuit_norm, main, SHA256Round.circuit]
@@ -119,9 +119,9 @@ omit [Fact (Nat.Prime p)] [Fact (p > 2 ^ 35)] in
 private lemma fin_foldl_eq_stateVar (i₀ : ℕ) (input_var_state : Var SHA256State (F p)) (k : ℕ) :
     Fin.foldl k
       (fun (acc : Var SHA256State (F p)) (i : Fin k) =>
-        #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 197 + 163 + i_1 },
+        #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 196 + 162 + i_1 },
            acc[0], acc[1], acc[2],
-           Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 197 + 128 + i_1 },
+           Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 196 + 127 + i_1 },
            acc[4], acc[5], acc[6]]) input_var_state =
       stateVar i₀ input_var_state k := by
   induction k with
@@ -132,15 +132,15 @@ private lemma fin_foldl_eq_stateVar (i₀ : ℕ) (input_var_state : Var SHA256St
     rw [stateVar]
     rw [show Fin.foldl k
         (fun (acc : Var SHA256State (F p)) (i : Fin k) =>
-          #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.castSucc.val * 197 + 163 + i_1 },
+          #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.castSucc.val * 196 + 162 + i_1 },
              acc[0], acc[1], acc[2],
-             Vector.mapRange 32 fun i_1 => var { index := i₀ + i.castSucc.val * 197 + 128 + i_1 },
+             Vector.mapRange 32 fun i_1 => var { index := i₀ + i.castSucc.val * 196 + 127 + i_1 },
              acc[4], acc[5], acc[6]]) input_var_state =
         Fin.foldl k
           (fun (acc : Var SHA256State (F p)) (i : Fin k) =>
-            #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 197 + 163 + i_1 },
+            #v[Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 196 + 162 + i_1 },
                acc[0], acc[1], acc[2],
-               Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 197 + 128 + i_1 },
+               Vector.mapRange 32 fun i_1 => var { index := i₀ + i.val * 196 + 127 + i_1 },
                acc[4], acc[5], acc[6]]) input_var_state from rfl, ih]
 
 /-- `Circuit.FoldlM.foldlAcc` at index `⟨k, h⟩ : Fin 64` equals `stateVar i₀ input_var_state k`.
@@ -417,12 +417,12 @@ def main (input : Var Inputs (F p)) : Circuit (F p) (Var SHA256State (F p)) := d
 instance elaborated : ElaboratedCircuit (F p) Inputs SHA256State where
   main := main
   -- message schedule (48 × 98) + 64 rounds (64 × 198) + 8 Davies-Meyer adds (8 × 33)
-  localLength _ := 48 * 98 + 64 * 197 + 8 * 33
+  localLength _ := 48 * 98 + 64 * 196 + 8 * 33
   localLength_eq input offset := by
     simp only [main, circuit_norm]; rfl
   output input i0 :=
     Vector.mapFinRange 8 fun i =>
-      varFromOffset (fields 32) (i0 + 48 * 98 + 64 * 197 + i.val * 33)
+      varFromOffset (fields 32) (i0 + 48 * 98 + 64 * 196 + i.val * 33)
   output_eq input offset := by
     simp only [main, circuit_norm]; rfl
   subcircuitsConsistent input offset := by
@@ -494,11 +494,11 @@ theorem soundness : Soundness (F p) elaborated Assumptions Spec := by
   have h_index : ∀ (i : ℕ) (hi : i < 8),
       (eval env ((Vector.mapFinRange 8 fun (j : Fin 8) ↦
               Vector.mapRange 32 fun i_1 ↦
-                var { index := i₀ + 48 * 98 + 64 * 197 + j.val * 33 + i_1 }) :
+                var { index := i₀ + 48 * 98 + 64 * 196 + j.val * 33 + i_1 }) :
             Var SHA256State (F p)))[i]'hi
           = Vector.map (Expression.eval env)
               (Vector.mapRange 32 fun i_1 ↦
-                var (F := F p) { index := i₀ + 48 * 98 + 64 * 197 + i * 33 + i_1 }) := by
+                var (F := F p) { index := i₀ + 48 * 98 + 64 * 196 + i * 33 + i_1 }) := by
     intro i hi
     rw [← getElem_eval_vector, CircuitType.eval_var_fields, Vector.getElem_mapFinRange]
   refine ⟨?_, ?_⟩
