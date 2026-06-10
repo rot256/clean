@@ -12,8 +12,10 @@ Operations are implemented bitwise over those words. Rotations and shifts are
 rewiring operations; word-level functions compose bitwise boolean operations and
 modular addition.
 
-The target fields are prime fields with `p > 2^33`. This is enough headroom for
-the natural-number interpretation used by 32-bit modular addition.
+The compression circuit targets prime fields with `p > 2^110` (e.g. the BN254
+scalar field): the round packs its two addition constraints into a single R1CS
+row at `2^36`-shifted lanes, which needs that headroom to lift the packed
+equation to the naturals. The individual bit-level gadgets only need `p > 2^35`.
 
 The circuit does not use lookup tables. It is built only from ordinary circuit
 constraints, so the design is compatible with R1CS-style backends.
@@ -31,6 +33,8 @@ constraints, so the design is compatible with R1CS-style backends.
 - `ChAddMod32.lean`: the choice function fused with a multi-operand addition —
   `Ch`'s bit-31 product rides in the (otherwise affine) sum row, saving one
   witness and one constraint versus `Ch32` + `AddMod32`.
+- `RoundAdds32.lean`: both round additions (the Ch-fused e-add and the a-add)
+  sharing a single packed constraint row at `2^36`-shifted lanes.
 - `Ch32.lean`: SHA-256 choice function (standalone; the round uses the fused
   `ChAddMod32`).
 - `Maj32.lean`: SHA-256 majority function.

@@ -115,7 +115,7 @@ def Spec (input : Inputs n (F p)) (z : fields 32 (F p)) : Prop :=
 
 omit h_large hcw [NeZero cw] in
 /-- The operand sum is at most `n` maximal words. -/
-private lemma opsValueSum_le (ops : ProvableVector (fields 32) n (F p))
+lemma opsValueSum_le (ops : ProvableVector (fields 32) n (F p))
     (h : ∀ j : Fin n, Normalized ops[j]) :
     opsValueSum ops ≤ n * (2^32 - 1) := by
   have h_each_le : ∀ j : Fin n, valueBits ops[j] ≤ 2^32 - 1 := by
@@ -131,12 +131,12 @@ private lemma opsValueSum_le (ops : ProvableVector (fields 32) n (F p))
     _ = n * (2^32 - 1) := by simp
 
 /-- The value-level choice word: bit `i` is `g_i + e_i·(f_i − g_i)`. -/
-private def chWord (e f g : fields 32 (F p)) : fields 32 (F p) :=
+def chWord (e f g : fields 32 (F p)) : fields 32 (F p) :=
   Vector.ofFn fun (i : Fin 32) => g[i] + e[i] * (f[i] - g[i])
 
 omit h_large in
 /-- The choice word satisfies `Ch32`'s spec: its value is `Ch` and it is normalized. -/
-private lemma chWord_spec (e f g : fields 32 (F p))
+lemma chWord_spec (e f g : fields 32 (F p))
     (he : Normalized e) (hf : Normalized f) (hg : Normalized g) :
     valueBits (chWord e f g) =
       Specs.SHA256.Ch (valueBits e) (valueBits f) (valueBits g) ∧
@@ -148,7 +148,7 @@ private lemma chWord_spec (e f g : fields 32 (F p))
 omit h_large in
 /-- Evaluating `chBitsVar` under an environment where the product witnesses are correct
 gives exactly the value-level choice word. -/
-private lemma chBitsVar_eval (env : Environment (F p))
+lemma chBitsVar_eval (env : Environment (F p))
     (e_var f_var g_var : Var (fields 32) (F p)) (m_var : Var (fields 31) (F p))
     (e f g : fields 32 (F p))
     (h_e : ∀ (i : ℕ) (hi : i < 32), Expression.eval env (e_var[i]'hi) = e[i]'hi)

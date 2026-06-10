@@ -20,9 +20,9 @@ R1CS structure (per call):
 - 1  linear constraint: `Σ_j valueBits(op_j) + cst = valueBits(z) + 2^32 · Σ_i 2^i · c[i]`
 
 The carry width `cw` need only satisfy `n·(2^32 - 1) + cst < 2^(32+cw)` (the carry is the
-quotient of the total by `2^32`).  Callers pick the minimal `cw`: the round's e-add
-(`n = 6`) uses `cw = 3`, the round's a-add (`n = 4` plus `cst = 1`) and the schedule add
-(`n = 4`) use `cw = 2`.
+quotient of the total by `2^32`).  Callers pick the minimal `cw`: the schedule add
+(`n = 4`) uses `cw = 2`.  (The round uses the fused `RoundAdds32` gadget instead, which
+shares one packed sum row between its two additions.)
 
 The constant addend makes subtraction of an operand free: `x - d ≡ x + ¬d + 1 (mod 2^32)`
 where the bitwise complement `¬d` is a free linear rewiring of `d`'s bits.  The SHA-256

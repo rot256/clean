@@ -8,8 +8,8 @@ import Clean.Gadgets.SHA256.Xor32
 
 Evaluates the R1CS cost (witness cells, `assert` constraint rows, lookup rows) of the
 SHA-256 gadgets using the `CostR1CS` meter. Counts are independent of the field; we
-instantiate at `pLarge` (a small certifiable prime > 2^36) as a stand-in for the BN254
-scalar field so `native_decide` primality stays cheap while satisfying `p > 2^33`.
+instantiate at `pM127` (the Lucas-Lehmer-certified Mersenne prime `2^127 - 1`) as a
+stand-in for the BN254 scalar field: the round's packed-sum gadget requires `p > 2^110`.
 
 Run with `lake env lean Clean/Examples/SHA256Cost.lean` or inspect the `#eval`s in the editor.
 -/
@@ -19,7 +19,7 @@ open Gadgets.SHA256
 
 namespace SHA256Cost
 
-abbrev P := pLarge
+abbrev P := pM127
 
 /-- Cost of a formal circuit on a symbolic (variable) input. -/
 def costOf {Input Output : TypeMap} [ProvableType Input] [ProvableType Output]
@@ -75,7 +75,7 @@ def checkOf {Input Output : TypeMap} [ProvableType Input] [ProvableType Output]
 
 #eval ("Maj32 checked", checkOf Maj32.circuit { witnesses := 32, constraints := 32, lookups := 0 })
 #eval ("Round checked", checkOf SHA256Round.circuit
-  { witnesses := 196, constraints := 198, lookups := 0 })
+  { witnesses := 196, constraints := 197, lookups := 0 })
 
 /-
 Current pure-R1CS bit-level implementation, lookups = 0 throughout:
@@ -84,10 +84,10 @@ Current pure-R1CS bit-level implementation, lookups = 0 throughout:
   Xor32 / Ch32   witnesses  32   constraints  32
   Σ₀/Σ₁/σ₀/σ₁    witnesses  32   constraints  32
   Maj32          witnesses  32   constraints  32
-  SHA256Round    witnesses 196   constraints 198
+  SHA256Round    witnesses 196   constraints 197
   Schedule       witnesses  4704 constraints  4752
-  64 rounds      witnesses 12544 constraints 12672
-  CompressBlock  witnesses 17512 constraints 17696
+  64 rounds      witnesses 12544 constraints 12608
+  CompressBlock  witnesses 17512 constraints 17632
 
 `AddMod32` adds `n` words plus a compile-time constant `cst` with a `cw`-bit carry, under
 the sharp bound `n·(2^32 − 1) + cst < 2^(32+cw)`.  Callers pick the minimal `cw`: the
@@ -104,9 +104,12 @@ The round uses two structural fusions on top of the single-row bit gadgets:
 * The a-add exploits that `T1 = h + Σ₁ + Ch + k + w` is already pinned by the e-add:
   `new_a = T1 + T2 ≡ (new_e − d) + Σ₀ + Maj (mod 2^32)`, with the subtraction realised as
   `new_e + ¬d + 1` (`¬d` a linear rewiring, `1` the constant addend).  That makes the a-add
-  a 4-operand, 2-carry-bit add (`34` witnesses / `35` constraints) instead of the naive
-  7-operand re-summation (`35` / `36`), saving another witness and constraint per round
-  (`-64` each per block).
+  a 4-operand, 2-carry-bit add instead of the naive 7-operand re-summation, saving another
+  witness and constraint per round (`-64` each per block).
+* Both round additions share **one packed sum row** (`RoundAdds32`): the two addition
+  equations sit at `2^36`-shifted lanes of a single constraint, which lifts to ℕ (using
+  `p > 2^110`) and splits into its base-`2^36` digits.  This deletes the a-add's separate
+  sum row (`-64` constraints per block); witnesses are unchanged.
 
 Both the four Σ/σ functions (3-input XORs) and `Maj` (3-input majority) use a *single* R1CS
 constraint per output bit.  Rather than the carry-save fold (two boolean asserts per bit), each

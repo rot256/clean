@@ -4,8 +4,10 @@ import Clean.Gadgets.SHA256.Add32
 import Clean.Specs.SHA256
 
 section
-variable {p : ℕ} [Fact p.Prime] [Fact (p > 2^35)]
+variable {p : ℕ} [Fact p.Prime] [Fact (p > 2^110)]
 
+-- The round's packed-sum gadget needs `p > 2^110`; everything else only smaller bounds,
+-- derived below (`Fact (p > 2^35)` comes from `SHA256Round.fact_p_gt_2_pow_35_of_2_pow_110`).
 instance fact_p_gt_2_of_2_pow_35 : Fact (p > 2) := .mk (by
   have h : (2 : ℕ) < 2^35 := by decide
   exact h.trans (Fact.out (p := p > 2^35)))
@@ -113,7 +115,7 @@ def Spec (input : Inputs (F p)) (out : SHA256State (F p)) : Prop :=
     Specs.SHA256.sha256Compress (input.state.map valueBits) (input.schedule.map valueBits)
   ∧ ∀ i : Fin 8, Normalized out[i]
 
-omit [Fact (Nat.Prime p)] [Fact (p > 2 ^ 35)] in
+omit [Fact (Nat.Prime p)] [Fact (p > 2 ^ 110)] in
 /-- Generic version of `output_eq`: for any bound `k`, the `Fin.foldl k` over our round body
     equals `stateVar i₀ input_var_state k`. -/
 private lemma fin_foldl_eq_stateVar (i₀ : ℕ) (input_var_state : Var SHA256State (F p)) (k : ℕ) :
@@ -163,7 +165,7 @@ private lemma foldlAcc_eq_stateVar (i₀ : ℕ)
   simp only [Circuit.FoldlM.foldlAcc, Vector.getElem_finRange]
   exact fin_foldl_eq_stateVar _ _ _
 
-omit [Fact (p > 2 ^ 35)] in
+omit [Fact (p > 2 ^ 110)] in
 /-- Helper: `constWord32 n` evaluated is always normalized (bits are 0 or 1). -/
 private lemma normalized_constWord32 (env : Environment (F p)) (n : ℕ) :
     Normalized (Vector.map (Expression.eval env) (constWord32 (p:=p) n)) := by

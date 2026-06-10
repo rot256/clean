@@ -1,4 +1,5 @@
 import Mathlib.Data.ZMod.Basic
+import Mathlib.NumberTheory.LucasLehmer
 
 def p1009 := 1009
 def pBabybear := 15 * 2^27 + 1
@@ -27,3 +28,18 @@ instance : Fact (pLarge > 512) := by native_decide
 instance : Fact (pLarge > 2^16 + 2^8) := by native_decide
 instance : Fact (pLarge > 2^33) := by native_decide
 instance : Fact (pLarge > 2^35) := by native_decide
+
+-- The Mersenne prime `2^127 - 1`, certified by the Lucas-Lehmer test (`native_decide`
+-- runs the 125 squarings mod `2^127 - 1` in microseconds). Used as a field-independent
+-- stand-in for large fields (e.g. the BN254 scalar field, ≈ 2^253.6) by gadgets that
+-- pack several addition constraints into one R1CS row at `2^36`-shifted lanes, which
+-- requires `p > 2^110`.
+def pM127 := 2^127 - 1
+
+instance primeM127 : Fact (pM127.Prime) :=
+  ⟨by
+    have h := lucas_lehmer_sufficiency 127 (by norm_num) (by norm_num)
+    simpa [mersenne, pM127] using h⟩
+
+instance : Fact (pM127 > 2^110) := ⟨by norm_num [pM127]⟩
+instance : Fact (pM127 > 2^35) := ⟨by norm_num [pM127]⟩
