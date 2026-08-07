@@ -125,8 +125,11 @@ def mul {p : ℕ} (x y : Fp w p) : Build w (Fp w p) := do
   Build.emit (mulCode p d x.val y.val t)
   pure ⟨d⟩
 
-/-- `x⁻¹` in `ZMod p` (with `0⁻¹ = 0`, matching the witness IR), by Fermat:
-`x ^ (p - 2)`, as a square-and-multiply ladder over the bits of `p - 2`.
+/-- `x⁻¹` in `ZMod p` by Fermat: `x ^ (p - 2)`, as a square-and-multiply ladder over
+the bits of `p - 2`. For prime `p > 2` this matches the witness IR's convention
+`0⁻¹ = 0` (the ladder multiplies by `x` at least once, so `0 ↦ 0`); at `p = 2` the
+exponent is 0, the ladder is empty, and every input maps to 1 — the correctness
+contract is scoped to `2 < p`.
 
 The exponent bits are computed *by Lean at generation time* — the emitted code is
 straight-line (`~2·log p` multiply/reduce steps, a per-field constant), so it is
