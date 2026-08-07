@@ -413,7 +413,7 @@ buffer `0` of the start state. -/
 
 section Tests
 
-private abbrev Fb := _root_.F pBabybear
+abbrev Fb := _root_.F pBabybear
 
 /-- The test environment's variable assignment. -/
 private def testRow : Array Fb := #[3, 5, 7, 0]
@@ -459,27 +459,27 @@ private def timeCost {m : ℕ} (prog : WitgenIR Fb m) : Option ℕ := do
 /-- Test 1 — the `IsZeroField` witness shape: exercises `expr`, `const`, `feq`,
 `ite` (mask select) and `inv` (Fermat ladder). `var ⟨0⟩ = 3`, so the output is
 `3⁻¹ mod pBabybear = 1342177281`. -/
-private def testIsZero : WitgenIR Fb 1 :=
+def testIsZero : WitgenIR Fb 1 :=
   .ir [] (.lit #v[.ite (.feq (.expr (var ⟨0⟩)) (.const 0)) (.const 0)
     (.inv (.expr (var ⟨0⟩)))])
 
 /-- Test 2 — u64 xor of two environment variables: exercises `val`, `lxor`,
 `ofU64`. `3 ^^^ 5 = 6`. -/
-private def testXor : WitgenIR Fb 1 :=
+def testXor : WitgenIR Fb 1 :=
   .ir [] (.lit #v[.ofU64 (.lxor (.val (.expr (var ⟨0⟩))) (.val (.expr (var ⟨1⟩))))])
 
 /-- Test 3 — one `letU` step (`var ⟨1⟩ + 1 = 6`) shared by two outputs via
 `localVar`: exercises steps, the local registers, and field `add`. Output `[6, 7]`. -/
-private def testSteps : WitgenIR Fb 2 :=
+def testSteps : WitgenIR Fb 2 :=
   .ir [.letU (.add (.val (.expr (var ⟨1⟩))) (.const 1))]
     (.lit #v[.ofU64 (.localVar 0), .add (.ofU64 (.localVar 0)) (.const 1)])
 
 /-- Test 4a — unrolled `bitsOf`: the 8 low bits of `var ⟨2⟩ = 7`. -/
-private def testBits : WitgenIR Fb 8 :=
+def testBits : WitgenIR Fb 8 :=
   .ir [] (.bitsOf (.expr (var ⟨2⟩)))
 
 /-- Test 4b — unrolled `mapRange` with the idx register: `i * i` for `i < 4`. -/
-private def testMapRange : WitgenIR Fb 4 :=
+def testMapRange : WitgenIR Fb 4 :=
   .ir [] (.mapRange 4 (.ofU64 (.mul .idx .idx)))
 
 /-- info: (some [1342177281], [1342177281]) -/

@@ -4,6 +4,7 @@ import Clean.LowLevel.Builder
 import Clean.LowLevel.Examples
 import Clean.LowLevel.Field
 import Clean.LowLevel.WitgenCompile
+import Clean.LowLevel.WitgenCost
 import Clean.Circuit
 import Clean.Examples.WitnessExport
 import Clean.Utils.FiniteField
