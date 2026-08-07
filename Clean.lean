@@ -2,6 +2,7 @@ import Clean.LowLevel.Core
 import Clean.LowLevel.Triple
 import Clean.LowLevel.Builder
 import Clean.LowLevel.Examples
+import Clean.LowLevel.Field
 import Clean.Circuit
 import Clean.Examples.WitnessExport
 import Clean.Utils.FiniteField
