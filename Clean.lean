@@ -8,6 +8,7 @@ import Clean.Caliper.WitgenCompile
 import Clean.Caliper.WitgenCost
 import Clean.Caliper.WitgenSim
 import Clean.Caliper.WitgenSimExpr
+import Clean.Caliper.WitgenSimIR
 import Clean.Circuit
 import Clean.Examples.WitnessExport
 import Clean.Utils.FiniteField
