@@ -86,13 +86,17 @@ private theorem encU_shiftR (a b : UInt64) :
 
 The scalar compilers thread `next` monotonically and allocate the result register
 below the returned counter: `next ≤ next'` and `resultReg < next'`. These purely
-syntactic facts justify the operand-survival steps of the simulation proofs. -/
+syntactic facts justify the operand-survival steps of the simulation proofs.
+
+All register inequalities here (and in the simulation theorems below) are stated
+over bare `ℕ`, not the `Reg` abbrev: `omega` does not unfold `Reg`, so a hypothesis
+whose relation is elaborated at type `Reg` is invisible to it. -/
 
 /-- `compileExpr` register bounds: `next ≤ next'` and `resultReg < next'`. -/
 theorem compileExpr_bounds {F : Type} [FiniteField F] :
-    ∀ (e : Expression F) (next : Reg),
+    ∀ (e : Expression F) (next : ℕ),
     next ≤ (compileExpr (w := 64) e next).2.2 ∧
-      (compileExpr (w := 64) e next).2.1 < (compileExpr (w := 64) e next).2.2
+      ((compileExpr (w := 64) e next).2.1 : ℕ) < ((compileExpr (w := 64) e next).2.2 : ℕ)
   | .var _, next => ⟨Nat.le_add_right next 2, Nat.lt_succ_self (next + 1)⟩
   | .const _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .add x y, next =>
@@ -108,9 +112,9 @@ mutual
 
 /-- `compileF` register bounds: `next ≤ next'` and `resultReg < next'`. -/
 theorem compileF_bounds {F : Type} [FiniteField F] (L : ℕ) :
-    ∀ (e : FExpr F) (next : Reg),
+    ∀ (e : FExpr F) (next : ℕ),
     next ≤ (compileF (w := 64) L e next).2.2 ∧
-      (compileF (w := 64) L e next).2.1 < (compileF (w := 64) L e next).2.2
+      ((compileF (w := 64) L e next).2.1 : ℕ) < ((compileF (w := 64) L e next).2.2 : ℕ)
   | .expr e, next => compileExpr_bounds e next
   | .const _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .localVar _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
@@ -141,9 +145,9 @@ theorem compileF_bounds {F : Type} [FiniteField F] (L : ℕ) :
 
 /-- `compileU` register bounds: `next ≤ next'` and `resultReg < next'`. -/
 theorem compileU_bounds {F : Type} [FiniteField F] (L : ℕ) :
-    ∀ (e : U64Expr F) (next : Reg),
+    ∀ (e : U64Expr F) (next : ℕ),
     next ≤ (compileU (w := 64) L e next).2.2 ∧
-      (compileU (w := 64) L e next).2.1 < (compileU (w := 64) L e next).2.2
+      ((compileU (w := 64) L e next).2.1 : ℕ) < ((compileU (w := 64) L e next).2.2 : ℕ)
   | .const _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .val x, next =>
     have h₁ := compileF_bounds L x next
@@ -196,9 +200,9 @@ theorem compileU_bounds {F : Type} [FiniteField F] (L : ℕ) :
 
 /-- `compileB` register bounds: `next ≤ next'` and `resultReg < next'`. -/
 theorem compileB_bounds {F : Type} [FiniteField F] (L : ℕ) :
-    ∀ (e : BExpr F) (next : Reg),
+    ∀ (e : BExpr F) (next : ℕ),
     next ≤ (compileB (w := 64) L e next).2.2 ∧
-      (compileB (w := 64) L e next).2.1 < (compileB (w := 64) L e next).2.2
+      ((compileB (w := 64) L e next).2.1 : ℕ) < ((compileB (w := 64) L e next).2.2 : ℕ)
   | .true, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .false, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .feq x y, next =>
@@ -284,7 +288,7 @@ environment (`EnvEnc`, via `hbuf`), leaves the canonical word of the reference
 evaluation in the result register, and preserves registers `< next`, all buffers and
 all capacities. -/
 theorem compileExpr_sim :
-    ∀ (e : Expression (F p)) (next : Reg) (s : State 64),
+    ∀ (e : Expression (F p)) (next : ℕ) (s : State 64),
       Expression.envBound N e = true → s.bufs 0 = envArr →
       ∃ s' t d pp, Exec C (compileExpr (w := 64) e next).1 s s' t d pp ∧
         s'.regs (compileExpr (w := 64) e next).2.1 = encF (e.eval env.toEnvironment) ∧
