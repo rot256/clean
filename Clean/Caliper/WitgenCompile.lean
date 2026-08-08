@@ -57,6 +57,19 @@ constructors compile to a dead `.imm r 0` — and a decidable `compilable` check
 (against a context `Γ : List VSort` of step sorts, which also enforces that
 `localVar` references are well-sorted) rules them out for the correctness theorem of
 phase 3. `WitgenIR.native` makes `compileIR` return `none`.
+
+## The trust boundary
+
+The raw compiler `compileIR` is *internal and unchecked*: it never consults
+`compilable`, trusts its caller to pass `L = steps.length`, and truncates every
+index and the output length to 64-bit immediates. The public entry point is
+`compile`, which returns `some` only after all generation-time checks pass
+(structured program, `compilable`, `envBound N`, `N ≤ 2 ^ 64`, `m < 2 ^ 64`) and
+computes `L` itself. The user-facing cost and correctness theorems
+(`compile_time_eq`, `compile_space_le` in `WitgenCost.lean`; `compile_sim` in
+`WitgenSimIR.lean`) are stated about `compile`; the field side conditions (`p`
+prime, `2 < p`, `p * p ≤ 2 ^ 64`) remain hypotheses of those theorems since they
+cannot be decided for a generic `FiniteField`.
 -/
 
 namespace Caliper.WitgenCompile
@@ -143,6 +156,74 @@ def WitgenIR.compilable : {m : ℕ} → WitgenIR F m → Bool
   | _, .native _ => false
   | _, .ir steps out =>
     stepsCompilable [] steps && VExpr.compilable (steps.map Step.sort) out
+
+/-! ## Environment-bound checks
+
+Syntactic, `Bool`-valued checks that every environment read (`Expression.var`,
+`VExpr.envRange`) stays below `N`, mirroring the structure of `compilable`. The
+constructors excluded by `compilable` (`listGet`/`dataGet`/`hintGet`, `native`)
+return `false`. Kept separate from `compilable` (which stays purely structural);
+the checked entry point `compile` conjoins the two. -/
+
+/-- Environment-boundedness of a circuit expression: every `var` index is `< N`. -/
+def Expression.envBound (N : ℕ) : Expression F → Bool
+  | .var v => decide (v.index < N)
+  | .const _ => true
+  | .add x y => Expression.envBound N x && Expression.envBound N y
+  | .mul x y => Expression.envBound N x && Expression.envBound N y
+
+mutual
+
+/-- Environment-boundedness of a field-sorted expression. -/
+def FExpr.envBound (N : ℕ) : FExpr F → Bool
+  | .expr e => Expression.envBound N e
+  | .const _ => true
+  | .localVar _ => true
+  | .add x y | .mul x y => FExpr.envBound N x && FExpr.envBound N y
+  | .inv x => FExpr.envBound N x
+  | .ofU64 n => U64Expr.envBound N n
+  | .ite c t e => BExpr.envBound N c && FExpr.envBound N t && FExpr.envBound N e
+  | .listGet .. | .dataGet .. | .hintGet .. => false
+
+/-- Environment-boundedness of a u64-sorted expression. -/
+def U64Expr.envBound (N : ℕ) : U64Expr F → Bool
+  | .const _ => true
+  | .val x => FExpr.envBound N x
+  | .idx => true
+  | .localVar _ => true
+  | .add x y | .mul x y | .div x y | .mod x y | .land x y | .lor x y | .lxor x y
+  | .shiftL x y | .shiftR x y => U64Expr.envBound N x && U64Expr.envBound N y
+  | .ite c t e => BExpr.envBound N c && U64Expr.envBound N t && U64Expr.envBound N e
+
+/-- Environment-boundedness of a condition. -/
+def BExpr.envBound (N : ℕ) : BExpr F → Bool
+  | .true | .false => true
+  | .feq x y | .flt x y => FExpr.envBound N x && FExpr.envBound N y
+  | .neq x y | .lt x y => U64Expr.envBound N x && U64Expr.envBound N y
+  | .bit x _ => FExpr.envBound N x
+  | .not b => BExpr.envBound N b
+  | .and x y => BExpr.envBound N x && BExpr.envBound N y
+
+end
+
+/-- Environment-boundedness of one `let`-step. -/
+def Step.envBound (N : ℕ) : Step F → Bool
+  | .letF e => FExpr.envBound N e
+  | .letU e => U64Expr.envBound N e
+
+/-- Environment-boundedness of a vector output expression. `envRange offset` reads
+cells `offset .. offset + n - 1`, so it needs `offset + n ≤ N`. -/
+def VExpr.envBound (N : ℕ) : {n : ℕ} → VExpr F n → Bool
+  | _, .lit es => es.toList.all (FExpr.envBound N)
+  | _, .mapRange _ body => FExpr.envBound N body
+  | n, .envRange offset => decide (offset + n ≤ N)
+  | _, .bitsOf x => FExpr.envBound N x
+  | _, .append a b => VExpr.envBound N a && VExpr.envBound N b
+
+/-- Environment-boundedness of a whole witness program. -/
+def WitgenIR.envBound (N : ℕ) : {m : ℕ} → WitgenIR F m → Bool
+  | _, .native _ => false
+  | _, .ir steps out => steps.all (Step.envBound N) && VExpr.envBound N out
 
 /-! ## Generation-time bit decomposition
 
@@ -393,10 +474,17 @@ def compileV (L : ℕ) : {n : ℕ} → VExpr F n → Stmt w
         .bufPush 1 (n₁ + 3)
   | _, .append a b => compileV L a ;; compileV L b
 
-/-- Compile a whole witness program. Call with `L := steps.length`. The emitted code
-allocates the output buffer `1` with capacity `m`, zeroes the idx register `L`,
-computes the `let`-steps into registers `0 .. L-1`, then pushes the `m` output
-elements. `native` closures are not compilable. -/
+/-- **Internal, unchecked** — use the checked entry point `compile` instead.
+
+Compile a whole witness program. Must be called with `L := steps.length` (a wrong
+`L` silently corrupts the local-register layout) and performs *no* compilability,
+environment-bound, or size checks — unsupported scalar constructors lower to a dead
+`.imm _ 0`. `compile` performs all checks and computes `L` itself; this raw compiler
+is kept as the object the phase-2/3 proofs do induction over.
+
+The emitted code allocates the output buffer `1` with capacity `m`, zeroes the idx
+register `L`, computes the `let`-steps into registers `0 .. L-1`, then pushes the
+`m` output elements. `native` closures are not compilable. -/
 def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
   | .native _ => none
   | .ir steps out => some (
@@ -406,12 +494,104 @@ def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
       compileSteps L steps 0 ;;
       compileV L out)
 
+/-! ## The checked entry point -/
+
+/-- **The checked public entry point** of the witgen compiler, at the design point
+`w = 64`. `compile N ir` (with `N` the environment size) returns `some code` iff
+*all* generation-time checks pass:
+
+* `ir` is a structured program `.ir steps out` (`native` closures → `none`),
+* `WitgenIR.compilable ir` — no unsupported constructors
+  (`listGet`/`dataGet`/`hintGet`, which the raw compiler would silently lower to a
+  dead `.imm _ 0`), and all `localVar` references well-sorted,
+* `WitgenIR.envBound N ir` — every environment read is below `N`,
+* `N ≤ 2 ^ 64` — so in-bound environment indices survive their 64-bit immediates,
+* `m < 2 ^ 64` — so the output length survives its 64-bit `bufAlloc` immediate,
+
+and delegates to the internal `compileIR` with the local-register count computed
+from the program itself (`L := steps.length`) — there is no `L` parameter, so a
+wrong-`L` register corruption is impossible by construction.
+
+The field side conditions cannot be decided here for a generic `FiniteField F`;
+they are hypotheses of the correctness theorems: `compile`'s output is verified
+(`compile_sim` for output correctness, `compile_time_eq` /
+`compile_time_data_independent` / `compile_space_le` for costs) for `F = F p` with
+`p` prime, `2 < p`, and `p * p ≤ 2 ^ 64` (single-word moduli). -/
+def compile (N : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt 64)
+  | .native _ => none
+  | .ir steps out =>
+    if WitgenIR.compilable (WitgenIR.ir steps out)
+        && WitgenIR.envBound N (WitgenIR.ir steps out)
+        && decide (N ≤ 2 ^ 64) && decide (m < 2 ^ 64) then
+      compileIR (w := 64) steps.length (WitgenIR.ir steps out)
+    else
+      none
+
+/-- Destructuring the checks: a successful `compile` certifies compilability, the
+environment bound, and both size bounds. -/
+theorem compile_checks {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
+    (h : compile N ir = some code) :
+    WitgenIR.compilable ir = true ∧ WitgenIR.envBound N ir = true ∧
+      N ≤ 2 ^ 64 ∧ m < 2 ^ 64 := by
+  cases ir with
+  | native _ => simp [compile] at h
+  | ir steps out =>
+    simp only [compile] at h
+    split at h
+    · rename_i hcond
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+      obtain ⟨⟨⟨hc, hb⟩, hN⟩, hm⟩ := hcond
+      exact ⟨hc, hb, hN, hm⟩
+    · exact absurd h (by simp)
+
+/-- Destructuring the delegation: a successful `compile` is a `compileIR` call at
+the correct `L = steps.length`. -/
+theorem compile_toCompileIR {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
+    (h : compile N ir = some code) :
+    ∃ (steps : List (Step F)) (out : VExpr F m), ir = WitgenIR.ir steps out ∧
+      compileIR (w := 64) steps.length ir = some code := by
+  cases ir with
+  | native _ => simp [compile] at h
+  | ir steps out =>
+    refine ⟨steps, out, rfl, ?_⟩
+    simp only [compile] at h
+    split at h
+    · exact h
+    · exact absurd h (by simp)
+
+/-- The forward direction: when all checks hold, `compile` *is* the raw compiler at
+`L = steps.length`. Used to discharge concrete programs. -/
+theorem compile_eq_compileIR_of_checks {N m : ℕ} {steps : List (Step F)}
+    {out : VExpr F m} (hc : WitgenIR.compilable (WitgenIR.ir steps out) = true)
+    (hb : WitgenIR.envBound N (WitgenIR.ir steps out) = true)
+    (hN : N ≤ 2 ^ 64) (hm : m < 2 ^ 64) :
+    compile N (WitgenIR.ir steps out)
+      = compileIR (w := 64) steps.length (WitgenIR.ir steps out) := by
+  simp only [compile]
+  rw [if_pos]
+  simp only [Bool.and_eq_true, decide_eq_true_eq]
+  exact ⟨⟨⟨hc, hb⟩, hN⟩, hm⟩
+
+/-- The output-size guard: a program whose static output length does not fit in a
+64-bit immediate is rejected, whatever else holds. -/
+theorem compile_eq_none_of_output_ge {N m : ℕ} (hm : 2 ^ 64 ≤ m)
+    (ir : WitgenIR F m) : compile N ir = none := by
+  cases ir with
+  | native _ => rfl
+  | ir steps out =>
+    simp only [compile]
+    rw [if_neg]
+    simp only [Bool.and_eq_true, decide_eq_true_eq, not_and]
+    intro _ _
+    omega
+
 /-! ## Differential tests
 
 Concrete runs at `w = 64`, `F = F pBabybear`, comparing the machine's output buffer
 against the reference `WitgenIR.eval` elementwise (machine `toNat` vs
 `FiniteField.val`). The environment is a small array, encoded for the machine as
-buffer `0` of the start state. -/
+buffer `0` of the start state. All tests go through the checked entry point
+`compile` (with `N := testRow.size`), exercising the public path. -/
 
 section Tests
 
@@ -432,16 +612,13 @@ private def testState : State 64 where
   bufs b := if b = 0 then testRow.map (fun x => BitVec.ofNat 64 (FiniteField.val x)) else #[]
   caps b := if b = 0 then testRow.size else 0
 
-/-- The `L` (step count) to compile a test program with. -/
-private def numSteps {m : ℕ} : WitgenIR Fb m → ℕ
-  | .native _ => 0
-  | .ir steps _ => steps.length
-
-/-- Compile, run (fuel 100000), and return `(machine output, reference output)`,
-both as lists of naturals — equality of the two components is the test. -/
+/-- Compile through the checked entry `compile`, run (fuel 100000), and return
+`(machine output, reference output)`, both as lists of naturals — equality of the
+two components is the test. There is no step-count parameter to get wrong:
+`compile` computes `L` from the program itself. -/
 private def diffOutputs {m : ℕ} (prog : WitgenIR Fb m) : Option (List ℕ) × List ℕ :=
   let machine : Option (List ℕ) := do
-    let code ← compileIR (w := 64) (numSteps prog) prog
+    let code ← compile testRow.size prog
     let (s', _, _, _) ← run CostModel.unit 100000 code testState
     pure ((s'.bufs 1).toList.map (·.toNat))
   (machine, (prog.eval testEnv).toList.map FiniteField.val)
@@ -452,9 +629,10 @@ private def diffOk {m : ℕ} (prog : WitgenIR Fb m) : Bool :=
   | (some ms, rs) => ms == rs
   | (none, _) => false
 
-/-- Time cost of a compiled test program under the uniform cost model. -/
+/-- Time cost of a compiled test program (checked entry) under the uniform cost
+model. -/
 private def timeCost {m : ℕ} (prog : WitgenIR Fb m) : Option ℕ := do
-  let code ← compileIR (w := 64) (numSteps prog) prog
+  let code ← compile testRow.size prog
   let (_, t, _, _) ← run CostModel.unit 100000 code testState
   pure t
 
@@ -524,6 +702,53 @@ def testMapRange : WitgenIR Fb 4 :=
   WitgenIR.compilable testIsZero && WitgenIR.compilable testXor &&
   WitgenIR.compilable testSteps && WitgenIR.compilable testBits &&
   WitgenIR.compilable testMapRange
+
+/-! ### Trust-boundary regression tests
+
+Each generation-time check of the entry point `compile` actually rejects. Note
+there is deliberately no "wrong `L`" test: `compile` takes no `L` parameter — it
+computes `L := steps.length` from the program itself, so the register-corrupting
+mis-`L` call is impossible by construction (only the internal `compileIR` still
+takes `L`, and it is not the public path). -/
+
+/-- An unsupported program: `listGet` has no lowering — the raw compiler would emit
+a dead `.imm _ 0` and produce `[0]` where the reference output is `[7]`. -/
+def testListGet : WitgenIR Fb 1 :=
+  .ir [] (.lit #v[.listGet [.const 7] (.const 0)])
+
+/- The reference output of `testListGet` is `[7]` — which no raw lowering of it can
+produce — and the checked entry refuses to compile it. -/
+/-- info: [7] -/
+#guard_msgs in #eval (testListGet.eval testEnv).toList.map FiniteField.val
+
+/-- info: true -/
+#guard_msgs in #eval (compile testRow.size testListGet).isNone
+
+/-- An out-of-range environment read: the index `2 ^ 64` would wrap to `0` in its
+64-bit immediate, silently reading cell 0. `envBound` rejects it for every
+`N ≤ 2 ^ 64`. -/
+def testEnvOverflow : WitgenIR Fb 1 :=
+  .ir [] (.lit #v[.expr (var ⟨2 ^ 64⟩)])
+
+/-- info: true -/
+#guard_msgs in #eval (compile testRow.size testEnvOverflow).isNone
+
+/- An oversized environment bound: with `N > 2 ^ 64`, `envBound`-approved indices
+could still wrap in their immediates, so the `N ≤ 2 ^ 64` check refuses. -/
+/-- info: true -/
+#guard_msgs in #eval (compile (2 ^ 64 + 1) testIsZero).isNone
+
+/- `native` closures are not compilable. -/
+/-- info: true -/
+#guard_msgs in #eval
+  (compile testRow.size (WitgenIR.native fun _ => #v[(0 : Fb)])).isNone
+
+/- An output length `m ≥ 2 ^ 64` would wrap in the `bufAlloc` capacity immediate;
+the `m < 2 ^ 64` check refuses before any unrolling (see also the general guard
+lemma `compile_eq_none_of_output_ge`). -/
+/-- info: true -/
+#guard_msgs in #eval
+  (compile (2 ^ 64) (WitgenIR.ir [] (.envRange 0) : WitgenIR Fb (2 ^ 64))).isNone
 
 end Tests
 

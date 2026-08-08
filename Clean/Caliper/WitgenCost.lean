@@ -339,19 +339,73 @@ theorem compileIR_space_le {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code
         simp only [regs_setReg_self, caps_setReg]
         omega
 
+/-! ## Checked-entry corollaries
+
+The user-facing forms of the phase-2 theorems, stated about the checked entry point
+`compile` (`WitgenCompile.lean`). `compile N ir = some code` already carries the
+structure the raw theorems need, so these are thin corollaries of the `compileIR`
+versions above. -/
+
+/-- Everything the checked entry point emits is straight-line. -/
+theorem compile_straight {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
+    (hc : compile N ir = some code) : code.Straight := by
+  obtain ⟨_, _, -, hIR⟩ := compile_toCompileIR hc
+  exact compileIR_straight hIR
+
+/-- **Checked-entry time exactness**: code accepted by `compile` runs in exactly its
+static time, on every input. -/
+theorem compile_time_eq {C : CostModel} {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
+    {s s' : State 64} {t : ℕ} {d p : ℤ} (hc : compile N ir = some code)
+    (hx : Exec C code s s' t d p) : t = code.staticTime C :=
+  hx.straight_time_eq (compile_straight hc)
+
+/-- **Checked-entry data independence**: two executions of code accepted by
+`compile` take the same time, whatever their inputs (a constant-time / side-channel
+statement). -/
+theorem compile_time_data_independent {C : CostModel} {N m : ℕ} {ir : WitgenIR F m}
+    {code : Stmt 64} {s₁ s₁' s₂ s₂' : State 64} {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
+    (hc : compile N ir = some code)
+    (h₁ : Exec C code s₁ s₁' t₁ d₁ p₁) (h₂ : Exec C code s₂ s₂' t₂ d₂ p₂) : t₁ = t₂ :=
+  h₁.straight_data_independent h₂ (compile_straight hc)
+
+/-- **Checked-entry space bound**: code accepted by `compile` needs at most `m`
+words of memory (`m` = the static output length), both net and peak. -/
+theorem compile_space_le {C : CostModel} {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
+    {s s' : State 64} {t : ℕ} {d p : ℤ} (hc : compile N ir = some code)
+    (hx : Exec C code s s' t d p) : d ≤ (m : ℤ) ∧ p ≤ (m : ℤ) := by
+  obtain ⟨_, _, -, hIR⟩ := compile_toCompileIR hc
+  exact compileIR_space_le hIR hx
+
 /-! ## Concrete `< 2^40` bounds for the BabyBear test programs
 
 The numbers below are *syntactic constants* of the compiled code — `#eval`ed here,
 certified by `native_decide`, and equal to the running time of **every** execution
 by `compileIR_time_eq`. -/
 
-/-- The compiled `IsZeroField` witness program (test 1 of `WitgenCompile.lean`):
-mask-select `ite`, `feq`, and the unrolled Fermat inverse ladder over BabyBear. -/
+/-- The compiled `IsZeroField` witness program (test 1 of `WitgenCompile.lean`),
+produced by the **checked entry point** `compile` (environment size `N = 1`: the
+program reads only `var ⟨0⟩`): mask-select `ite`, `feq`, and the unrolled Fermat
+inverse ladder over BabyBear. -/
 def isZeroCompiled : Stmt 64 :=
-  (compileIR (w := 64) 0 testIsZero).getD .skip
+  (compile 1 testIsZero).getD .skip
 
-theorem compileIR_testIsZero : compileIR (w := 64) 0 testIsZero = some isZeroCompiled :=
+/-- On `testIsZero` all checks pass, so the checked entry agrees with the raw
+compiler at `L = 0`. The `compilable`/`envBound` side conditions are certified by
+`native_decide` (well-founded mutual recursions, which `rfl` cannot reduce). -/
+private theorem compile_isZero_eq_compileIR :
+    compile 1 testIsZero = compileIR (w := 64) 0 testIsZero :=
+  compile_eq_compileIR_of_checks (by native_decide) (by native_decide)
+    (by norm_num) (by norm_num)
+
+/-- The checked entry point accepts `testIsZero` and emits `isZeroCompiled`. -/
+theorem compile_testIsZero : compile 1 testIsZero = some isZeroCompiled := by
+  show _ = some ((compile 1 testIsZero).getD .skip)
+  rw [compile_isZero_eq_compileIR]
   rfl
+
+/-- The raw-compiler form, used to relate the two paths. -/
+theorem compileIR_testIsZero : compileIR (w := 64) 0 testIsZero = some isZeroCompiled :=
+  compile_isZero_eq_compileIR ▸ compile_testIsZero
 
 /-- The static time of the compiled `IsZero` witness under the uniform cost model —
 the same 140 the differential test of `WitgenCompile.lean` measured by running it.
@@ -371,6 +425,13 @@ theorem isZeroCompiled_staticTime_cycles : isZeroCompiled.staticTime .cycles = 2
 /-- info: some 2090 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.cycles 0 testIsZero
 
+/- The same numbers through the checked entry point (no `L` to supply). -/
+/-- info: some 140 -/
+#guard_msgs in #eval (compile 1 testIsZero).map (·.staticTime CostModel.unit)
+
+/-- info: some 2090 -/
+#guard_msgs in #eval (compile 1 testIsZero).map (·.staticTime CostModel.cycles)
+
 /-- info: some 13 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testXor
 
@@ -387,7 +448,7 @@ theorem isZeroCompiled_staticTime_cycles : isZeroCompiled.staticTime .cycles = 2
 program terminates in fewer than `2^40` steps — in fact in exactly 140. -/
 theorem isZero_witgen_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
     (h : Exec .unit isZeroCompiled s s' t d p) : t < 2 ^ 40 := by
-  have ht := compileIR_time_eq compileIR_testIsZero h
+  have ht := compile_time_eq compile_testIsZero h
   rw [isZeroCompiled_staticTime_unit] at ht
   omega
 
@@ -395,7 +456,7 @@ theorem isZero_witgen_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
 the cost model, only the pinned constant changes. -/
 theorem isZero_witgen_cycles_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
     (h : Exec .cycles isZeroCompiled s s' t d p) : t < 2 ^ 40 := by
-  have ht := compileIR_time_eq compileIR_testIsZero h
+  have ht := compile_time_eq compile_testIsZero h
   rw [isZeroCompiled_staticTime_cycles] at ht
   omega
 
@@ -403,7 +464,7 @@ theorem isZero_witgen_cycles_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
 more than its single output word — in particular far below `2^40`. -/
 theorem isZero_witgen_peak_le_one {s s' : State 64} {t : ℕ} {d p : ℤ}
     (h : Exec .unit isZeroCompiled s s' t d p) : p ≤ 1 := by
-  have := (compileIR_space_le compileIR_testIsZero h).2
+  have := (compile_space_le compile_testIsZero h).2
   omega
 
 /-- The `< 2^40` form of the memory bound. -/

@@ -8,7 +8,6 @@ Phase 3a of the witgen compiler correctness proof: the **trusted encoding layer*
 This file contains no compiler induction — only
 
 * the encodings relating IR-level values (`F p`, `UInt64`, `Bool`) to machine words,
-* syntactic environment-bound checks mirroring `compilable`'s structure,
 * the state-encoding relations that phases 3b/3c thread through the compiler induction,
 * the pure specification of the generation-time bit decomposition `toBits`,
 * Fermat's little theorem in the `x ^ (p - 2) = x⁻¹` form and the square-and-multiply
@@ -70,79 +69,6 @@ theorem encF_injective (hpw : p * p ≤ 2 ^ 64) : Function.Injective (encF (p :=
   exact FieldUtils.ext h'
 
 end Encodings
-
-/-! ## Environment-bound checks
-
-Syntactic, `Bool`-valued checks that every environment read (`Expression.var`,
-`VExpr.envRange`) stays below `N`, mirroring the structure of `compilable`. The
-constructors excluded by `compilable` (`listGet`/`dataGet`/`hintGet`, `native`)
-return `false`. -/
-
-section EnvBound
-
-variable {F : Type}
-
-/-- Environment-boundedness of a circuit expression: every `var` index is `< N`. -/
-def Expression.envBound (N : ℕ) : Expression F → Bool
-  | .var v => decide (v.index < N)
-  | .const _ => true
-  | .add x y => Expression.envBound N x && Expression.envBound N y
-  | .mul x y => Expression.envBound N x && Expression.envBound N y
-
-mutual
-
-/-- Environment-boundedness of a field-sorted expression. -/
-def FExpr.envBound (N : ℕ) : FExpr F → Bool
-  | .expr e => Expression.envBound N e
-  | .const _ => true
-  | .localVar _ => true
-  | .add x y | .mul x y => FExpr.envBound N x && FExpr.envBound N y
-  | .inv x => FExpr.envBound N x
-  | .ofU64 n => U64Expr.envBound N n
-  | .ite c t e => BExpr.envBound N c && FExpr.envBound N t && FExpr.envBound N e
-  | .listGet .. | .dataGet .. | .hintGet .. => false
-
-/-- Environment-boundedness of a u64-sorted expression. -/
-def U64Expr.envBound (N : ℕ) : U64Expr F → Bool
-  | .const _ => true
-  | .val x => FExpr.envBound N x
-  | .idx => true
-  | .localVar _ => true
-  | .add x y | .mul x y | .div x y | .mod x y | .land x y | .lor x y | .lxor x y
-  | .shiftL x y | .shiftR x y => U64Expr.envBound N x && U64Expr.envBound N y
-  | .ite c t e => BExpr.envBound N c && U64Expr.envBound N t && U64Expr.envBound N e
-
-/-- Environment-boundedness of a condition. -/
-def BExpr.envBound (N : ℕ) : BExpr F → Bool
-  | .true | .false => true
-  | .feq x y | .flt x y => FExpr.envBound N x && FExpr.envBound N y
-  | .neq x y | .lt x y => U64Expr.envBound N x && U64Expr.envBound N y
-  | .bit x _ => FExpr.envBound N x
-  | .not b => BExpr.envBound N b
-  | .and x y => BExpr.envBound N x && BExpr.envBound N y
-
-end
-
-/-- Environment-boundedness of one `let`-step. -/
-def Step.envBound (N : ℕ) : Step F → Bool
-  | .letF e => FExpr.envBound N e
-  | .letU e => U64Expr.envBound N e
-
-/-- Environment-boundedness of a vector output expression. `envRange offset` reads
-cells `offset .. offset + n - 1`, so it needs `offset + n ≤ N`. -/
-def VExpr.envBound (N : ℕ) : {n : ℕ} → VExpr F n → Bool
-  | _, .lit es => es.toList.all (FExpr.envBound N)
-  | _, .mapRange _ body => FExpr.envBound N body
-  | n, .envRange offset => decide (offset + n ≤ N)
-  | _, .bitsOf x => FExpr.envBound N x
-  | _, .append a b => VExpr.envBound N a && VExpr.envBound N b
-
-/-- Environment-boundedness of a whole witness program. -/
-def WitgenIR.envBound (N : ℕ) : {m : ℕ} → WitgenIR F m → Bool
-  | _, .native _ => false
-  | _, .ir steps out => steps.all (Step.envBound N) && VExpr.envBound N out
-
-end EnvBound
 
 /-! ## State-encoding relations
 

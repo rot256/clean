@@ -15,11 +15,15 @@ built on the scalar-expression simulation of `Clean/Caliper/WitgenSimExpr.lean`.
   (`VExpr.eval`, elementwise `encF`) to the output buffer `1`. The unrolled
   `mapRange` / `envRange` / `bitsOf` loops are handled by fold lemmas over the
   generation-time index list.
-* `compileIR_sim` — **the headline**: for every compilable, environment-bounded
+* `compileIR_sim` — the raw-compiler form: for every compilable, environment-bounded
   witness program, from any start state whose buffer `0` encodes the environment,
   the compiled code *has an execution* that ends with buffer `1` holding exactly the
   encoded `WitgenIR.eval` output. Since out-of-range buffer accesses have no `Exec`
   derivation, this existence theorem doubles as a memory-safety proof.
+* `compile_sim` — **the headline**: the same statement about the checked entry point
+  `compile`, with fewer hypotheses — `compile N ir = some code` already carries
+  compilability, the environment bound, `N ≤ 2 ^ 64` and `m < 2 ^ 64`, so only the
+  field side conditions and the environment encoding remain.
 
 Combined with phase 2 (`WitgenCost.lean`: exact static running time, space ≤ output
 length), this yields end-to-end corollaries like `isZero_witgen_correct_140`: the
@@ -667,6 +671,27 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
   simp only [bufs_setReg, bufs_allocBuf_self, WitgenIR.eval]
   rw [Array.empty_append]
 
+omit hN in
+/-- **The checked-entry end-to-end theorem.** For every witness program the checked
+entry point accepts — `compile N ir = some code`, which already carries
+compilability, the environment bound, `N ≤ 2 ^ 64` and `m < 2 ^ 64` — from *any*
+start state whose buffer `0` encodes the reference environment, the compiled code
+has an execution that terminates with the output buffer `1` holding exactly the
+encoded reference output `WitgenIR.eval` (elementwise canonical words `encF`).
+
+Exhibiting the execution also proves memory safety; by phase 2 its time is exactly
+`code.staticTime C` (`compile_time_eq`) and its memory peak at most `m`
+(`compile_space_le`). The remaining hypotheses — `p` prime, `2 < p`,
+`p * p ≤ 2 ^ 64` — are the field side conditions under which `compile`'s output is
+verified; they cannot be checked at generation time for a generic field. -/
+theorem compile_sim {m : ℕ} {ir : WitgenIR (F p) m} {code : Stmt 64}
+    (hcode : compile N ir = some code) {s : State 64} (hbuf : s.bufs 0 = envArr) :
+    ∃ s' t d pp, Exec C code s s' t d pp ∧
+      s'.bufs 1 = (Vector.map encF (ir.eval env)).toArray := by
+  obtain ⟨hcomp, hbound, hN', hm⟩ := compile_checks hcode
+  obtain ⟨steps, out, rfl, hIR⟩ := compile_toCompileIR hcode
+  exact compileIR_sim p hp2 hpw env N envArr henv hN' hIR hcomp hbound hm hbuf
+
 end Sim
 
 /-! ## The headline corollary: BabyBear `IsZeroField`, end to end -/
@@ -682,7 +707,12 @@ program `isZeroCompiled` has an execution that
 
 Exhibiting the execution also proves memory safety (out-of-range accesses have no
 `Exec` derivation). Determinism (`Exec.deterministic`) makes these the costs and the
-output of *every* execution of `isZeroCompiled` from such a state. -/
+output of *every* execution of `isZeroCompiled` from such a state.
+
+Everything goes through the checked entry point: `isZeroCompiled` is defined via
+`compile`, whose checks (`compile_testIsZero` at `N = 1`, generalized to any
+`0 < N ≤ 2 ^ 64` here) feed `compile_sim`, `compile_time_eq` and
+`compile_space_le`. -/
 theorem isZero_witgen_correct_140 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
@@ -693,16 +723,16 @@ theorem isZero_witgen_correct_140 {env : ProverEnvironment (F pBabybear)}
   have hbound : WitgenIR.envBound N testIsZero = true := by
     simp [testIsZero, WitgenIR.envBound, VExpr.envBound, FExpr.envBound,
       BExpr.envBound, Expression.envBound, hN0]
-  have hcode : compileIR (w := 64) (List.length ([] : List (Step (F pBabybear))))
-      testIsZero = some isZeroCompiled := compileIR_testIsZero
+  have hcode : compile N testIsZero = some isZeroCompiled :=
+    (compile_eq_compileIR_of_checks (by native_decide) hbound hN
+      (by norm_num)).trans compileIR_testIsZero
   obtain ⟨s', t, d, pp, hex, hout⟩ :=
-    compileIR_sim (C := .unit) pBabybear (by norm_num [pBabybear])
-      (by norm_num [pBabybear]) env N envArr henv hN
-      hcode (by native_decide) hbound (by norm_num) hbuf
+    compile_sim (C := .unit) pBabybear (by norm_num [pBabybear])
+      (by norm_num [pBabybear]) env N envArr henv hcode hbuf
   have ht : t = 140 := by
-    rw [compileIR_time_eq compileIR_testIsZero hex, isZeroCompiled_staticTime_unit]
+    rw [compile_time_eq hcode hex, isZeroCompiled_staticTime_unit]
   have hpp : pp ≤ 1 := by
-    have := (compileIR_space_le compileIR_testIsZero hex).2
+    have := (compile_space_le hcode hex).2
     simpa using this
   exact ⟨s', d, pp, ht ▸ hex, hout, hpp⟩
 
