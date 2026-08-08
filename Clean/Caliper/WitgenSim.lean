@@ -1,4 +1,4 @@
-import Clean.LowLevel.WitgenCompile
+import Clean.Caliper.WitgenCompile
 import Mathlib.FieldTheory.Finite.Basic
 
 /-!
@@ -20,7 +20,7 @@ Everything is at word size `w = 64` and `F = F p` for a prime `p` with
 `p * p ≤ 2 ^ 64` (single-word moduli), matching the compiler's design point.
 -/
 
-namespace LowLevel.WitgenCompile
+namespace Caliper.WitgenCompile
 
 open Witgen
 
@@ -459,4 +459,4 @@ theorem invLadder_exec_inv (hp2 : 2 < p) (hpw : p * p ≤ 2 ^ 64) {acc xr tr : �
 
 end LeafGadgets
 
-end LowLevel.WitgenCompile
+end Caliper.WitgenCompile

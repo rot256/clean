@@ -1,4 +1,4 @@
-import Clean.LowLevel.WitgenSim
+import Clean.Caliper.WitgenSim
 
 /-!
 # Scalar-expression simulation for the witgen compiler
@@ -6,7 +6,7 @@ import Clean.LowLevel.WitgenSim
 Phase 3b of the witgen compiler correctness proof: the **scalar compiler induction**.
 For every compilable, environment-bounded scalar expression of the witness IR
 (`Expression`, `FExpr`, `U64Expr`, `BExpr`), the code emitted by
-`Clean/LowLevel/WitgenCompile.lean` executes from any state satisfying the
+`Clean/Caliper/WitgenCompile.lean` executes from any state satisfying the
 state-encoding invariant (`StateEnc`, resp. an environment buffer for `Expression`),
 terminates, leaves the encoded value of the reference evaluation
 (`Clean/Circuit/WitnessIR.lean`) in the compiler's result register, and preserves all
@@ -17,7 +17,7 @@ The theorems are `compileExpr_sim` (standalone — circuit expressions are a sep
 AST) and the mutual `compileF_sim` / `compileU_sim` / `compileB_sim`, by structural
 induction mirroring the mutual compilers `compileF` / `compileU` / `compileB`. The
 field-arithmetic leaf gadgets (`fieldOp`, `selectCode`, `invLadder`) are handled by
-the `Exec`-level leaf lemmas of `Clean/LowLevel/WitgenSim.lean`; this file contains
+the `Exec`-level leaf lemmas of `Clean/Caliper/WitgenSim.lean`; this file contains
 the induction glue and the word-level facts for the remaining instructions.
 
 Everything is at the compiler's design point: word size `w = 64`, `F = F p` for a
@@ -27,7 +27,7 @@ indices baked as 64-bit immediates read back exactly (`Expression.envBound` boun
 every environment read by `N`, and the immediate wraps mod `2 ^ 64`).
 -/
 
-namespace LowLevel.WitgenCompile
+namespace Caliper.WitgenCompile
 
 open Witgen
 
@@ -1209,4 +1209,4 @@ end
 
 end Sim
 
-end LowLevel.WitgenCompile
+end Caliper.WitgenCompile

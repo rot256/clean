@@ -1,5 +1,5 @@
-import Clean.LowLevel.Triple
-import Clean.LowLevel.Builder
+import Clean.Caliper.Triple
+import Clean.Caliper.Builder
 
 /-!
 # Generic prime-field arithmetic, from the modulus alone
@@ -33,7 +33,7 @@ Registers are parameters with explicit distinctness hypotheses; call sites with
 builder-allocated (hence distinct) registers discharge them by `omega`/`decide`.
 -/
 
-namespace LowLevel
+namespace Caliper
 
 variable {w : ℕ}
 
@@ -149,4 +149,4 @@ def inv {p : ℕ} (x : Fp w p) : Build w (Fp w p) := do
 
 end Fp
 
-end LowLevel
+end Caliper

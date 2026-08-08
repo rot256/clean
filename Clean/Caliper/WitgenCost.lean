@@ -1,10 +1,10 @@
-import Clean.LowLevel.WitgenCompile
+import Clean.Caliper.WitgenCompile
 
 /-!
 # Cost bounds for compiled witness generation: "witgen in < 2^40 steps, machine-checked"
 
 Phase 2 of the witgen compiler: machine-checked *cost* bounds for the code that
-`Clean/LowLevel/WitgenCompile.lean` emits.
+`Clean/Caliper/WitgenCompile.lean` emits.
 
 The whole file rests on one structural fact, proved here by syntactic induction over
 the compiler: **everything the compiler emits is straight-line** (no `ifNZ`, no
@@ -40,7 +40,7 @@ Consequences, all machine-checked below:
   `CostModel`.
 -/
 
-namespace LowLevel.WitgenCompile
+namespace Caliper.WitgenCompile
 
 open Witgen
 
@@ -412,4 +412,4 @@ theorem isZero_witgen_space_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
   have := isZero_witgen_peak_le_one h
   omega
 
-end LowLevel.WitgenCompile
+end Caliper.WitgenCompile

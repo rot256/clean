@@ -1,16 +1,16 @@
 import Clean.Circuit.WitnessIR
-import Clean.LowLevel.Core
+import Clean.Caliper.Core
 import Clean.Utils.Primes
 
 /-!
 # Compiling the witness-generation IR to the unit-cost machine
 
 This is the (unverified, for now) lowering from Clean's witness-generation IR
-(`Clean/Circuit/WitnessIR.lean`) to the unit-cost machine (`Clean/LowLevel/Core.lean`).
+(`Clean/Circuit/WitnessIR.lean`) to the unit-cost machine (`Clean/Caliper/Core.lean`).
 The compiler is generic over `{F : Type} [FiniteField F]` and the word width `w`: the
 modulus `p := FiniteField.size F` and every field constant are *generation-time* Lean
 values, baked into the emitted code as immediates — exactly the `Fp` discipline of
-`Clean/LowLevel/Field.lean`. The design targets single-word fields (`p * p ≤ 2 ^ w`),
+`Clean/Caliper/Field.lean`. The design targets single-word fields (`p * p ≤ 2 ^ w`),
 so field reduction is the machine's native `umod` after each `add`/`mul`.
 
 ## Register and buffer layout
@@ -59,7 +59,7 @@ constructors compile to a dead `.imm r 0` — and a decidable `compilable` check
 phase 3. `WitgenIR.native` makes `compileIR` return `none`.
 -/
 
-namespace LowLevel.WitgenCompile
+namespace Caliper.WitgenCompile
 
 open Witgen
 
@@ -527,4 +527,4 @@ def testMapRange : WitgenIR Fb 4 :=
 
 end Tests
 
-end LowLevel.WitgenCompile
+end Caliper.WitgenCompile
