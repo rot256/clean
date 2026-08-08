@@ -91,24 +91,26 @@ private theorem encB_not (b : Bool) :
     (if encB b = 0 then 1 else 0 : Word 64) = encB (!b) := by
   cases b <;> decide
 
-/-- The `eq`-comparison of bit-pattern words decides u64 equality. -/
-private theorem encB_ueq (x y : UInt64) :
+/-- The `eq`-comparison of bit-pattern words decides u64 equality (generic in the
+`Decidable` instance, to match whatever instance the reference `eval` elaborated). -/
+private theorem encB_ueq (x y : UInt64) [Decidable (x = y)] :
     (if encU x = encU y then 1 else 0 : Word 64) = encB (decide (x = y)) := by
   by_cases h : x = y
-  · simp [h, encB]
-  · rw [if_neg fun he => h (encU_injective he)]
-    simp [h, encB]
+  · rw [decide_eq_true h, if_pos (congrArg encU h)]
+    rfl
+  · rw [decide_eq_false h, if_neg fun he => h (encU_injective he)]
+    rfl
 
 /-- The `ult`-comparison of bit-pattern words decides u64 `<`. -/
-private theorem encB_ult (x y : UInt64) :
+private theorem encB_ult (x y : UInt64) [Decidable (x < y)] :
     (if (encU x).toNat < (encU y).toNat then 1 else 0 : Word 64) =
       encB (decide (x < y)) := by
   rw [encU_toNat, encU_toNat]
   by_cases h : x < y
-  · rw [if_pos (UInt64.lt_iff_toNat_lt.mp h)]
-    simp [h, encB]
-  · rw [if_neg fun hlt => h (UInt64.lt_iff_toNat_lt.mpr hlt)]
-    simp [h, encB]
+  · rw [decide_eq_true h, if_pos (UInt64.lt_iff_toNat_lt.mp h)]
+    rfl
+  · rw [decide_eq_false h, if_neg fun hlt => h (UInt64.lt_iff_toNat_lt.mpr hlt)]
+    rfl
 
 /-- The word of a u64 constant, baked as a `toNat` immediate, is its bit pattern. -/
 private theorem encU_ofNat_toNat (n : UInt64) : BitVec.ofNat 64 n.toNat = encU n := by
@@ -145,20 +147,31 @@ private theorem encU_umod_p (hpw : p * p ≤ 2 ^ 64) (u : UInt64) :
   rw [BitVec.toNat_umod, encU_toNat, BitVec.toNat_ofNat,
     Nat.mod_eq_of_lt (p_lt_two_pow_64 hpw), encF_toNat hpw, ZMod.val_natCast]
 
-/-- The `eq`-comparison of canonical words decides field equality. -/
-private theorem encB_feq (hpw : p * p ≤ 2 ^ 64) (x y : F p) :
-    (if encF x = encF y then 1 else 0 : Word 64) = encB (decide (x = y)) := by
-  by_cases h : x = y
-  · simp [h, encB]
-  · rw [if_neg fun he => h (encF_injective hpw he)]
-    simp [h, encB]
+/-- The `eq`-comparison of canonical words decides field equality. The `Decidable`
+instance is a strict-implicit binder used via `@decide`, so that it is solved by
+unification against the instance the reference `eval` elaborated (not re-synthesized,
+which would pick a different-but-propositionally-equal instance). -/
+private theorem encB_feq (hpw : p * p ≤ 2 ^ 64) (x y : F p) {inst : Decidable (x = y)} :
+    (if encF x = encF y then 1 else 0 : Word 64) = encB (@decide (x = y) inst) := by
+  cases hd : @decide (x = y) inst with
+  | false =>
+    rw [if_neg fun he => of_decide_eq_false hd (encF_injective hpw he)]
+    rfl
+  | true =>
+    rw [if_pos (congrArg encF (of_decide_eq_true hd))]
+    rfl
 
 /-- The `ult`-comparison of canonical words decides the field-value `<`. -/
-private theorem encB_flt (hpw : p * p ≤ 2 ^ 64) (x y : F p) :
+private theorem encB_flt (hpw : p * p ≤ 2 ^ 64) (x y : F p)
+    [Decidable (ZMod.val x < ZMod.val y)] :
     (if (encF x).toNat < (encF y).toNat then 1 else 0 : Word 64) =
       encB (decide (ZMod.val x < ZMod.val y)) := by
   rw [encF_toNat hpw, encF_toNat hpw]
-  by_cases h : ZMod.val x < ZMod.val y <;> simp [h, encB]
+  by_cases h : ZMod.val x < ZMod.val y
+  · rw [decide_eq_true h, if_pos h]
+    rfl
+  · rw [decide_eq_false h, if_neg h]
+    rfl
 
 /-- Shift-and-mask extraction of bit `i` of a canonical word. -/
 private theorem encF_testBit (hpw : p * p ≤ 2 ^ 64) (x : F p) {i : ℕ}
@@ -520,6 +533,679 @@ theorem compileExpr_sim :
       rw [hp₃ q (by omega), hp₂ q (by omega), hp₁ q hq]
     · rw [hbf₃, hbf₂, hbf₁]
     · rw [hcp₃, hcp₂, hcp₁]
+
+include hp2
+
+/-! ### The mutual scalar-compiler induction
+
+`compileF_sim` / `compileU_sim` / `compileB_sim`, by structural induction mirroring
+the mutual compilers. The context is fixed throughout: step-sort context `Γ` matching
+the reference locals (`LocalsMatch`), reference environment `env` encoded in buffer
+`0`, locals in registers `0 .. locals.size - 1`, the `mapRange` index `idx` in
+register `L`, and temporaries free from `next` (`StateEnc`).
+
+The `unusedSectionVars` linter is disabled for the block: `compileU_sim` uses the
+included section hypotheses only through the mutual recursion (which the linter does
+not count as a use), and `omit` cannot be applied to a single member of a `mutual`
+command. -/
+
+set_option linter.unusedSectionVars false in
+mutual
+
+/-- **Simulation for field-sorted expressions**: the code `compileF` emits for a
+compilable, environment-bounded `FExpr` runs from any state encoding the context,
+leaves the canonical word of the reference evaluation in the result register, and
+preserves registers `< next`, all buffers and all capacities. -/
+theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L : ℕ)
+    (hL : LocalsMatch Γ locals) :
+    ∀ (e : FExpr (F p)) (next : ℕ) (s : State 64),
+      FExpr.compilable Γ e = true → FExpr.envBound N e = true →
+      StateEnc envArr Γ locals idx L next s →
+      ∃ s' t d pp, Exec C (compileF (w := 64) L e next).1 s s' t d pp ∧
+        s'.regs (compileF (w := 64) L e next).2.1 =
+          encF (FExpr.eval { env, locals, idx } e) ∧
+        (∀ q, q < next → s'.regs q = s.regs q) ∧
+        s'.bufs = s.bufs ∧ s'.caps = s.caps
+  | .expr e, next, s, _, hb, hs =>
+    compileExpr_sim p hpw env N envArr henv hN e next s hb hs.1
+  | .const c, next, s, _, _, _ => by
+    simp only [compileF]
+    refine ⟨_, _, _, _, .imm, ?_,
+      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    rw [regs_setReg_self]
+    rfl
+  | .localVar i, next, s, hc, _, hs => by
+    simp only [FExpr.compilable, beq_iff_eq] at hc
+    obtain ⟨hbuf0, hszL, hLn, hlocals, hidx⟩ := hs
+    have hiΓ : i < Γ.length := by
+      by_contra hge
+      rw [List.getElem?_eq_none (by omega)] at hc
+      exact absurd hc (by simp)
+    have hlen := hL.1
+    have hi : i < locals.size := by omega
+    have hsort := hL.2 i hi
+    rw [hc] at hsort
+    rcases hx : locals[i] with x | u
+    · simp only [compileF]
+      refine ⟨_, _, _, _, .mov, ?_,
+        fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+      rw [regs_setReg_self, hlocals i hi, hx]
+      simp only [FExpr.eval, Array.getElem?_eq_getElem hi, hx, encLocal]
+    · rw [hx] at hsort
+      simp at hsort
+  | .add x y, next, s, hc, hb, hs => by
+    simp only [FExpr.compilable, Bool.and_eq_true] at hc
+    simp only [FExpr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileF (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileF_bounds L x next
+    have hbd₂ := compileF_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileF_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileF_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s₃, t₃, d₃, p₃, hex₃, hr₃, hp₃, hbf₃, hcp₃⟩ :=
+      fieldOp_exec_add (p := p) hpw (a := rx) (b := ry) (next := n₂)
+        (by omega) hbd₂.2 ((hp₂ rx hbd₁.2).trans hr₁) hr₂
+    simp only [compileF, hE₁, hE₂, fieldOp, FExpr.eval]
+    refine ⟨_, _, _, _, .seq hex₁ (.seq hex₂ hex₃), hr₃, ?_, ?_, ?_⟩
+    · intro q hq
+      rw [hp₃ q (by omega), hp₂ q (by omega), hp₁ q hq]
+    · rw [hbf₃, hbf₂, hbf₁]
+    · rw [hcp₃, hcp₂, hcp₁]
+  | .mul x y, next, s, hc, hb, hs => by
+    simp only [FExpr.compilable, Bool.and_eq_true] at hc
+    simp only [FExpr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileF (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileF_bounds L x next
+    have hbd₂ := compileF_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileF_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileF_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s₃, t₃, d₃, p₃, hex₃, hr₃, hp₃, hbf₃, hcp₃⟩ :=
+      fieldOp_exec_mul (p := p) hpw (a := rx) (b := ry) (next := n₂)
+        (by omega) hbd₂.2 ((hp₂ rx hbd₁.2).trans hr₁) hr₂
+    simp only [compileF, hE₁, hE₂, fieldOp, FExpr.eval]
+    refine ⟨_, _, _, _, .seq hex₁ (.seq hex₂ hex₃), hr₃, ?_, ?_, ?_⟩
+    · intro q hq
+      rw [hp₃ q (by omega), hp₂ q (by omega), hp₁ q hq]
+    · rw [hbf₃, hbf₂, hbf₁]
+    · rw [hcp₃, hcp₂, hcp₁]
+  | .inv x, next, s, hc, hb, hs => by
+    rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
+    have hbd₁ := compileF_bounds L x next
+    simp only [hE₁] at hbd₁
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileF_sim Γ locals idx L hL x next s hc hb hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₃, t₃, d₃, p₃, hex₃, hr₃, hp₃, hbf₃, hcp₃⟩ :=
+      invLadder_exec_inv (p := p) hp2 hpw (acc := n₁ + 1) (xr := rx) (tr := n₁)
+        (show Ne (α := ℕ) rx (n₁ + 1) by omega)
+        (show Ne (α := ℕ) n₁ (n₁ + 1) by omega)
+        (s := (s₁.setReg n₁ (BitVec.ofNat 64 p)).setReg (n₁ + 1) 1)
+        (v := FExpr.eval { env, locals, idx } x)
+        (by rw [regs_setReg_self]; exact encF_one.symm)
+        (by rw [regs_setReg_ne _ _ (show Ne (α := ℕ) rx (n₁ + 1) by omega),
+              regs_setReg_ne _ _ (show Ne (α := ℕ) rx n₁ by omega)]
+            exact hr₁)
+        (by rw [regs_setReg_ne _ _ (show Ne (α := ℕ) n₁ (n₁ + 1) by omega),
+              regs_setReg_self])
+    simp only [compileF, hE₁, FExpr.eval]
+    refine ⟨_, _, _, _, .seq hex₁ (.seq .imm (.seq .imm hex₃)), hr₃, ?_, ?_, ?_⟩
+    · intro q hq
+      rw [hp₃ q (show q ≠ n₁ + 1 by omega),
+        regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega),
+        regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
+    · rw [hbf₃, bufs_setReg, bufs_setReg, hbf₁]
+    · rw [hcp₃, caps_setReg, caps_setReg, hcp₁]
+  | .ofU64 n, next, s, hc, hb, hs => by
+    rcases hE₁ : compileU (w := 64) L n next with ⟨cn, rn, n₁⟩
+    have hbd₁ := compileU_bounds L n next
+    simp only [hE₁] at hbd₁
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL n next s hc hb hs
+    simp only [hE₁] at hex₁ hr₁
+    simp only [compileF, hE₁, FExpr.eval, FiniteField.fromNat_F]
+    refine ⟨_, _, _, _, .seq hex₁ (.seq .imm .bin), ?_, ?_, ?_, ?_⟩
+    · rw [regs_setReg_self]
+      simp only [BinOp.eval]
+      rw [regs_setReg_ne _ _ (show Ne (α := ℕ) rn n₁ by omega), hr₁, regs_setReg_self]
+      exact encU_umod_p hpw _
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega),
+        regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
+    · rw [bufs_setReg, bufs_setReg, hbf₁]
+    · rw [caps_setReg, caps_setReg, hcp₁]
+  | .ite c t e, next, s, hc, hb, hs => by
+    simp only [FExpr.compilable, Bool.and_eq_true] at hc
+    simp only [FExpr.envBound, Bool.and_eq_true] at hb
+    obtain ⟨⟨hcc, hct⟩, hce⟩ := hc
+    obtain ⟨⟨hbc, hbt⟩, hbe⟩ := hb
+    rcases hE₁ : compileB (w := 64) L c next with ⟨cc, rc, n₁⟩
+    rcases hE₂ : compileF (w := 64) L t n₁ with ⟨ct, rt, n₂⟩
+    rcases hE₃ : compileF (w := 64) L e n₂ with ⟨ce, re, n₃⟩
+    have hbd₁ := compileB_bounds L c next
+    have hbd₂ := compileF_bounds L t n₁
+    have hbd₃ := compileF_bounds L e n₂
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    simp only [hE₃] at hbd₃
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileB_sim Γ locals idx L hL c next s hcc hbc hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileF_sim Γ locals idx L hL t n₁ s₁ hct hbt
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s₃, t₃, d₃, p₃, hex₃, hr₃, hp₃, hbf₃, hcp₃⟩ :=
+      compileF_sim Γ locals idx L hL e n₂ s₂ hce hbe
+        (StateEnc_mono p envArr (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+          hbd₂.1 hp₂ hbf₂)
+    simp only [hE₃] at hex₃ hr₃
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      select_glue hbd₁.2 hbd₂.1 hbd₂.2 hbd₃.1 hbd₃.2 hbd₁.1
+        hex₁ hex₂ hex₃ hr₁ hr₂ hr₃ hp₁ hp₂ hp₃ hbf₁ hbf₂ hbf₃ hcp₁ hcp₂ hcp₃
+    simp only [compileF, hE₁, hE₂, hE₃, selectCode, FExpr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr', apply_ite encF]
+  | .listGet .., _, _, hc, _, _ => by simp [FExpr.compilable] at hc
+  | .dataGet .., _, _, hc, _, _ => by simp [FExpr.compilable] at hc
+  | .hintGet .., _, _, hc, _, _ => by simp [FExpr.compilable] at hc
+
+/-- **Simulation for u64-sorted expressions**: as `compileF_sim`, with the result
+register holding the bit pattern of the reference `UInt64` evaluation. -/
+theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L : ℕ)
+    (hL : LocalsMatch Γ locals) :
+    ∀ (e : U64Expr (F p)) (next : ℕ) (s : State 64),
+      U64Expr.compilable Γ e = true → U64Expr.envBound N e = true →
+      StateEnc envArr Γ locals idx L next s →
+      ∃ s' t d pp, Exec C (compileU (w := 64) L e next).1 s s' t d pp ∧
+        s'.regs (compileU (w := 64) L e next).2.1 =
+          encU (U64Expr.eval { env, locals, idx } e) ∧
+        (∀ q, q < next → s'.regs q = s.regs q) ∧
+        s'.bufs = s.bufs ∧ s'.caps = s.caps
+  | .const n, next, s, _, _, _ => by
+    simp only [compileU]
+    refine ⟨_, _, _, _, .imm, ?_,
+      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    rw [regs_setReg_self]
+    simp only [U64Expr.eval]
+    exact encU_ofNat_toNat n
+  | .val x, next, s, hc, hb, hs => by
+    rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
+    have hbd₁ := compileF_bounds L x next
+    simp only [hE₁] at hbd₁
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileF_sim Γ locals idx L hL x next s hc hb hs
+    simp only [hE₁] at hex₁ hr₁
+    simp only [compileU, hE₁, U64Expr.eval, FiniteField.val_F]
+    refine ⟨_, _, _, _, .seq hex₁ .mov, ?_, ?_, ?_, ?_⟩
+    · rw [regs_setReg_self, hr₁]
+      exact (encU_ofNat_val _).symm
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
+    · rw [bufs_setReg, hbf₁]
+    · rw [caps_setReg, hcp₁]
+  | .idx, next, s, _, _, hs => by
+    obtain ⟨hbuf0, hszL, hLn, hlocals, hidx⟩ := hs
+    simp only [compileU]
+    refine ⟨_, _, _, _, .mov, ?_,
+      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    rw [regs_setReg_self, hidx]
+    simp only [U64Expr.eval]
+    exact encU_ofNat idx
+  | .localVar i, next, s, hc, _, hs => by
+    simp only [U64Expr.compilable, beq_iff_eq] at hc
+    obtain ⟨hbuf0, hszL, hLn, hlocals, hidx⟩ := hs
+    have hiΓ : i < Γ.length := by
+      by_contra hge
+      rw [List.getElem?_eq_none (by omega)] at hc
+      exact absurd hc (by simp)
+    have hlen := hL.1
+    have hi : i < locals.size := by omega
+    have hsort := hL.2 i hi
+    rw [hc] at hsort
+    rcases hx : locals[i] with x | u
+    · rw [hx] at hsort
+      simp at hsort
+    · simp only [compileU]
+      refine ⟨_, _, _, _, .mov, ?_,
+        fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+      rw [regs_setReg_self, hlocals i hi, hx]
+      simp only [U64Expr.eval, Array.getElem?_eq_getElem hi, hx, encLocal]
+  | .add x y, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileU, hE₁, hE₂, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encU_add _ _
+  | .mul x y, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileU, hE₁, hE₂, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encU_mul _ _
+  | .div x y, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileU, hE₁, hE₂, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encU_div _ _
+  | .mod x y, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileU, hE₁, hE₂, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encU_mod _ _
+  | .land x y, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileU, hE₁, hE₂, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encU_and _ _
+  | .lor x y, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileU, hE₁, hE₂, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encU_or _ _
+  | .lxor x y, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileU, hE₁, hE₂, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encU_xor _ _
+  | .shiftL x y, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      shift_glue hbd₁.2 hbd₂.1 hbd₂.2 hbd₁.1
+        hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileU, hE₁, hE₂, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encU_shiftL _ _
+  | .shiftR x y, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      shift_glue hbd₁.2 hbd₂.1 hbd₂.2 hbd₁.1
+        hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileU, hE₁, hE₂, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encU_shiftR _ _
+  | .ite c t e, next, s, hc, hb, hs => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    simp only [U64Expr.envBound, Bool.and_eq_true] at hb
+    obtain ⟨⟨hcc, hct⟩, hce⟩ := hc
+    obtain ⟨⟨hbc, hbt⟩, hbe⟩ := hb
+    rcases hE₁ : compileB (w := 64) L c next with ⟨cc, rc, n₁⟩
+    rcases hE₂ : compileU (w := 64) L t n₁ with ⟨ct, rt, n₂⟩
+    rcases hE₃ : compileU (w := 64) L e n₂ with ⟨ce, re, n₃⟩
+    have hbd₁ := compileB_bounds L c next
+    have hbd₂ := compileU_bounds L t n₁
+    have hbd₃ := compileU_bounds L e n₂
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    simp only [hE₃] at hbd₃
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileB_sim Γ locals idx L hL c next s hcc hbc hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL t n₁ s₁ hct hbt
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s₃, t₃, d₃, p₃, hex₃, hr₃, hp₃, hbf₃, hcp₃⟩ :=
+      compileU_sim Γ locals idx L hL e n₂ s₂ hce hbe
+        (StateEnc_mono p envArr (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+          hbd₂.1 hp₂ hbf₂)
+    simp only [hE₃] at hex₃ hr₃
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      select_glue hbd₁.2 hbd₂.1 hbd₂.2 hbd₃.1 hbd₃.2 hbd₁.1
+        hex₁ hex₂ hex₃ hr₁ hr₂ hr₃ hp₁ hp₂ hp₃ hbf₁ hbf₂ hbf₃ hcp₁ hcp₂ hcp₃
+    simp only [compileU, hE₁, hE₂, hE₃, selectCode, U64Expr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr', apply_ite encU]
+
+/-- **Simulation for conditions**: as `compileF_sim`, with the result register
+holding the `{0, 1}` word of the reference `Bool` evaluation. -/
+theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L : ℕ)
+    (hL : LocalsMatch Γ locals) :
+    ∀ (e : BExpr (F p)) (next : ℕ) (s : State 64),
+      BExpr.compilable Γ e = true → BExpr.envBound N e = true →
+      StateEnc envArr Γ locals idx L next s →
+      ∃ s' t d pp, Exec C (compileB (w := 64) L e next).1 s s' t d pp ∧
+        s'.regs (compileB (w := 64) L e next).2.1 =
+          encB (BExpr.eval { env, locals, idx } e) ∧
+        (∀ q, q < next → s'.regs q = s.regs q) ∧
+        s'.bufs = s.bufs ∧ s'.caps = s.caps
+  | .true, next, s, _, _, _ => by
+    simp only [compileB]
+    refine ⟨_, _, _, _, .imm, ?_,
+      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    rw [regs_setReg_self]
+    rfl
+  | .false, next, s, _, _, _ => by
+    simp only [compileB]
+    refine ⟨_, _, _, _, .imm, ?_,
+      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    rw [regs_setReg_self]
+    rfl
+  | .feq x y, next, s, hc, hb, hs => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    simp only [BExpr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileF (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileF_bounds L x next
+    have hbd₂ := compileF_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileF_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileF_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileB, hE₁, hE₂, BExpr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encB_feq hpw _ _
+  | .neq x y, next, s, hc, hb, hs => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    simp only [BExpr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileB, hE₁, hE₂, BExpr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encB_ueq _ _
+  | .lt x y, next, s, hc, hb, hs => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    simp only [BExpr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileU_bounds L x next
+    have hbd₂ := compileU_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileB, hE₁, hE₂, BExpr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encB_ult _ _
+  | .flt x y, next, s, hc, hb, hs => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    simp only [BExpr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileF (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileF_bounds L x next
+    have hbd₂ := compileF_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileF_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileF_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileB, hE₁, hE₂, BExpr.eval, FiniteField.val_F]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encB_flt hpw _ _
+  | .bit x i, next, s, hc, hb, hs => by
+    simp only [BExpr.compilable, Bool.and_eq_true, decide_eq_true_eq] at hc
+    rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
+    have hbd₁ := compileF_bounds L x next
+    simp only [hE₁] at hbd₁
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileF_sim Γ locals idx L hL x next s hc.1 hb hs
+    simp only [hE₁] at hex₁ hr₁
+    simp only [compileB, hE₁, BExpr.eval, FiniteField.val_F]
+    refine ⟨_, _, _, _, .seq hex₁ (.seq .imm (.seq .bin (.seq .imm .bin))),
+      ?_, ?_, ?_, ?_⟩
+    · simp only [regs_setReg_self, BinOp.eval,
+        regs_setReg_ne _ _ (show Ne (α := ℕ) (n₁ + 1) (n₁ + 2) by omega),
+        regs_setReg_ne _ _ (show Ne (α := ℕ) rx n₁ by omega), hr₁]
+      exact encF_testBit hpw _ hc.2
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ n₁ + 3 by omega),
+        regs_setReg_ne _ _ (show q ≠ n₁ + 2 by omega),
+        regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega),
+        regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
+    · rw [bufs_setReg, bufs_setReg, bufs_setReg, bufs_setReg, hbf₁]
+    · rw [caps_setReg, caps_setReg, caps_setReg, caps_setReg, hcp₁]
+  | .not b, next, s, hc, hb, hs => by
+    rcases hE₁ : compileB (w := 64) L b next with ⟨cb, rb, n₁⟩
+    have hbd₁ := compileB_bounds L b next
+    simp only [hE₁] at hbd₁
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileB_sim Γ locals idx L hL b next s hc hb hs
+    simp only [hE₁] at hex₁ hr₁
+    simp only [compileB, hE₁, BExpr.eval]
+    refine ⟨_, _, _, _, .seq hex₁ .un, ?_, ?_, ?_, ?_⟩
+    · rw [regs_setReg_self, hr₁]
+      simp only [UnOp.eval]
+      exact encB_not _
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
+    · rw [bufs_setReg, hbf₁]
+    · rw [caps_setReg, hcp₁]
+  | .and x y, next, s, hc, hb, hs => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    simp only [BExpr.envBound, Bool.and_eq_true] at hb
+    rcases hE₁ : compileB (w := 64) L x next with ⟨cx, rx, n₁⟩
+    rcases hE₂ : compileB (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
+    have hbd₁ := compileB_bounds L x next
+    have hbd₂ := compileB_bounds L y n₁
+    simp only [hE₁] at hbd₁
+    simp only [hE₂] at hbd₂
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileB_sim Γ locals idx L hL x next s hc.1 hb.1 hs
+    simp only [hE₁] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileB_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2
+        (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    simp only [hE₂] at hex₂ hr₂
+    obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
+      binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    simp only [compileB, hE₁, hE₂, BExpr.eval]
+    refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
+    rw [hr']
+    simp only [BinOp.eval]
+    exact encB_and _ _
+
+end
 
 end Sim
 
