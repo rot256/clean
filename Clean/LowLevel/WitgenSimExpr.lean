@@ -82,6 +82,96 @@ private theorem encU_shiftR (a b : UInt64) :
   rw [BitVec.toNat_ushiftRight, toNat_and_63, encU_toNat, encU_toNat, encU_toNat,
     UInt64.toNat_shiftRight]
 
+/-- The condition-word `&&&` is boolean conjunction. -/
+private theorem encB_and (a b : Bool) : encB a &&& encB b = encB (a && b) := by
+  cases a <;> cases b <;> decide
+
+/-- The `isZero` of a condition word is the negated condition's word. -/
+private theorem encB_not (b : Bool) :
+    (if encB b = 0 then 1 else 0 : Word 64) = encB (!b) := by
+  cases b <;> decide
+
+/-- The `eq`-comparison of bit-pattern words decides u64 equality. -/
+private theorem encB_ueq (x y : UInt64) :
+    (if encU x = encU y then 1 else 0 : Word 64) = encB (decide (x = y)) := by
+  by_cases h : x = y
+  · simp [h, encB]
+  · rw [if_neg fun he => h (encU_injective he)]
+    simp [h, encB]
+
+/-- The `ult`-comparison of bit-pattern words decides u64 `<`. -/
+private theorem encB_ult (x y : UInt64) :
+    (if (encU x).toNat < (encU y).toNat then 1 else 0 : Word 64) =
+      encB (decide (x < y)) := by
+  rw [encU_toNat, encU_toNat]
+  by_cases h : x < y
+  · rw [if_pos (UInt64.lt_iff_toNat_lt.mp h)]
+    simp [h, encB]
+  · rw [if_neg fun hlt => h (UInt64.lt_iff_toNat_lt.mpr hlt)]
+    simp [h, encB]
+
+/-- The word of a u64 constant, baked as a `toNat` immediate, is its bit pattern. -/
+private theorem encU_ofNat_toNat (n : UInt64) : BitVec.ofNat 64 n.toNat = encU n := by
+  apply BitVec.eq_of_toNat_eq
+  rw [encU_toNat, BitVec.toNat_ofNat]
+  exact Nat.mod_eq_of_lt n.toBitVec.isLt
+
+/-- The `idx` register's word reads back as the u64 of the index. -/
+private theorem encU_ofNat (n : ℕ) : BitVec.ofNat 64 n = encU (UInt64.ofNat n) := rfl
+
+section FieldWord
+
+variable {p : ℕ} [Fact p.Prime]
+
+/-- The canonical word of `1`. -/
+private theorem encF_one : encF (1 : F p) = 1 := by
+  have h2 := (Fact.out : p.Prime).two_le
+  apply BitVec.eq_of_toNat_eq
+  rw [encF, BitVec.toNat_ofNat, ZMod.val_one_eq_one_mod,
+    Nat.mod_eq_of_lt (show 1 < p by omega)]
+  rfl
+
+omit [Fact p.Prime] in
+/-- The `val` bridge: the bit pattern of `UInt64.ofNat x.val` is the canonical word
+(both sides truncate `val x` mod `2 ^ 64`). -/
+private theorem encU_ofNat_val (x : F p) :
+    encU (UInt64.ofNat (ZMod.val x)) = encF x := rfl
+
+/-- The `ofU64` bridge: reducing a bit-pattern word by the modulus immediate gives
+the canonical word of the `ℕ`-cast. -/
+private theorem encU_umod_p (hpw : p * p ≤ 2 ^ 64) (u : UInt64) :
+    encU u % BitVec.ofNat 64 p = encF ((u.toNat : F p)) := by
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_umod, encU_toNat, BitVec.toNat_ofNat,
+    Nat.mod_eq_of_lt (p_lt_two_pow_64 hpw), encF_toNat hpw, ZMod.val_natCast]
+
+/-- The `eq`-comparison of canonical words decides field equality. -/
+private theorem encB_feq (hpw : p * p ≤ 2 ^ 64) (x y : F p) :
+    (if encF x = encF y then 1 else 0 : Word 64) = encB (decide (x = y)) := by
+  by_cases h : x = y
+  · simp [h, encB]
+  · rw [if_neg fun he => h (encF_injective hpw he)]
+    simp [h, encB]
+
+/-- The `ult`-comparison of canonical words decides the field-value `<`. -/
+private theorem encB_flt (hpw : p * p ≤ 2 ^ 64) (x y : F p) :
+    (if (encF x).toNat < (encF y).toNat then 1 else 0 : Word 64) =
+      encB (decide (ZMod.val x < ZMod.val y)) := by
+  rw [encF_toNat hpw, encF_toNat hpw]
+  by_cases h : ZMod.val x < ZMod.val y <;> simp [h, encB]
+
+/-- Shift-and-mask extraction of bit `i` of a canonical word. -/
+private theorem encF_testBit (hpw : p * p ≤ 2 ^ 64) (x : F p) {i : ℕ}
+    (hi : i < 2 ^ 64) :
+    encF x >>> (BitVec.ofNat 64 i).toNat &&& 1 = encB ((ZMod.val x).testBit i) := by
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_and, BitVec.toNat_ushiftRight, encF_toNat hpw, BitVec.toNat_ofNat,
+    Nat.mod_eq_of_lt hi, Nat.shiftRight_eq_div_pow, Nat.testBit_eq_decide_div_mod_eq]
+  rcases Nat.mod_two_eq_zero_or_one (ZMod.val x / 2 ^ i) with h | h <;>
+    simp [Nat.and_one_is_mod, h, encB]
+
+end FieldWord
+
 /-! ## Register bounds of the scalar compilers
 
 The scalar compilers thread `next` monotonically and allocate the result register
@@ -96,7 +186,7 @@ whose relation is elaborated at type `Reg` is invisible to it. -/
 theorem compileExpr_bounds {F : Type} [FiniteField F] :
     ∀ (e : Expression F) (next : ℕ),
     next ≤ (compileExpr (w := 64) e next).2.2 ∧
-      ((compileExpr (w := 64) e next).2.1 : ℕ) < ((compileExpr (w := 64) e next).2.2 : ℕ)
+      LT.lt (α := ℕ) (compileExpr (w := 64) e next).2.1 (compileExpr (w := 64) e next).2.2
   | .var _, next => ⟨Nat.le_add_right next 2, Nat.lt_succ_self (next + 1)⟩
   | .const _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .add x y, next =>
@@ -114,7 +204,7 @@ mutual
 theorem compileF_bounds {F : Type} [FiniteField F] (L : ℕ) :
     ∀ (e : FExpr F) (next : ℕ),
     next ≤ (compileF (w := 64) L e next).2.2 ∧
-      ((compileF (w := 64) L e next).2.1 : ℕ) < ((compileF (w := 64) L e next).2.2 : ℕ)
+      LT.lt (α := ℕ) (compileF (w := 64) L e next).2.1 (compileF (w := 64) L e next).2.2
   | .expr e, next => compileExpr_bounds e next
   | .const _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .localVar _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
@@ -147,7 +237,7 @@ theorem compileF_bounds {F : Type} [FiniteField F] (L : ℕ) :
 theorem compileU_bounds {F : Type} [FiniteField F] (L : ℕ) :
     ∀ (e : U64Expr F) (next : ℕ),
     next ≤ (compileU (w := 64) L e next).2.2 ∧
-      ((compileU (w := 64) L e next).2.1 : ℕ) < ((compileU (w := 64) L e next).2.2 : ℕ)
+      LT.lt (α := ℕ) (compileU (w := 64) L e next).2.1 (compileU (w := 64) L e next).2.2
   | .const _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .val x, next =>
     have h₁ := compileF_bounds L x next
@@ -202,7 +292,7 @@ theorem compileU_bounds {F : Type} [FiniteField F] (L : ℕ) :
 theorem compileB_bounds {F : Type} [FiniteField F] (L : ℕ) :
     ∀ (e : BExpr F) (next : ℕ),
     next ≤ (compileB (w := 64) L e next).2.2 ∧
-      ((compileB (w := 64) L e next).2.1 : ℕ) < ((compileB (w := 64) L e next).2.2 : ℕ)
+      LT.lt (α := ℕ) (compileB (w := 64) L e next).2.1 (compileB (w := 64) L e next).2.2
   | .true, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .false, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
   | .feq x y, next =>
@@ -261,7 +351,7 @@ theorem StateEnc_mono {Γ : List VSort} {locals : Array (F p ⊕ UInt64)}
 /-- Composition glue for the two-operand one-instruction nodes: run two compiled
 subexpressions, then one `bin` on their result registers into `n₂`. -/
 private theorem binop_glue {C : CostModel} {op : BinOp} {c₁ c₂ : Stmt 64}
-    {next n₁ n₂ r₁ r₂ : ℕ} (hr₁n : r₁ < n₁) (h₁₂ : n₁ ≤ n₂) (hr₂n : r₂ < n₂)
+    {next n₁ n₂ r₁ r₂ : ℕ} (hr₁n : r₁ < n₁) (h₁₂ : n₁ ≤ n₂)
     (hn₁ : next ≤ n₁)
     {s s₁ s₂ : State 64} {t₁ t₂ : ℕ} {d₁ d₂ pp₁ pp₂ : ℤ} {v₁ v₂ : Word 64}
     (hex₁ : Exec C c₁ s s₁ t₁ d₁ pp₁) (hex₂ : Exec C c₂ s₁ s₂ t₂ d₂ pp₂)
@@ -279,6 +369,71 @@ private theorem binop_glue {C : CostModel} {op : BinOp} {c₁ c₂ : Stmt 64}
     rw [regs_setReg_ne _ _ (show q ≠ n₂ by omega), hp₂ q (by omega), hp₁ q hq]
   · rw [bufs_setReg, hb₂, hb₁]
   · rw [caps_setReg, hc₂, hc₁]
+
+/-- Composition glue for the strict `ite` nodes: run the compiled condition and both
+compiled branches, then the branch-free mask select on their result registers. -/
+private theorem select_glue {C : CostModel} {c₁ c₂ c₃ : Stmt 64}
+    {next n₁ n₂ n₃ rc rt re : ℕ}
+    (hrc : rc < n₁) (h₁₂ : n₁ ≤ n₂) (hrt : rt < n₂) (h₂₃ : n₂ ≤ n₃) (hre : re < n₃)
+    (hn₁ : next ≤ n₁)
+    {s s₁ s₂ s₃ : State 64} {t₁ t₂ t₃ : ℕ} {d₁ d₂ d₃ pp₁ pp₂ pp₃ : ℤ}
+    {cv : Bool} {v₁ v₂ : Word 64}
+    (hex₁ : Exec C c₁ s s₁ t₁ d₁ pp₁) (hex₂ : Exec C c₂ s₁ s₂ t₂ d₂ pp₂)
+    (hex₃ : Exec C c₃ s₂ s₃ t₃ d₃ pp₃)
+    (hc : s₁.regs rc = encB cv) (ht : s₂.regs rt = v₁) (he : s₃.regs re = v₂)
+    (hp₁ : ∀ q, q < next → s₁.regs q = s.regs q)
+    (hp₂ : ∀ q, q < n₁ → s₂.regs q = s₁.regs q)
+    (hp₃ : ∀ q, q < n₂ → s₃.regs q = s₂.regs q)
+    (hb₁ : s₁.bufs = s.bufs) (hb₂ : s₂.bufs = s₁.bufs) (hb₃ : s₃.bufs = s₂.bufs)
+    (hc₁ : s₁.caps = s.caps) (hc₂ : s₂.caps = s₁.caps) (hc₃ : s₃.caps = s₂.caps) :
+    ∃ s' t d pp,
+      Exec C (c₁ ;; c₂ ;; c₃ ;; (selectCode (w := 64) rc rt re n₃).1) s s' t d pp ∧
+        s'.regs (n₃ + 4) = (if cv then v₁ else v₂) ∧
+        (∀ q, q < next → s'.regs q = s.regs q) ∧
+        s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  obtain ⟨s₄, t₄, d₄, p₄, hex₄, hr₄, hp₄, hb₄, hc₄⟩ :=
+    selectCode_exec (C := C) (flag := rc) (ra := rt) (rb := re) (next := n₃)
+      (by omega) (by omega) hre
+      ((hp₃ rc (by omega)).trans ((hp₂ rc hrc).trans hc))
+      ((hp₃ rt hrt).trans ht) he
+  refine ⟨_, _, _, _, .seq hex₁ (.seq hex₂ (.seq hex₃ hex₄)), hr₄, ?_, ?_, ?_⟩
+  · intro q hq
+    rw [hp₄ q (by omega), hp₃ q (by omega), hp₂ q (by omega), hp₁ q hq]
+  · rw [hb₄, hb₃, hb₂, hb₁]
+  · rw [hc₄, hc₃, hc₂, hc₁]
+
+/-- Composition glue for the u64 shift nodes: run two compiled subexpressions, then
+the mask immediate, the mask `and`, and the shift instruction. -/
+private theorem shift_glue {C : CostModel} {op : BinOp} {c₁ c₂ : Stmt 64}
+    {next n₁ n₂ r₁ r₂ : ℕ} (hr₁n : r₁ < n₁) (h₁₂ : n₁ ≤ n₂) (hr₂n : r₂ < n₂)
+    (hn₁ : next ≤ n₁)
+    {s s₁ s₂ : State 64} {t₁ t₂ : ℕ} {d₁ d₂ pp₁ pp₂ : ℤ} {v₁ v₂ : Word 64}
+    (hex₁ : Exec C c₁ s s₁ t₁ d₁ pp₁) (hex₂ : Exec C c₂ s₁ s₂ t₂ d₂ pp₂)
+    (hv₁ : s₁.regs r₁ = v₁) (hv₂ : s₂.regs r₂ = v₂)
+    (hp₁ : ∀ q, q < next → s₁.regs q = s.regs q)
+    (hp₂ : ∀ q, q < n₁ → s₂.regs q = s₁.regs q)
+    (hb₁ : s₁.bufs = s.bufs) (hb₂ : s₂.bufs = s₁.bufs)
+    (hc₁ : s₁.caps = s.caps) (hc₂ : s₂.caps = s₁.caps) :
+    ∃ s' t d pp,
+      Exec C (c₁ ;; c₂ ;; .imm n₂ (BitVec.ofNat 64 (64 - 1)) ;;
+          .bin .and (n₂ + 1) r₂ n₂ ;; .bin op (n₂ + 2) r₁ (n₂ + 1)) s s' t d pp ∧
+        s'.regs (n₂ + 2) = op.eval v₁ (v₂ &&& BitVec.ofNat 64 (64 - 1)) ∧
+        (∀ q, q < next → s'.regs q = s.regs q) ∧
+        s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  refine ⟨_, _, _, _, .seq hex₁ (.seq hex₂ (.seq .imm (.seq .bin .bin))), ?_, ?_, ?_, ?_⟩
+  · rw [regs_setReg_self,
+      regs_setReg_ne _ _ (show r₁ ≠ n₂ + 1 by omega),
+      regs_setReg_ne _ _ (show r₁ ≠ n₂ by omega), hp₂ r₁ hr₁n, hv₁,
+      regs_setReg_self]
+    simp only [BinOp.eval]
+    rw [regs_setReg_ne _ _ (show r₂ ≠ n₂ by omega), hv₂, regs_setReg_self]
+  · intro q hq
+    rw [regs_setReg_ne _ _ (show q ≠ n₂ + 2 by omega),
+      regs_setReg_ne _ _ (show q ≠ n₂ + 1 by omega),
+      regs_setReg_ne _ _ (show q ≠ n₂ by omega),
+      hp₂ q (by omega), hp₁ q hq]
+  · rw [bufs_setReg, bufs_setReg, bufs_setReg, hb₂, hb₁]
+  · rw [caps_setReg, caps_setReg, caps_setReg, hc₂, hc₁]
 
 include hpw henv hN
 
