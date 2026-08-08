@@ -246,7 +246,11 @@ code writing only registers in `[next, next')`. Every node allocates its result
 register fresh. -/
 
 /-- `d ← (a ⟨op⟩ b) % p` with `d := next + 1` and the modulus immediate in
-`t := next`: the single-word field reduction pattern of `Fp.addCode`/`Fp.mulCode`. -/
+`t := next`: the single-word field reduction pattern of `Fp.addCode`/`Fp.mulCode`
+(`Field.lean`) — at `.add`/`.mul` the emitted instructions are identical to those
+gadgets at `d := next + 1`, `t := next`. Kept as its own generic-`op` definition
+(rather than delegating via a match on `op`) so that it stays `rfl`-transparent at a
+*variable* `op`, which `fieldOp_straightAF` and the `WitgenCost` proofs rely on. -/
 def fieldOp (p : ℕ) (op : BinOp) (a b : Reg) (next : Reg) : Stmt w × Reg × Reg :=
   (.imm next (BitVec.ofNat w p) ;;
      .bin op (next + 1) a b ;;
@@ -266,7 +270,13 @@ def selectCode (flag t e : Reg) (next : Reg) : Stmt w × Reg × Reg :=
 /-- Straight-line Fermat ladder: `acc ← acc ^ (p - 2) * ...` — precisely, MSB-first
 square-and-multiply over the generation-time bits of `p - 2`, with `x` the base
 register, `t` holding the modulus immediate, and `acc` initialized to `1` by the
-caller. Every step reduces mod `p` via `umod`. -/
+caller. Every step reduces mod `p` via `umod`.
+
+Duplicates the builder-level ladder `Fp.inv` (`Field.lean`), which iterates
+`(p - 2).bits.reverse` instead of `(toBits (p - 2)).reverse` and has no correctness
+proof (executable checks only). This copy is the one with a verified spec —
+`invLadder_exec_inv` in `WitgenSim.lean` — so the two are kept separate: different
+bit representations and different proof stacks. -/
 def invLadder (p : ℕ) (acc x t : Reg) : Stmt w :=
   (toBits (p - 2)).reverse.foldl (init := .skip) fun c b =>
     let sq := c ;; .bin .mul acc acc acc ;; .bin .umod acc acc t

@@ -49,13 +49,16 @@ namespace Fp
 `t` is a scratch register for the modulus; it must be distinct from the operands and
 the destination (`d` may alias `a` or `b` freely). -/
 
-/-- `d ← (a + b) mod p`. Three instructions, any modulus. -/
+/-- `d ← (a + b) mod p`. Three instructions, any modulus. The witgen compiler's
+`WitgenCompile.fieldOp` emits this same pattern (at `d := next + 1`, `t := next`),
+kept separate there to remain `rfl`-transparent at a generic `BinOp`. -/
 def addCode (p : ℕ) (d a b t : Reg) : Stmt w :=
   .imm t (BitVec.ofNat w p) ;;
   .bin .add d a b ;;
   .bin .umod d d t
 
-/-- `d ← (a * b) mod p`. Three instructions, any modulus with `p * p ≤ 2 ^ w`. -/
+/-- `d ← (a * b) mod p`. Three instructions, any modulus with `p * p ≤ 2 ^ w`.
+Same pattern as `WitgenCompile.fieldOp` at `.mul` — see the note on `addCode`. -/
 def mulCode (p : ℕ) (d a b t : Reg) : Stmt w :=
   .imm t (BitVec.ofNat w p) ;;
   .bin .mul d a b ;;
@@ -135,7 +138,12 @@ The exponent bits are computed *by Lean at generation time* — the emitted code
 straight-line (`~2·log p` multiply/reduce steps, a per-field constant), so it is
 constant-time by `straight_time_eq` and allocation-free by `allocFree_space`.
 Correctness spec (the exponentiation-ladder argument, requiring `p` prime) is
-deferred; `Examples.lean` checks it executably. -/
+deferred; `Examples.lean` checks it executably.
+
+The witgen compiler has its own copy of this ladder, `WitgenCompile.invLadder`
+(built over `WitgenCompile.toBits` rather than `Nat.bits`): that one carries the
+correctness proof — `invLadder_exec_inv` in `WitgenSim.lean` — while this builder
+version keeps the executable check only. -/
 def inv {p : ℕ} (x : Fp w p) : Build w (Fp w p) := do
   let t ← Build.var (Exp.lit (BitVec.ofNat w p))
   let acc ← Build.var 1
