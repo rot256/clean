@@ -1,5 +1,6 @@
 import Clean.Circuit.WitnessIR
 import Clean.Caliper.Core
+import Clean.Gadgets.IsZeroField
 import Clean.Utils.Primes
 
 /-!
@@ -636,9 +637,14 @@ private def timeCost {m : ℕ} (prog : WitgenIR Fb m) : Option ℕ := do
   let (_, t, _, _) ← run CostModel.unit 100000 code testState
   pure t
 
-/-- Test 1 — the `IsZeroField` witness shape: exercises `expr`, `const`, `feq`,
+/-- Test 1 — the `IsZeroField` witness program: exercises `expr`, `const`, `feq`,
 `ite` (mask select) and `inv` (Fermat ladder). `var ⟨0⟩ = 3`, so the output is
-`3⁻¹ mod pBabybear = 1342177281`. -/
+`3⁻¹ mod pBabybear = 1342177281`.
+
+This is not merely an imitation of the circuit's witness shape: it *is* the witness
+IR embedded in the bundled Clean circuit `Gadgets.IsZeroField.circuit`, extracted
+from the circuit's operations and proved identical in
+`isZeroCircuitIR_eq_testIsZero` below. -/
 def testIsZero : WitgenIR Fb 1 :=
   .ir [] (.lit #v[.ite (.feq (.expr (var ⟨0⟩)) (.const 0)) (.const 0)
     (.inv (.expr (var ⟨0⟩)))])
@@ -702,6 +708,76 @@ def testMapRange : WitgenIR Fb 4 :=
   WitgenIR.compilable testIsZero && WitgenIR.compilable testXor &&
   WitgenIR.compilable testSteps && WitgenIR.compilable testBits &&
   WitgenIR.compilable testMapRange
+
+/-! ### `testIsZero` is the circuit's own witness program
+
+Clean circuits embed their witness generators structurally: every `witness` in the
+circuit DSL becomes a `FlatOperation.witness m ir` carrying its `WitgenIR` payload.
+So the witness program of `Gadgets.IsZeroField.circuit` can be *extracted* from the
+circuit — `FlatOperation.witnessOperations` collects the payloads — and compared
+against `testIsZero`.
+
+Instantiation: the circuit's `main` is applied to the input `var ⟨0⟩` (the
+environment's cell 0 — exactly the cell `testIsZero` reads) at offset 1, so its
+first witness (`z`) writes the next cell, 1. The extracted first payload does not
+depend on the offset at all; only the second, the `<==` copy generator for the
+output `b` (which mentions `z` as `var ⟨1⟩`), does.
+
+`isZeroCircuit_witnessIRs` shows the circuit has exactly **two** witness operations
+(local witness length 2, not 1):
+
+* the `z ← witness (.ite (x =? 0) 0 x⁻¹)` payload — this is `isZeroCircuitIR`, and
+  it is **definitionally equal** to `testIsZero` (`isZeroCircuitIR_eq_testIsZero`,
+  by `rfl`), so every theorem about `testIsZero` — `compile_testIsZero`,
+  `isZeroCompiled_staticTime_unit`, `isZero_witgen_correct_140` — is literally a
+  theorem about the circuit's own witness program;
+* the trivial copy generator `isZeroCircuitCopyIR` from `let b <== 1 - x * z`,
+  which just evaluates the circuit expression `1 - x * z` over already-known cells.
+
+The circuit's two equality assertions (`Gadgets.Equality` subcircuits) carry no
+witnesses, which `isZeroCircuit_witnessIRs` also certifies: the extracted list has
+exactly these two entries. -/
+
+/-- The flat operations of the bundled Clean circuit `Gadgets.IsZeroField.circuit`,
+instantiated at input `var ⟨0⟩` (environment cell 0) and offset 1 (the first
+witness writes cell 1). -/
+def isZeroCircuitOps : List (FlatOperation Fb) :=
+  ((Gadgets.IsZeroField.circuit.main (var ⟨0⟩)).operations 1).toFlat
+
+/-- The witness-IR payload of the circuit's first witness operation — the
+`z ← witness (.ite (x =? 0) 0 x⁻¹)` step of `Gadgets.IsZeroField.circuit` —
+extracted via `FlatOperation.witnessOperations`. -/
+def isZeroCircuitIR : WitgenIR Fb 1 :=
+  match FlatOperation.witnessOperations isZeroCircuitOps with
+  | ⟨1, ir⟩ :: _ => ir
+  | _ => .ir [] (.lit #v[.const 0])
+
+/-- **The extracted IR is the test IR** — definitionally. This is the anchor that
+turns the `testIsZero` headline theorems into statements about the Clean circuit
+`Gadgets.IsZeroField.circuit`: circuit → extracted IR (this theorem) → `compile`
+(`compile_testIsZero`) → 140 unit steps, correct output
+(`isZero_witgen_correct_140_circuit` in `WitgenSimIR.lean`). -/
+theorem isZeroCircuitIR_eq_testIsZero : isZeroCircuitIR = testIsZero := rfl
+
+/-- The circuit's only other witness generator: the `<==` copy for the output
+`b`, evaluating the circuit expression `1 - x * z` (with `x = var ⟨0⟩` the input
+and `z = var ⟨1⟩` the first witness). -/
+def isZeroCircuitCopyIR : WitgenIR Fb 1 :=
+  .ofFExpr (.expr (1 - var ⟨0⟩ * var ⟨1⟩))
+
+/-- **The complete witness-generation story of the circuit**: `testIsZero` (= the
+extracted `isZeroCircuitIR`) and the trivial copy generator are *all* the witness
+generators of `Gadgets.IsZeroField.circuit` — its equality-assertion subcircuits
+carry none. -/
+theorem isZeroCircuit_witnessIRs :
+    FlatOperation.witnessOperations isZeroCircuitOps
+      = [⟨1, testIsZero⟩, ⟨1, isZeroCircuitCopyIR⟩] := by
+  simp only [isZeroCircuitOps, Gadgets.IsZeroField.circuit, circuit_norm, testIsZero,
+    FormalAssertion.toSubcircuit, Gadgets.Equality.circuit, Gadgets.Equality.main,
+    Circuit.forEach.operations_eq, NestedOperations.toFlat,
+    FlatOperation.witnessOperations, Operations.toFlat, List.ofFn_succ, List.ofFn_zero,
+    Operations.toNested, List.flatMap_cons, List.flatMap_nil, List.append_nil]
+  rfl
 
 /-! ### Trust-boundary regression tests
 

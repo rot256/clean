@@ -401,10 +401,11 @@ The numbers below are *syntactic constants* of the compiled code — `#eval`ed h
 certified by `native_decide`, and equal to the running time of **every** execution
 by `compileIR_time_eq`. -/
 
-/-- The compiled `IsZeroField` witness program (test 1 of `WitgenCompile.lean`),
-produced by the **checked entry point** `compile` (environment size `N = 1`: the
-program reads only `var ⟨0⟩`): mask-select `ite`, `feq`, and the unrolled Fermat
-inverse ladder over BabyBear. -/
+/-- The compiled `IsZeroField` witness program (test 1 of `WitgenCompile.lean` —
+provably the witness IR of the Clean circuit `Gadgets.IsZeroField.circuit` itself,
+see `isZeroCircuitIR_eq_testIsZero`), produced by the **checked entry point**
+`compile` (environment size `N = 1`: the program reads only `var ⟨0⟩`):
+mask-select `ite`, `feq`, and the unrolled Fermat inverse ladder over BabyBear. -/
 def isZeroCompiled : Stmt 64 :=
   (compile 1 testIsZero).getD .skip
 

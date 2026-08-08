@@ -26,9 +26,11 @@ built on the scalar-expression simulation of `Clean/Caliper/WitgenSimExpr.lean`.
   field side conditions and the environment encoding remain.
 
 Combined with phase 2 (`WitgenCost.lean`: exact static running time, space ≤ output
-length), this yields end-to-end corollaries like `isZero_witgen_correct_140`: the
-compiled BabyBear `IsZeroField` witness program computes the correct encoded witness
-output in exactly 140 unit steps with peak memory 1 word.
+length), this yields end-to-end corollaries like `isZero_witgen_correct_140` and its
+circuit-anchored form `isZero_witgen_correct_140_circuit`: the compiled witness
+program of the BabyBear `Gadgets.IsZeroField.circuit` — extracted from the circuit
+itself, see `isZeroCircuitIR_eq_testIsZero` in `WitgenCompile.lean` — computes the
+correct encoded witness output in exactly 140 unit steps with peak memory 1 word.
 
 Everything is at the compiler's design point: word size `w = 64`, `F = F p` for a
 prime `p` with `2 < p` and `p * p ≤ 2 ^ 64`, environment length `N ≤ 2 ^ 64`, and
@@ -748,5 +750,32 @@ theorem isZero_witgen_correct_lt_2_40 {env : ProverEnvironment (F pBabybear)}
   obtain ⟨s', d, pp, hex, hout, hpp⟩ :=
     isZero_witgen_correct_140 henv hN0 hN hbuf
   exact ⟨s', 140, d, pp, hex, hout, by omega, by omega⟩
+
+/-- **The circuit-anchored headline**: the same statement with the witness program
+*derived from the Clean circuit* rather than named as a test fixture. The full
+derivation chain, every link machine-checked:
+
+1. **circuit → IR**: Clean circuits embed their witness generators structurally;
+   `isZeroCircuitIR` (`WitgenCompile.lean`) is the payload of the first witness
+   operation of `Gadgets.IsZeroField.circuit` at input `var ⟨0⟩`, extracted by
+   `FlatOperation.witnessOperations`, and `isZeroCircuitIR = testIsZero` holds
+   definitionally (`isZeroCircuitIR_eq_testIsZero`);
+2. **IR → code**: the checked entry point accepts it and emits `isZeroCompiled`
+   (`compile_testIsZero`, generalized over `N` inside `isZero_witgen_correct_140`);
+3. **code → 140 steps, correct output**: every execution takes exactly 140 unit
+   steps and ends with buffer `1` holding the encoded `WitgenIR.eval` output, with
+   peak memory ≤ 1 word (`compile_sim` + `compile_time_eq` + `compile_space_le`).
+
+The circuit's only other witness generator is the trivial `<==` copy for its output
+`b` (`isZeroCircuit_witnessIRs` lists both, and that they are all of them). -/
+theorem isZero_witgen_correct_140_circuit {env : ProverEnvironment (F pBabybear)}
+    {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
+    (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
+    (hbuf : s.bufs 0 = envArr) :
+    ∃ s' d pp, Exec .unit isZeroCompiled s s' 140 d pp ∧
+      s'.bufs 1 = (Vector.map encF (isZeroCircuitIR.eval env)).toArray ∧
+      pp ≤ 1 := by
+  rw [isZeroCircuitIR_eq_testIsZero]
+  exact isZero_witgen_correct_140 henv hN0 hN hbuf
 
 end Caliper.WitgenCompile
