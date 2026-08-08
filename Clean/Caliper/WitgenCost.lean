@@ -19,7 +19,8 @@ Consequences, all machine-checked below:
 * **Time is a syntactic constant.** By `Exec.straight_time_eq`, every execution of a
   compiled program takes *exactly* `code.staticTime C` time units — an *equality*,
   not just a bound, and the same number on every input (`witgenTime_data_independent`;
-  this is also a constant-time / side-channel statement). `staticTime` is a plain
+  data-independence of the abstract time counter — an ingredient of a constant-time
+  argument, not by itself a side-channel guarantee). `staticTime` is a plain
   recursive function of the syntax, so the cost of a concrete compiled program is a
   numeral: computable by `#eval` and certified by evaluation (`native_decide` here,
   since `toBits` is well-founded recursion, which `rfl` cannot reduce) — no
@@ -279,11 +280,27 @@ theorem compileIR_straight {L : ℕ} {m : ℕ} {ir : WitgenIR F m} {code : Stmt 
 
 /-! ## The time theorem: witgen time is a syntactic constant -/
 
-/-- The running time of a compiled witness program, read off the *syntax* by
-`Stmt.staticTime` — no execution involved. By `witgenTime_eq` below, this is the
-exact running time of every execution. -/
+/-- The running time of a compiled witness program, read off the *syntax* by the
+partial static clock `Stmt.staticTime?` — no execution involved. Compiled code is
+always straight-line (`compileIR_straight`), so `staticTime?` always succeeds on it
+and this agrees with mapping the raw `staticTime` over the compiler's output
+(`witgenTime_eq_map_staticTime`); routing through `staticTime?` keeps the definition
+honest by construction — it cannot produce a number for code containing loops. By
+`witgenTime_eq` below, whatever number it computes is the exact running time of
+every execution. -/
 def witgenTime (C : CostModel) (L : ℕ) {m : ℕ} (ir : WitgenIR F m) : Option ℕ :=
-  (compileIR (w := w) L ir).map (·.staticTime C)
+  (compileIR (w := w) L ir).bind (·.staticTime? C)
+
+/-- Everything `compileIR` emits is straight-line, so the partial static clock
+never fails on it: `witgenTime` is the raw `staticTime` mapped over the compiler's
+output. -/
+theorem witgenTime_eq_map_staticTime {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} :
+    witgenTime (w := w) C L ir = (compileIR (w := w) L ir).map (·.staticTime C) := by
+  cases hc : compileIR (w := w) L ir with
+  | none => simp only [witgenTime, hc, Option.bind_none, Option.map_none]
+  | some code =>
+    simp only [witgenTime, hc, Option.bind_some, Option.map_some,
+      (compileIR_straight hc).staticTime?_eq]
 
 /-- **Compiled witgen code runs in exactly its static time**, on every input: an
 equality, not just an upper bound. -/
@@ -298,12 +315,13 @@ theorem witgenTime_eq {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code : St
     {T : ℕ} {s s' : State w} {t : ℕ} {d p : ℤ}
     (hc : compileIR (w := w) L ir = some code)
     (hT : witgenTime (w := w) C L ir = some T) (hx : Exec C code s s' t d p) : t = T := by
-  rw [witgenTime, hc, Option.map_some, Option.some.injEq] at hT
-  rw [compileIR_time_eq hc hx, hT]
+  rw [witgenTime, hc, Option.bind_some] at hT
+  exact hx.staticTime?_time_eq hT
 
 /-- **Data independence**: two executions of the same compiled witness program take
-the same time, whatever their inputs. (This is also a constant-time / side-channel
-statement.) -/
+the same time, whatever their inputs. (Data-independence of the abstract time
+counter — an ingredient of a constant-time argument, not by itself a side-channel
+guarantee.) -/
 theorem witgenTime_data_independent {C : CostModel} {L m : ℕ} {ir : WitgenIR F m}
     {code : Stmt w} {s₁ s₁' s₂ s₂' : State w} {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
     (hc : compileIR (w := w) L ir = some code)
@@ -360,8 +378,9 @@ theorem compile_time_eq {C : CostModel} {N m : ℕ} {ir : WitgenIR F m} {code : 
   hx.straight_time_eq (compile_straight hc)
 
 /-- **Checked-entry data independence**: two executions of code accepted by
-`compile` take the same time, whatever their inputs (a constant-time / side-channel
-statement). -/
+`compile` take the same time, whatever their inputs (data-independence of the
+abstract time counter — an ingredient of a constant-time argument, not by itself a
+side-channel guarantee). -/
 theorem compile_time_data_independent {C : CostModel} {N m : ℕ} {ir : WitgenIR F m}
     {code : Stmt 64} {s₁ s₁' s₂ s₂' : State 64} {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
     (hc : compile N ir = some code)
