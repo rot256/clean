@@ -101,12 +101,14 @@ def U64Expr.compilable (Γ : List VSort) : U64Expr F → Bool
   | .ite c t e =>
     BExpr.compilable Γ c && U64Expr.compilable Γ t && U64Expr.compilable Γ e
 
-/-- Compilability of a condition against the step-sort context `Γ`. -/
+/-- Compilability of a condition against the step-sort context `Γ`. The `bit` index
+must fit in a word: it is baked into the code as a 64-bit shift-amount immediate, so
+an index `≥ 2 ^ 64` would wrap while `Nat.testBit` does not. -/
 def BExpr.compilable (Γ : List VSort) : BExpr F → Bool
   | .true | .false => true
   | .feq x y | .flt x y => FExpr.compilable Γ x && FExpr.compilable Γ y
   | .neq x y | .lt x y => U64Expr.compilable Γ x && U64Expr.compilable Γ y
-  | .bit x _ => FExpr.compilable Γ x
+  | .bit x i => FExpr.compilable Γ x && decide (i < 2 ^ 64)
   | .not b => BExpr.compilable Γ b
   | .and x y => BExpr.compilable Γ x && BExpr.compilable Γ y
 
