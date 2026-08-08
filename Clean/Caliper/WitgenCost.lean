@@ -493,4 +493,78 @@ theorem isZero_witgen_space_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
   have := isZero_witgen_peak_le_one h
   omega
 
+/-! ### The complete witness list: pricing the copy generator, and the circuit total
+
+`isZeroCircuit_witnessIRs` (`WitgenCompile.lean`) certifies that `testIsZero` and the
+`<==` copy generator `isZeroCircuitCopyIR` are *all* the witness generators of the
+Clean circuit `Gadgets.IsZeroField.circuit`. Pricing the copy generator too turns the
+per-generator numbers into a certified total for the circuit's complete witness
+list. -/
+
+/-- The compiled `<==` copy generator of the `IsZeroField` circuit
+(`isZeroCircuitCopyIR`, evaluating the circuit expression `1 - x * z`), produced by
+the checked entry point. Environment size `N = 2`: at its offset 2, the generator
+reads cells 0 (the input `x`) and 1 (the first witness `z`). -/
+def isZeroCopyCompiled : Stmt 64 :=
+  (compile 2 isZeroCircuitCopyIR).getD .skip
+
+/-- On the copy generator all checks pass, so the checked entry agrees with the raw
+compiler at `L = 0`. -/
+private theorem compile_isZeroCopy_eq_compileIR :
+    compile 2 isZeroCircuitCopyIR = compileIR (w := 64) 0 isZeroCircuitCopyIR :=
+  compile_eq_compileIR_of_checks (by native_decide) (by native_decide)
+    (by norm_num) (by norm_num)
+
+/-- The checked entry point accepts the copy generator and emits
+`isZeroCopyCompiled`. -/
+theorem compile_isZeroCircuitCopyIR :
+    compile 2 isZeroCircuitCopyIR = some isZeroCopyCompiled := by
+  show _ = some ((compile 2 isZeroCircuitCopyIR).getD .skip)
+  rw [compile_isZeroCopy_eq_compileIR]
+  rfl
+
+/-- The static time of the compiled copy generator under the uniform cost model:
+19 unit steps (two environment reads, the constants, and two field
+multiply/add-reduce patterns — no inverse ladder). -/
+theorem isZeroCopyCompiled_staticTime_unit :
+    isZeroCopyCompiled.staticTime .unit = 19 := by
+  native_decide
+
+/-- The static time of the compiled copy generator under the calibrated
+`CostModel.cycles` table. -/
+theorem isZeroCopyCompiled_staticTime_cycles :
+    isZeroCopyCompiled.staticTime .cycles = 169 := by
+  native_decide
+
+/- The same numbers through the checked entry point and the honest partial clock
+(`staticTime?` cannot quote a number for loopy code). -/
+/-- info: some (some 19) -/
+#guard_msgs in #eval (compile 2 isZeroCircuitCopyIR).map (·.staticTime? CostModel.unit)
+
+/-- info: some (some 169) -/
+#guard_msgs in #eval (compile 2 isZeroCircuitCopyIR).map (·.staticTime? CostModel.cycles)
+
+/-- **Total witgen time for the complete `IsZeroField` circuit**: by
+`isZeroCircuit_witnessIRs`, `testIsZero` (= the extracted `isZeroCircuitIR`) and
+`isZeroCircuitCopyIR` are *all* the witness generators of
+`Gadgets.IsZeroField.circuit`, so executing their two compiled programs is the
+circuit's entire witness generation — and it takes exactly `140 + 19 = 159` unit
+steps, on every input. -/
+theorem isZeroCircuit_total_witgen_time_unit {s₁ s₁' s₂ s₂' : State 64}
+    {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
+    (h₁ : Exec .unit isZeroCompiled s₁ s₁' t₁ d₁ p₁)
+    (h₂ : Exec .unit isZeroCopyCompiled s₂ s₂' t₂ d₂ p₂) :
+    t₁ + t₂ = 140 + 19 := by
+  rw [compile_time_eq compile_testIsZero h₁, isZeroCompiled_staticTime_unit,
+    compile_time_eq compile_isZeroCircuitCopyIR h₂, isZeroCopyCompiled_staticTime_unit]
+
+/-- The `< 2 ^ 40` corollary for the circuit's complete witness generation. -/
+theorem isZeroCircuit_total_witgen_lt_2_40 {s₁ s₁' s₂ s₂' : State 64}
+    {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
+    (h₁ : Exec .unit isZeroCompiled s₁ s₁' t₁ d₁ p₁)
+    (h₂ : Exec .unit isZeroCopyCompiled s₂ s₂' t₂ d₂ p₂) :
+    t₁ + t₂ < 2 ^ 40 := by
+  have := isZeroCircuit_total_witgen_time_unit h₁ h₂
+  omega
+
 end Caliper.WitgenCompile
