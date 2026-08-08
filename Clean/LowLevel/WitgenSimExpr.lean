@@ -238,12 +238,12 @@ variable {C : CostModel} (p : ℕ) [Fact p.Prime] (hp2 : 2 < p) (hpw : p * p ≤
 variable (env : ProverEnvironment (F p)) (N : ℕ) (envArr : Array (Word 64))
 variable (henv : EnvEnc env N envArr) (hN : N ≤ 2 ^ 64)
 
+omit [Fact p.Prime] in
 /-- `StateEnc` is stable under raising the temporary bound and executing code that
 preserves the registers below the old bound and the buffers. This is the threading
 step of the compiler induction: after running a compiled subexpression (which only
 writes registers in `[next, next')`), the state still encodes the context at the
 subexpression's returned counter. -/
-omit [Fact p.Prime] in
 theorem StateEnc_mono {Γ : List VSort} {locals : Array (F p ⊕ UInt64)}
     {idx L next next' : ℕ} {s s' : State 64}
     (hs : StateEnc envArr Γ locals idx L next s) (hle : next ≤ next')
