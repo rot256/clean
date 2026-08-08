@@ -3,6 +3,7 @@ import Clean.Caliper.Triple
 import Clean.Caliper.Builder
 import Clean.Caliper.Examples
 import Clean.Caliper.Field
+import Clean.Caliper.W64
 import Clean.Caliper.WitgenCompile
 import Clean.Caliper.WitgenCost
 import Clean.Caliper.WitgenSim
