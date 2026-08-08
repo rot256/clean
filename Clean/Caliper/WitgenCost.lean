@@ -145,8 +145,7 @@ theorem compileF_straightAF (L : ℕ) : ∀ (e : FExpr F) (next : Reg),
 theorem compileU_straightAF (L : ℕ) : ∀ (e : U64Expr F) (next : Reg),
     (compileU (w := w) L e next).1.Straight ∧ (compileU (w := w) L e next).1.AllocFree
   | .const _, _ => ⟨trivial, trivial⟩
-  | .val x, next =>
-    straightAF_seq (compileF_straightAF L x next) ⟨trivial, trivial⟩
+  | .val x, next => compileF_straightAF L x next
   | .idx, _ => ⟨trivial, trivial⟩
   | .localVar _, _ => ⟨trivial, trivial⟩
   | .add x y, next =>
@@ -452,16 +451,16 @@ theorem isZeroCompiled_staticTime_cycles : isZeroCompiled.staticTime .cycles = 2
 /-- info: some 2090 -/
 #guard_msgs in #eval (compile 1 testIsZero).map (·.staticTime CostModel.cycles)
 
-/-- info: some 13 -/
+/-- info: some 11 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testXor
 
-/-- info: some 21 -/
+/-- info: some 18 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 1 testSteps
 
 /-- info: some 45 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testBits
 
-/-- info: some 32 -/
+/-- info: some 24 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testMapRange
 
 /-- **The headline, end to end**: every execution of the compiled `IsZero` witness

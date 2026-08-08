@@ -163,8 +163,6 @@ theorem compileStep_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L :
     simp only [Step.compilable] at hc
     simp only [Step.envBound] at hb
     rcases hE : compileF (w := 64) L e (L + 1) with ⟨ce, r, n'⟩
-    have hbd := compileF_bounds L e (L + 1)
-    simp only [hE] at hbd
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileF_sim p hp2 hpw env N envArr henv hN Γ locals 0 L hL e (L + 1) s hc hb hs
     simp only [hE] at hex₁ hr₁
@@ -192,8 +190,6 @@ theorem compileStep_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L :
     simp only [Step.compilable] at hc
     simp only [Step.envBound] at hb
     rcases hE : compileU (w := 64) L e (L + 1) with ⟨ce, r, n'⟩
-    have hbd := compileU_bounds L e (L + 1)
-    simp only [hE] at hbd
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileU_sim p hp2 hpw env N envArr henv hN Γ locals 0 L hL e (L + 1) s hc hb hs
     simp only [hE] at hex₁ hr₁
@@ -290,7 +286,6 @@ private theorem compileV_lit_fold (Γ : List VSort) (locals : Array (F p ⊕ UIn
     intro c₀ s s₀ t₀ d₀ p₀ hex₀ hc hb hs hcap
     simp only [List.all_cons, Bool.and_eq_true] at hc hb
     simp only [List.length_cons] at hcap
-    have hbd := compileF_bounds L e (L + 1)
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileF_sim p hp2 hpw env N envArr henv hN Γ locals 0 L hL e (L + 1) s₀
         hc.1 hb.1 hs
@@ -336,7 +331,6 @@ private theorem compileV_mapRange_fold (Γ : List VSort) (locals : Array (F p �
   | cons i is ih =>
     intro c₀ s s₀ t₀ d₀ p₀ j₀ hex₀ hs hcap
     simp only [List.length_cons] at hcap
-    have hbd := compileF_bounds L body (L + 1)
     have hs₁ : StateEnc envArr Γ locals i L (L + 1)
         (s₀.setReg L (BitVec.ofNat 64 i)) := StateEnc_setIdx hs i
     obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
@@ -581,7 +575,8 @@ theorem compileV_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L : �
     simp only [VExpr.compilable] at hc
     simp only [VExpr.envBound] at hb
     rcases hE : compileF (w := 64) L x (L + 1) with ⟨cx, rx, n₁⟩
-    have hbd := compileF_bounds L x (L + 1)
+    have hbd := compileF_bounds L (Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1) x (L + 1)
+      hc (Nat.lt_succ_self L)
     simp only [hE] at hbd
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileF_sim p hp2 hpw env N envArr henv hN Γ locals 0 L hL x (L + 1) s hc hb hs

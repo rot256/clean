@@ -241,9 +241,17 @@ decreasing_by omega
 /-! ## Scalar compilation
 
 All scalar compilers thread an explicit `next` free-register counter and return
-`(code, resultReg, next')` with `next ≤ next'`, `resultReg < next'`, and the emitted
-code writing only registers in `[next, next')`. Every node allocates its result
-register fresh. -/
+`(code, resultReg, next')` with `next ≤ next'` and the emitted code writing only
+registers in `[next, next')`. Operation nodes allocate their result register fresh
+(so `resultReg < next'` with `next ≤ resultReg`); pure register references —
+`localVar`, `idx`, and the representation-identical wrapper `U64Expr.val` — emit
+**no code at all** and return the source register directly (`resultReg < next'`
+still holds for compilable expressions, since locals live below `L < next`). This
+copy elision is sound because expression code only ever writes registers `≥ next`:
+locals `0 .. L-1` and the idx register `L` are stable while any enclosing
+expression is still being evaluated (only `compileStep`'s binding `.mov` writes
+locals, and only `mapRange`'s per-iteration `.imm L i` writes the idx register —
+each iteration's uses of the index complete before the next one is loaded). -/
 
 /-- `d ← (a ⟨op⟩ b) % p` with `d := next + 1` and the modulus immediate in
 `t := next`: the single-word field reduction pattern of `Fp.addCode`/`Fp.mulCode`
@@ -312,7 +320,7 @@ The excluded constructors (`listGet`, `dataGet`, `hintGet`) compile to a dead
 def compileF (L : ℕ) : FExpr F → Reg → Stmt w × Reg × Reg
   | .expr e, next => compileExpr e next
   | .const c, next => (.imm next (BitVec.ofNat w (FiniteField.val c)), next, next + 1)
-  | .localVar i, next => (.mov next i, next, next + 1)
+  | .localVar i, next => (.skip, i, next)
   | .add x y, next =>
     let (cx, rx, n₁) := compileF L x next
     let (cy, ry, n₂) := compileF L y n₁
@@ -351,11 +359,11 @@ semantics (the machine's shifts zero out for amounts `≥ w`). -/
 def compileU (L : ℕ) : U64Expr F → Reg → Stmt w × Reg × Reg
   | .const n, next => (.imm next (BitVec.ofNat w n.toNat), next, next + 1)
   | .val x, next =>
-    -- the canonical word of `x` *is* the value (`val x < p ≤ 2 ^ w`)
-    let (cx, rx, n₁) := compileF L x next
-    (cx ;; .mov n₁ rx, n₁, n₁ + 1)
-  | .idx, next => (.mov next L, next, next + 1)
-  | .localVar i, next => (.mov next i, next, next + 1)
+    -- the canonical word of `x` *is* the value (`val x < p ≤ 2 ^ w`): no conversion,
+    -- no copy — the child's result register is the result
+    compileF L x next
+  | .idx, next => (.skip, L, next)
+  | .localVar i, next => (.skip, i, next)
   | .add x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁

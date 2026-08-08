@@ -187,9 +187,16 @@ end FieldWord
 
 /-! ## Register bounds of the scalar compilers
 
-The scalar compilers thread `next` monotonically and allocate the result register
-below the returned counter: `next ≤ next'` and `resultReg < next'`. These purely
-syntactic facts justify the operand-survival steps of the simulation proofs.
+The scalar compilers thread `next` monotonically and return the result register
+below the returned counter: `next ≤ next'` and `resultReg < next'`. Since the
+copy-eliding arms (`localVar`, `idx`, and the wrapper `U64Expr.val`) return a
+local register (`< Γ.length`) or the idx register `L` directly instead of a fresh
+temporary, the result bound is no longer purely syntactic: it needs the expression
+to be *compilable* against `Γ` (so `localVar` indices are `< Γ.length`), the
+step-sort context bounded by the local-register count (`Γ.length ≤ L`), and
+temporaries above the idx register (`L < next`) — exactly the facts `LocalsMatch`
+and `StateEnc` provide in the simulation proofs. These bounds justify the
+operand-survival steps of the simulation proofs.
 
 All register inequalities here (and in the simulation theorems below) are stated
 over bare `ℕ`, not the `Reg` abbrev: `omega` does not unfold `Reg`, so a hypothesis
@@ -213,127 +220,189 @@ theorem compileExpr_bounds {F : Type} [FiniteField F] :
 
 mutual
 
-/-- `compileF` register bounds: `next ≤ next'` and `resultReg < next'`. -/
-theorem compileF_bounds {F : Type} [FiniteField F] (L : ℕ) :
-    ∀ (e : FExpr F) (next : ℕ),
+/-- `compileF` register bounds: for compilable expressions (with `Γ.length ≤ L`
+and `L < next`), `next ≤ next'` and `resultReg < next'`. -/
+theorem compileF_bounds {F : Type} [FiniteField F] {Γ : List VSort} (L : ℕ)
+    (hΓ : Γ.length ≤ L) :
+    ∀ (e : FExpr F) (next : ℕ), FExpr.compilable Γ e = true →
+      LT.lt (α := ℕ) L next →
     next ≤ (compileF (w := 64) L e next).2.2 ∧
       LT.lt (α := ℕ) (compileF (w := 64) L e next).2.1 (compileF (w := 64) L e next).2.2
-  | .expr e, next => compileExpr_bounds e next
-  | .const _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
-  | .localVar _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
-  | .add x y, next =>
-    have h₁ := compileF_bounds L x next
-    have h₂ := compileF_bounds L y (compileF (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_add_right _ 2)), Nat.lt_succ_self _⟩
-  | .mul x y, next =>
-    have h₁ := compileF_bounds L x next
-    have h₂ := compileF_bounds L y (compileF (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_add_right _ 2)), Nat.lt_succ_self _⟩
-  | .inv x, next =>
-    have h₁ := compileF_bounds L x next
-    ⟨Nat.le_trans h₁.1 (Nat.le_add_right _ 2), Nat.lt_succ_self _⟩
-  | .ofU64 n, next =>
-    have h₁ := compileU_bounds L n next
-    ⟨Nat.le_trans h₁.1 (Nat.le_add_right _ 2), Nat.lt_succ_self _⟩
-  | .ite c t e, next =>
-    have h₁ := compileB_bounds L c next
-    have h₂ := compileF_bounds L t (compileB (w := 64) L c next).2.2
-    have h₃ := compileF_bounds L e
-      (compileF (w := 64) L t (compileB (w := 64) L c next).2.2).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_trans h₃.1 (Nat.le_add_right _ 5))),
+  | .expr e, next, _, _ => compileExpr_bounds e next
+  | .const _, next, _, _ => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
+  | .localVar i, next, hc, hLn => by
+    simp only [FExpr.compilable, beq_iff_eq] at hc
+    have hi : i < Γ.length := by
+      by_contra hge
+      rw [List.getElem?_eq_none (by omega)] at hc
+      exact absurd hc (by simp)
+    exact ⟨Nat.le_refl next, show LT.lt (α := ℕ) i next by omega⟩
+  | .add x y, next, hc, hLn => by
+    simp only [FExpr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileF_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileF_bounds L hΓ y (compileF (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_add_right _ 2)),
       Nat.lt_succ_self _⟩
-  | .listGet .., next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
-  | .dataGet .., next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
-  | .hintGet .., next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
+  | .mul x y, next, hc, hLn => by
+    simp only [FExpr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileF_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileF_bounds L hΓ y (compileF (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_add_right _ 2)),
+      Nat.lt_succ_self _⟩
+  | .inv x, next, hc, hLn =>
+    have h₁ := compileF_bounds L hΓ x next hc hLn
+    ⟨Nat.le_trans h₁.1 (Nat.le_add_right _ 2), Nat.lt_succ_self _⟩
+  | .ofU64 n, next, hc, hLn =>
+    have h₁ := compileU_bounds L hΓ n next hc hLn
+    ⟨Nat.le_trans h₁.1 (Nat.le_add_right _ 2), Nat.lt_succ_self _⟩
+  | .ite c t e, next, hc, hLn => by
+    simp only [FExpr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileB_bounds L hΓ c next hc.1.1 hLn
+    have h₂ := compileF_bounds L hΓ t (compileB (w := 64) L c next).2.2 hc.1.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    have h₃ := compileF_bounds L hΓ e
+      (compileF (w := 64) L t (compileB (w := 64) L c next).2.2).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn (Nat.le_trans h₁.1 h₂.1))
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_trans h₃.1
+      (Nat.le_add_right _ 5))), Nat.lt_succ_self _⟩
+  | .listGet .., next, _, _ => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
+  | .dataGet .., next, _, _ => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
+  | .hintGet .., next, _, _ => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
 
-/-- `compileU` register bounds: `next ≤ next'` and `resultReg < next'`. -/
-theorem compileU_bounds {F : Type} [FiniteField F] (L : ℕ) :
-    ∀ (e : U64Expr F) (next : ℕ),
+/-- `compileU` register bounds: for compilable expressions (with `Γ.length ≤ L`
+and `L < next`), `next ≤ next'` and `resultReg < next'`. -/
+theorem compileU_bounds {F : Type} [FiniteField F] {Γ : List VSort} (L : ℕ)
+    (hΓ : Γ.length ≤ L) :
+    ∀ (e : U64Expr F) (next : ℕ), U64Expr.compilable Γ e = true →
+      LT.lt (α := ℕ) L next →
     next ≤ (compileU (w := 64) L e next).2.2 ∧
       LT.lt (α := ℕ) (compileU (w := 64) L e next).2.1 (compileU (w := 64) L e next).2.2
-  | .const _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
-  | .val x, next =>
-    have h₁ := compileF_bounds L x next
-    ⟨Nat.le_trans h₁.1 (Nat.le_succ _), Nat.lt_succ_self _⟩
-  | .idx, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
-  | .localVar _, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
-  | .add x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .mul x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .div x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .mod x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .land x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .lor x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .lxor x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .shiftL x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_add_right _ 3)), Nat.lt_succ_self _⟩
-  | .shiftR x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_add_right _ 3)), Nat.lt_succ_self _⟩
-  | .ite c t e, next =>
-    have h₁ := compileB_bounds L c next
-    have h₂ := compileU_bounds L t (compileB (w := 64) L c next).2.2
-    have h₃ := compileU_bounds L e
-      (compileU (w := 64) L t (compileB (w := 64) L c next).2.2).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_trans h₃.1 (Nat.le_add_right _ 5))),
+  | .const _, next, _, _ => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
+  | .val x, next, hc, hLn => compileF_bounds L hΓ x next hc hLn
+  | .idx, next, _, hLn => ⟨Nat.le_refl next, hLn⟩
+  | .localVar i, next, hc, hLn => by
+    simp only [U64Expr.compilable, beq_iff_eq] at hc
+    have hi : i < Γ.length := by
+      by_contra hge
+      rw [List.getElem?_eq_none (by omega)] at hc
+      exact absurd hc (by simp)
+    exact ⟨Nat.le_refl next, show LT.lt (α := ℕ) i next by omega⟩
+  | .add x y, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .mul x y, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .div x y, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .mod x y, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .land x y, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .lor x y, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .lxor x y, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .shiftL x y, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_add_right _ 3)),
       Nat.lt_succ_self _⟩
+  | .shiftR x y, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_add_right _ 3)),
+      Nat.lt_succ_self _⟩
+  | .ite c t e, next, hc, hLn => by
+    simp only [U64Expr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileB_bounds L hΓ c next hc.1.1 hLn
+    have h₂ := compileU_bounds L hΓ t (compileB (w := 64) L c next).2.2 hc.1.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    have h₃ := compileU_bounds L hΓ e
+      (compileU (w := 64) L t (compileB (w := 64) L c next).2.2).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn (Nat.le_trans h₁.1 h₂.1))
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_trans h₃.1
+      (Nat.le_add_right _ 5))), Nat.lt_succ_self _⟩
 
-/-- `compileB` register bounds: `next ≤ next'` and `resultReg < next'`. -/
-theorem compileB_bounds {F : Type} [FiniteField F] (L : ℕ) :
-    ∀ (e : BExpr F) (next : ℕ),
+/-- `compileB` register bounds: for compilable expressions (with `Γ.length ≤ L`
+and `L < next`), `next ≤ next'` and `resultReg < next'`. -/
+theorem compileB_bounds {F : Type} [FiniteField F] {Γ : List VSort} (L : ℕ)
+    (hΓ : Γ.length ≤ L) :
+    ∀ (e : BExpr F) (next : ℕ), BExpr.compilable Γ e = true →
+      LT.lt (α := ℕ) L next →
     next ≤ (compileB (w := 64) L e next).2.2 ∧
       LT.lt (α := ℕ) (compileB (w := 64) L e next).2.1 (compileB (w := 64) L e next).2.2
-  | .true, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
-  | .false, next => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
-  | .feq x y, next =>
-    have h₁ := compileF_bounds L x next
-    have h₂ := compileF_bounds L y (compileF (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .neq x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .lt x y, next =>
-    have h₁ := compileU_bounds L x next
-    have h₂ := compileU_bounds L y (compileU (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .flt x y, next =>
-    have h₁ := compileF_bounds L x next
-    have h₂ := compileF_bounds L y (compileF (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
-  | .bit x _, next =>
-    have h₁ := compileF_bounds L x next
-    ⟨Nat.le_trans h₁.1 (Nat.le_add_right _ 4), Nat.lt_succ_self _⟩
-  | .not b, next =>
-    have h₁ := compileB_bounds L b next
+  | .true, next, _, _ => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
+  | .false, next, _, _ => ⟨Nat.le_succ next, Nat.lt_succ_self next⟩
+  | .feq x y, next, hc, hLn => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileF_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileF_bounds L hΓ y (compileF (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .neq x y, next, hc, hLn => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .lt x y, next, hc, hLn => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileU_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileU_bounds L hΓ y (compileU (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .flt x y, next, hc, hLn => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileF_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileF_bounds L hΓ y (compileF (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .bit x _, next, hc, hLn => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileF_bounds L hΓ x next hc.1 hLn
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_add_right _ 4), Nat.lt_succ_self _⟩
+  | .not b, next, hc, hLn =>
+    have h₁ := compileB_bounds L hΓ b next hc hLn
     ⟨Nat.le_trans h₁.1 (Nat.le_succ _), Nat.lt_succ_self _⟩
-  | .and x y, next =>
-    have h₁ := compileB_bounds L x next
-    have h₂ := compileB_bounds L y (compileB (w := 64) L x next).2.2
-    ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
+  | .and x y, next, hc, hLn => by
+    simp only [BExpr.compilable, Bool.and_eq_true] at hc
+    have h₁ := compileB_bounds L hΓ x next hc.1 hLn
+    have h₂ := compileB_bounds L hΓ y (compileB (w := 64) L x next).2.2 hc.2
+      (Nat.lt_of_lt_of_le hLn h₁.1)
+    exact ⟨Nat.le_trans h₁.1 (Nat.le_trans h₂.1 (Nat.le_succ _)), Nat.lt_succ_self _⟩
 
 end
 
@@ -462,8 +531,10 @@ private theorem binop_sim {C : CostModel} {op : BinOp} {Γ : List VSort}
     {P₁ P₂ : Stmt 64 × ℕ × ℕ} {cx cy : Stmt 64} {rx ry n₁ n₂ : ℕ} {v₁ v₂ v : Word 64}
     (hs : StateEnc envArr Γ locals idx L next s)
     (hE₁ : P₁ = (cx, rx, n₁)) (hE₂ : P₂ = (cy, ry, n₂))
-    (hbd₁ : next ≤ P₁.2.2 ∧ LT.lt (α := ℕ) P₁.2.1 P₁.2.2)
-    (hbd₂ : n₁ ≤ P₂.2.2 ∧ LT.lt (α := ℕ) P₂.2.1 P₂.2.2)
+    (hbd₁ : LT.lt (α := ℕ) L next →
+      next ≤ P₁.2.2 ∧ LT.lt (α := ℕ) P₁.2.1 P₁.2.2)
+    (hbd₂ : LT.lt (α := ℕ) L n₁ →
+      n₁ ≤ P₂.2.2 ∧ LT.lt (α := ℕ) P₂.2.1 P₂.2.2)
     (h₁ : ∃ s' t d pp, Exec C P₁.1 s s' t d pp ∧ s'.regs P₁.2.1 = v₁ ∧
       (∀ q, q < next → s'.regs q = s.regs q) ∧ s'.bufs = s.bufs ∧ s'.caps = s.caps)
     (h₂ : ∀ s₁ : State 64, StateEnc envArr Γ locals idx L n₁ s₁ →
@@ -475,11 +546,14 @@ private theorem binop_sim {C : CostModel} {op : BinOp} {Γ : List VSort}
       s'.regs n₂ = v ∧ (∀ q, q < next → s'.regs q = s.regs q) ∧
       s'.bufs = s.bufs ∧ s'.caps = s.caps := by
   subst hE₁ hE₂
+  have hLn : LT.lt (α := ℕ) L next := hs.2.2.1
+  have hb₁ := hbd₁ hLn
+  have hb₂ := hbd₂ (Nat.lt_of_lt_of_le hLn hb₁.1)
   obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ := h₁
   obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
-    h₂ s₁ (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    h₂ s₁ (StateEnc_mono p envArr hs hb₁.1 hp₁ hbf₁)
   obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
-    binop_glue hbd₁.2 hbd₂.1 hbd₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
+    binop_glue hb₁.2 hb₂.1 hb₁.1 hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
   exact ⟨s', t', d', pp', hex', hword ▸ hr', hp', hbf', hcp'⟩
 
 omit [Fact p.Prime] in
@@ -490,8 +564,10 @@ private theorem shiftop_sim {C : CostModel} {op : BinOp} {Γ : List VSort}
     {P₁ P₂ : Stmt 64 × ℕ × ℕ} {cx cy : Stmt 64} {rx ry n₁ n₂ : ℕ} {v₁ v₂ v : Word 64}
     (hs : StateEnc envArr Γ locals idx L next s)
     (hE₁ : P₁ = (cx, rx, n₁)) (hE₂ : P₂ = (cy, ry, n₂))
-    (hbd₁ : next ≤ P₁.2.2 ∧ LT.lt (α := ℕ) P₁.2.1 P₁.2.2)
-    (hbd₂ : n₁ ≤ P₂.2.2 ∧ LT.lt (α := ℕ) P₂.2.1 P₂.2.2)
+    (hbd₁ : LT.lt (α := ℕ) L next →
+      next ≤ P₁.2.2 ∧ LT.lt (α := ℕ) P₁.2.1 P₁.2.2)
+    (hbd₂ : LT.lt (α := ℕ) L n₁ →
+      n₁ ≤ P₂.2.2 ∧ LT.lt (α := ℕ) P₂.2.1 P₂.2.2)
     (h₁ : ∃ s' t d pp, Exec C P₁.1 s s' t d pp ∧ s'.regs P₁.2.1 = v₁ ∧
       (∀ q, q < next → s'.regs q = s.regs q) ∧ s'.bufs = s.bufs ∧ s'.caps = s.caps)
     (h₂ : ∀ s₁ : State 64, StateEnc envArr Γ locals idx L n₁ s₁ →
@@ -505,11 +581,14 @@ private theorem shiftop_sim {C : CostModel} {op : BinOp} {Γ : List VSort}
         s'.regs (n₂ + 2) = v ∧ (∀ q, q < next → s'.regs q = s.regs q) ∧
         s'.bufs = s.bufs ∧ s'.caps = s.caps := by
   subst hE₁ hE₂
+  have hLn : LT.lt (α := ℕ) L next := hs.2.2.1
+  have hb₁ := hbd₁ hLn
+  have hb₂ := hbd₂ (Nat.lt_of_lt_of_le hLn hb₁.1)
   obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ := h₁
   obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
-    h₂ s₁ (StateEnc_mono p envArr hs hbd₁.1 hp₁ hbf₁)
+    h₂ s₁ (StateEnc_mono p envArr hs hb₁.1 hp₁ hbf₁)
   obtain ⟨s', t', d', pp', hex', hr', hp', hbf', hcp'⟩ :=
-    shift_glue hbd₁.2 hbd₂.1 hbd₂.2 hbd₁.1
+    shift_glue hb₁.2 hb₂.1 hb₂.2 hb₁.1
       hex₁ hex₂ hr₁ hr₂ hp₁ hp₂ hbf₁ hbf₂ hcp₁ hcp₂
   exact ⟨s', t', d', pp', hex', hword ▸ hr', hp', hbf', hcp'⟩
 
@@ -651,10 +730,10 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     have hsort := hL.2 i hi
     rw [hc] at hsort
     rcases hx : locals[i] with x | u
-    · simp only [compileF]
-      refine ⟨_, _, _, _, .mov, ?_,
-        fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
-      rw [regs_setReg_self, hlocals i hi, hx]
+    · -- no code: the local's register *is* the result
+      simp only [compileF]
+      refine ⟨s, 0, 0, 0, .skip, ?_, fun q _ => rfl, rfl, rfl⟩
+      rw [hlocals i hi, hx]
       simp only [FExpr.eval, Array.getElem?_eq_getElem hi, hx, encLocal]
     · rw [hx] at hsort
       simp at hsort
@@ -663,9 +742,11 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     simp only [FExpr.envBound, Bool.and_eq_true] at hb
     rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileF (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
-    have hbd₁ := compileF_bounds L x next
-    have hbd₂ := compileF_bounds L y n₁
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    have hbd₁ := compileF_bounds L hΓ x next hc.1 hs.2.2.1
     simp only [hE₁] at hbd₁
+    have hbd₂ := compileF_bounds L hΓ y n₁ hc.2
+      (Nat.lt_of_lt_of_le hs.2.2.1 hbd₁.1)
     simp only [hE₂] at hbd₂
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileF_sim Γ locals idx L hL x next s hc.1 hb.1 hs
@@ -688,9 +769,11 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     simp only [FExpr.envBound, Bool.and_eq_true] at hb
     rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileF (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
-    have hbd₁ := compileF_bounds L x next
-    have hbd₂ := compileF_bounds L y n₁
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    have hbd₁ := compileF_bounds L hΓ x next hc.1 hs.2.2.1
     simp only [hE₁] at hbd₁
+    have hbd₂ := compileF_bounds L hΓ y n₁ hc.2
+      (Nat.lt_of_lt_of_le hs.2.2.1 hbd₁.1)
     simp only [hE₂] at hbd₂
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileF_sim Γ locals idx L hL x next s hc.1 hb.1 hs
@@ -710,7 +793,8 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     · rw [hcp₃, hcp₂, hcp₁]
   | .inv x, next, s, hc, hb, hs => by
     rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
-    have hbd₁ := compileF_bounds L x next
+    have hbd₁ := compileF_bounds L (Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1) x next
+      hc hs.2.2.1
     simp only [hE₁] at hbd₁
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileF_sim Γ locals idx L hL x next s hc hb hs
@@ -737,7 +821,8 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     · rw [hcp₃, caps_setReg, caps_setReg, hcp₁]
   | .ofU64 n, next, s, hc, hb, hs => by
     rcases hE₁ : compileU (w := 64) L n next with ⟨cn, rn, n₁⟩
-    have hbd₁ := compileU_bounds L n next
+    have hbd₁ := compileU_bounds L (Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1) n next
+      hc hs.2.2.1
     simp only [hE₁] at hbd₁
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileU_sim Γ locals idx L hL n next s hc hb hs
@@ -761,11 +846,14 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileB (w := 64) L c next with ⟨cc, rc, n₁⟩
     rcases hE₂ : compileF (w := 64) L t n₁ with ⟨ct, rt, n₂⟩
     rcases hE₃ : compileF (w := 64) L e n₂ with ⟨ce, re, n₃⟩
-    have hbd₁ := compileB_bounds L c next
-    have hbd₂ := compileF_bounds L t n₁
-    have hbd₃ := compileF_bounds L e n₂
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    have hbd₁ := compileB_bounds L hΓ c next hcc hs.2.2.1
     simp only [hE₁] at hbd₁
+    have hbd₂ := compileF_bounds L hΓ t n₁ hct
+      (Nat.lt_of_lt_of_le hs.2.2.1 hbd₁.1)
     simp only [hE₂] at hbd₂
+    have hbd₃ := compileF_bounds L hΓ e n₂ hce
+      (Nat.lt_of_lt_of_le hs.2.2.1 (Nat.le_trans hbd₁.1 hbd₂.1))
     simp only [hE₃] at hbd₃
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileB_sim Γ locals idx L hL c next s hcc hbc hs
@@ -809,26 +897,19 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     simp only [U64Expr.eval]
     exact encU_ofNat_toNat n
   | .val x, next, s, hc, hb, hs => by
-    rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
-    have hbd₁ := compileF_bounds L x next
-    simp only [hE₁] at hbd₁
+    -- no code, no copy: the child's canonical word *is* the u64 bit pattern
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileF_sim Γ locals idx L hL x next s hc hb hs
-    simp only [hE₁] at hex₁ hr₁
-    simp only [compileU, hE₁, U64Expr.eval, FiniteField.val_F]
-    refine ⟨_, _, _, _, .seq hex₁ .mov, ?_, ?_, ?_, ?_⟩
-    · rw [regs_setReg_self, hr₁]
-      exact (encU_ofNat_val _).symm
-    · intro q hq
-      rw [regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
-    · rw [bufs_setReg, hbf₁]
-    · rw [caps_setReg, hcp₁]
+    simp only [compileU, U64Expr.eval, FiniteField.val_F]
+    refine ⟨s₁, t₁, d₁, p₁, hex₁, ?_, hp₁, hbf₁, hcp₁⟩
+    rw [hr₁]
+    exact (encU_ofNat_val _).symm
   | .idx, next, s, _, _, hs => by
+    -- no code: the idx register *is* the result
     obtain ⟨hbuf0, hszL, hLn, hlocals, hidx⟩ := hs
     simp only [compileU]
-    refine ⟨_, _, _, _, .mov, ?_,
-      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
-    rw [regs_setReg_self, hidx]
+    refine ⟨s, 0, 0, 0, .skip, ?_, fun q _ => rfl, rfl, rfl⟩
+    rw [hidx]
     simp only [U64Expr.eval]
     exact encU_ofNat idx
   | .localVar i, next, s, hc, _, hs => by
@@ -845,10 +926,10 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hx : locals[i] with x | u
     · rw [hx] at hsort
       simp at hsort
-    · simp only [compileU]
-      refine ⟨_, _, _, _, .mov, ?_,
-        fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
-      rw [regs_setReg_self, hlocals i hi, hx]
+    · -- no code: the local's register *is* the result
+      simp only [compileU]
+      refine ⟨s, 0, 0, 0, .skip, ?_, fun q _ => rfl, rfl, rfl⟩
+      rw [hlocals i hi, hx]
       simp only [U64Expr.eval, Array.getElem?_eq_getElem hi, hx, encLocal]
   | .add x y, next, s, hc, hb, hs => by
     simp only [U64Expr.compilable, Bool.and_eq_true] at hc
@@ -856,8 +937,9 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileU, hE₁, hE₂, U64Expr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encU_add _ _)
@@ -867,8 +949,9 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileU, hE₁, hE₂, U64Expr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encU_mul _ _)
@@ -878,8 +961,9 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileU, hE₁, hE₂, U64Expr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encU_div _ _)
@@ -889,8 +973,9 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileU, hE₁, hE₂, U64Expr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encU_mod _ _)
@@ -900,8 +985,9 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileU, hE₁, hE₂, U64Expr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encU_and _ _)
@@ -911,8 +997,9 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileU, hE₁, hE₂, U64Expr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encU_or _ _)
@@ -922,8 +1009,9 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileU, hE₁, hE₂, U64Expr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encU_xor _ _)
@@ -933,8 +1021,9 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileU, hE₁, hE₂, U64Expr.eval]
-    exact shiftop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact shiftop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encU_shiftL _ _)
@@ -944,8 +1033,9 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileU, hE₁, hE₂, U64Expr.eval]
-    exact shiftop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact shiftop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encU_shiftR _ _)
@@ -957,11 +1047,14 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileB (w := 64) L c next with ⟨cc, rc, n₁⟩
     rcases hE₂ : compileU (w := 64) L t n₁ with ⟨ct, rt, n₂⟩
     rcases hE₃ : compileU (w := 64) L e n₂ with ⟨ce, re, n₃⟩
-    have hbd₁ := compileB_bounds L c next
-    have hbd₂ := compileU_bounds L t n₁
-    have hbd₃ := compileU_bounds L e n₂
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    have hbd₁ := compileB_bounds L hΓ c next hcc hs.2.2.1
     simp only [hE₁] at hbd₁
+    have hbd₂ := compileU_bounds L hΓ t n₁ hct
+      (Nat.lt_of_lt_of_le hs.2.2.1 hbd₁.1)
     simp only [hE₂] at hbd₂
+    have hbd₃ := compileU_bounds L hΓ e n₂ hce
+      (Nat.lt_of_lt_of_le hs.2.2.1 (Nat.le_trans hbd₁.1 hbd₂.1))
     simp only [hE₃] at hbd₃
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileB_sim Γ locals idx L hL c next s hcc hbc hs
@@ -1012,8 +1105,9 @@ theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileF (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileB, hE₁, hE₂, BExpr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileF_bounds L x next)
-      (compileF_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileF_bounds L hΓ x next hc.1)
+      (compileF_bounds L hΓ y n₁ hc.2)
       (compileF_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileF_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encB_feq hpw _ _)
@@ -1023,8 +1117,9 @@ theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileB, hE₁, hE₂, BExpr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encB_ueq _ _)
@@ -1034,8 +1129,9 @@ theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileU (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileU (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileB, hE₁, hE₂, BExpr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L x next)
-      (compileU_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileU_bounds L hΓ x next hc.1)
+      (compileU_bounds L hΓ y n₁ hc.2)
       (compileU_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileU_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encB_ult _ _)
@@ -1045,15 +1141,17 @@ theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileF (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileB, hE₁, hE₂, BExpr.eval, FiniteField.val_F]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileF_bounds L x next)
-      (compileF_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileF_bounds L hΓ x next hc.1)
+      (compileF_bounds L hΓ y n₁ hc.2)
       (compileF_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileF_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encB_flt hpw _ _)
   | .bit x i, next, s, hc, hb, hs => by
     simp only [BExpr.compilable, Bool.and_eq_true, decide_eq_true_eq] at hc
     rcases hE₁ : compileF (w := 64) L x next with ⟨cx, rx, n₁⟩
-    have hbd₁ := compileF_bounds L x next
+    have hbd₁ := compileF_bounds L (Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1) x next
+      hc.1 hs.2.2.1
     simp only [hE₁] at hbd₁
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileF_sim Γ locals idx L hL x next s hc.1 hb hs
@@ -1074,7 +1172,8 @@ theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     · rw [caps_setReg, caps_setReg, caps_setReg, caps_setReg, hcp₁]
   | .not b, next, s, hc, hb, hs => by
     rcases hE₁ : compileB (w := 64) L b next with ⟨cb, rb, n₁⟩
-    have hbd₁ := compileB_bounds L b next
+    have hbd₁ := compileB_bounds L (Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1) b next
+      hc hs.2.2.1
     simp only [hE₁] at hbd₁
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileB_sim Γ locals idx L hL b next s hc hb hs
@@ -1094,8 +1193,9 @@ theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     rcases hE₁ : compileB (w := 64) L x next with ⟨cx, rx, n₁⟩
     rcases hE₂ : compileB (w := 64) L y n₁ with ⟨cy, ry, n₂⟩
     simp only [compileB, hE₁, hE₂, BExpr.eval]
-    exact binop_sim p envArr hs hE₁ hE₂ (compileB_bounds L x next)
-      (compileB_bounds L y n₁)
+    have hΓ : Γ.length ≤ L := Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1
+    exact binop_sim p envArr hs hE₁ hE₂ (compileB_bounds L hΓ x next hc.1)
+      (compileB_bounds L hΓ y n₁ hc.2)
       (compileB_sim Γ locals idx L hL x next s hc.1 hb.1 hs)
       (fun s₁ hs₁ => compileB_sim Γ locals idx L hL y n₁ s₁ hc.2 hb.2 hs₁)
       (encB_and _ _)
