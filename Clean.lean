@@ -7,6 +7,7 @@ import Clean.Caliper.W64
 import Clean.Caliper.WitgenCompile
 import Clean.Caliper.WitgenComputable
 import Clean.Caliper.WitgenCost
+import Clean.Caliper.TimedCircuit
 import Clean.Caliper.WitgenSim
 import Clean.Caliper.WitgenSimExpr
 import Clean.Caliper.WitgenSimIR
