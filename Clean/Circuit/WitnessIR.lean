@@ -1,3 +1,5 @@
+import Lean.Elab.Tactic.FalseOrByContra
+import Lean.Elab.Tactic.Omega.Frontend
 import Clean.Circuit.Expression
 import Clean.Utils.Field
 import Clean.Utils.FiniteField

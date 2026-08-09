@@ -1,5 +1,5 @@
-import Mathlib.Analysis.Normed.Ring.Lemmas
-import Mathlib.Combinatorics.Enumerative.Composition
+import Mathlib.Tactic.Linarith
+import Mathlib.Data.List.Rotate
 import Init.Data.List.Find
 
 variable {α β : Type} {n m : ℕ}

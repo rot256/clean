@@ -1,6 +1,6 @@
 import Mathlib.Algebra.Field.ZMod
-import Mathlib.Algebra.Order.Star.Basic
-import Mathlib.Analysis.Normed.Ring.Lemmas
+import Mathlib.Tactic.Linarith
+import Mathlib.Tactic.Ring
 import Clean.Circuit.SimpGadget
 
 -- main field definition
@@ -21,7 +21,7 @@ lemma zero_ne_neg_one {F : Type} [Field F] : (0 : F) ≠ -1 := by
 namespace FieldUtils
 variable {p : ℕ} [p_prime: Fact p.Prime]
 
-instance : NeZero p := ⟨p_prime.elim.ne_zero⟩
+instance (priority := high) : NeZero p := ⟨p_prime.elim.ne_zero⟩
 
 theorem p_ne_zero : p ≠ 0 := p_prime.elim.ne_zero
 
