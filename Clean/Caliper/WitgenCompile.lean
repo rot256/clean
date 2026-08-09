@@ -702,8 +702,8 @@ theorem compileChecked_checks {N m : ℕ} {steps : List (Step F)} {out : VExpr F
   split at h
   · rename_i hcond
     simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
-    exact ⟨hcond.1.1.1.1.1, hcond.1.1.1.1.2, hcond.1.1.1.2, hcond.1.1.2, hcond.1.2,
-      hcond.2, h⟩
+    obtain ⟨⟨⟨⟨⟨hc, hb⟩, hN⟩, hm⟩, hp2⟩, hpw⟩ := hcond
+    exact ⟨hc, hb, hN, hm, hp2, hpw, h⟩
   · exact absurd h (by simp)
 
 /-- Destructuring the checks: a successful `compile` certifies compilability, the
@@ -732,8 +732,9 @@ and `p * p ≤ 2 ^ 64` from `compile … = some code` instead of asking callers 
 supply them — only primality remains a caller-side hypothesis. -/
 theorem compile_size_checks {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     (h : compile N ir = some code) :
-    2 < FiniteField.size F ∧ FiniteField.size F * FiniteField.size F ≤ 2 ^ 64 :=
-  ⟨(compile_checks h).2.2.2.2.1, (compile_checks h).2.2.2.2.2⟩
+    2 < FiniteField.size F ∧ FiniteField.size F * FiniteField.size F ≤ 2 ^ 64 := by
+  obtain ⟨-, -, -, -, hp2, hpw⟩ := compile_checks h
+  exact ⟨hp2, hpw⟩
 
 /-- Destructuring the delegation: a successful `compile` is a `compileIR` call on a
 structured `.ir` program at the correct `L = steps.length` — the program itself for
@@ -777,7 +778,7 @@ theorem compile_eq_compileIR_of_checks {N m : ℕ} {steps : List (Step F)}
   simp only [compile, compileChecked]
   rw [if_pos]
   simp only [Bool.and_eq_true, decide_eq_true_eq]
-  exact ⟨⟨⟨⟨⟨hc, hb⟩, hN⟩, hm⟩, hp2⟩, hpw⟩
+  and_intros <;> assumption
 
 /-- The output-size guard on the shared checked body: an output length that does
 not fit in a 64-bit immediate is rejected, whatever else holds. -/

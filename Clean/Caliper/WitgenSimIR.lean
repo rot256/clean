@@ -674,7 +674,9 @@ reference output `WitgenIR.eval` (elementwise canonical words `encF`).
 Since out-of-range buffer accesses have no `Exec` derivation, exhibiting this
 execution also proves the compiled code memory-safe. Together with phase 2, the
 execution's time is exactly the syntactic constant `code.staticTime C`
-(`compileIR_time_eq`) and its memory peak is at most `m` (`compileIR_space_le`). -/
+(`compileIR_time_eq`), its net memory move is at most `m`, and its peak is at
+most `m + regPeak` — the output buffer plus the certified register live set
+(`compileIR_space_le`). -/
 theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m}
     {code : Stmt 64}
     (hcode : compileIR (w := 64) steps.length (WitgenIR.ir steps out) = some code)
@@ -736,7 +738,8 @@ transports it to the native closure itself — stated explicitly as
 `compile_sim_certified` below.
 
 Exhibiting the execution also proves memory safety; by phase 2 its time is exactly
-`code.staticTime C` (`compile_time_eq`) and its memory peak at most `m`
+`code.staticTime C` (`compile_time_eq`), its net memory move at most `m`, and its
+peak at most `m + regPeak` — output buffer plus certified register live set
 (`compile_space_le`). The only remaining field hypothesis is primality
 (`[Fact p.Prime]`) — the one side condition that cannot be checked at generation
 time; callers no longer supply `2 < p` or `p * p ≤ 2 ^ 64`. -/

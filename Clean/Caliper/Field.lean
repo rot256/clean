@@ -16,8 +16,15 @@ so reduction is the machine's native `umod` instruction. Consequences:
 
 * **Cost is independent of `p`**: `add` and `mul` are exactly 3 instructions
   (`imm`, the ALU op, `umod`) for every modulus, and the specs say so literally.
-* The gadgets are straight-line, so they are constant-time (`straight_time_eq`) and
-  allocation-free (`allocFree_space`) for free.
+* The raw `addCode`/`mulCode` `Stmt` values are straight-line and contain no
+  allocation instructions at all, so they are constant-time (`straight_time_eq`)
+  with a zero memory profile (`Stmt.AllocFree`, `allocFree_space`). The `Build`
+  wrappers below (`Fp.add`/`Fp.mul`/`Fp.inv`) additionally *acquire* their
+  registers — `freshReg` emits a priced `regAlloc` per register — and release the
+  scratch at the scope boundary (`Build.scope` emits `regFree`), so the emitted
+  gadget code is not `AllocFree`: it carries a scoped register lifecycle, net-zero
+  for scratch, still straight-line and heap-free. See the Register-lifecycle
+  paragraphs on the wrappers.
 * `umod` is the expensive row of the cost table (`CostModel.cycles` prices it 30).
   A specialized field (Montgomery, or a Mersenne-style reduction) is a *better
   instance of the same interface*, not a different design — swap the gadget, keep
@@ -147,7 +154,9 @@ contract is scoped to `2 < p`.
 
 The exponent bits are computed *by Lean at generation time* — the emitted code is
 straight-line (`~2·log p` multiply/reduce steps, a per-field constant), so it is
-constant-time by `straight_time_eq` and allocation-free by `allocFree_space`.
+constant-time by `straight_time_eq`. It is *not* allocation-free: the two
+`freshReg` acquisitions below emit priced `regAlloc`s, and the scope's closing
+`regFree` credits the scratch word back — the register lifecycle described below.
 Correctness spec (the exponentiation-ladder argument, requiring `p` prime) is
 deferred; `Examples.lean` checks it executably.
 
