@@ -8,11 +8,13 @@ Phase 2 of the witgen compiler: machine-checked *cost* bounds for the code that
 
 The whole file rests on one structural fact, proved here by syntactic induction over
 the compiler: **everything the compiler emits is straight-line** (no `ifNZ`, no
-`whileNZ` — `ite` is a mask select, `mapRange`/`envRange`/`bitsOf` are unrolled, the
-Fermat inverse ladder is unrolled over the generation-time bits of `p - 2`), and,
-apart from the single output-buffer `bufAlloc` in `compileIR`'s prologue,
-**allocation-free** (`bufPush` moves the fill level inside already-charged capacity,
-so it is alloc-free by definition).
+`whileNZ`, no dynamic `bufAlloc` — `ite` is a mask select,
+`mapRange`/`envRange`/`bitsOf` are unrolled, the Fermat inverse ladder is unrolled
+over the generation-time bits of `p - 2`, and the single output-buffer allocation
+in `compileIR`'s prologue is a `bufAllocI` whose capacity is the *static* output
+length `m`, hence statically priced at `C.bufAlloc + m * C.allocPerWord`), and,
+apart from that prologue `bufAllocI`, **allocation-free** (`bufPush` moves the fill
+level inside already-charged capacity, so it is alloc-free by definition).
 
 Consequences, all machine-checked below:
 
@@ -25,10 +27,11 @@ Consequences, all machine-checked below:
   numeral: computable by `#eval` and certified by evaluation (`native_decide` here,
   since `toBits` is well-founded recursion, which `rfl` cannot reduce) — no
   execution, no semantics, no fuel involved.
-* **Memory is bounded by the output length.** The prologue's single `bufAlloc`
+* **Memory is bounded by the output length.** The prologue's single `bufAllocI`
   charges at most `m` words (the static output length); everything after it is
   alloc-free, so both the net live-memory change and the peak stay `≤ m`
-  (`compileIR_space_le`).
+  (`compileIR_space_le`). Independently, `Exec.peak_le_time` bounds the peak by
+  the running time in any per-word-charging model.
 * **Concrete `< 2^40` bounds.** For the BabyBear test programs of
   `WitgenCompile.lean` the pinned numbers are evaluated by `#eval`, certified by
   `native_decide`, and turned into end-to-end theorems of the shape
@@ -274,7 +277,7 @@ theorem compileIR_straight {L : ℕ} {m : ℕ} {ir : WitgenIR F m} {code : Stmt 
   | ir steps out =>
     simp only [compileIR, Option.some.injEq] at h
     subst h
-    exact ⟨trivial, trivial, trivial, (compileSteps_straightAF L steps 0).1,
+    exact ⟨trivial, trivial, (compileSteps_straightAF L steps 0).1,
       (compileV_straightAF L out).1⟩
 
 /-! ## The time theorem: witgen time is a syntactic constant -/
@@ -330,7 +333,7 @@ theorem witgenTime_data_independent {C : CostModel} {L m : ℕ} {ir : WitgenIR F
 /-! ## The memory theorem: witgen space is bounded by the output length -/
 
 /-- **Compiled witgen code needs at most `m` words of memory** (`m` = the static
-output length): the single prologue `bufAlloc` charges at most `m`, and everything
+output length): the single prologue `bufAllocI` charges at most `m`, and everything
 else is alloc-free. Both the net live-memory change and the peak are bounded. -/
 theorem compileIR_space_le {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code : Stmt w}
     {s s' : State w} {t : ℕ} {d p : ℤ} (hc : compileIR (w := w) L ir = some code)
@@ -340,21 +343,15 @@ theorem compileIR_space_le {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code
   | ir steps out =>
     simp only [compileIR, Option.some.injEq] at hc
     subst hc
-    -- destructure `imm ;; (bufAlloc ;; rest)` and its costs
+    -- destructure `bufAllocI ;; rest` and its costs
     cases hx with
     | seq h₁ hrest =>
       cases h₁
-      cases hrest with
-      | seq h₂ hrest₂ =>
-        cases h₂
-        -- the rest (idx-zeroing, steps, output pushes) is alloc-free
-        obtain ⟨hd, hp⟩ := hrest₂.allocFree_space
-          ⟨trivial, (compileSteps_straightAF L steps 0).2, (compileV_straightAF L out).2⟩
-        -- the single bufAlloc charges `(ofNat w m).toNat - oldCap ≤ m`
-        have hm : (BitVec.ofNat w m).toNat ≤ m := by
-          rw [BitVec.toNat_ofNat]; exact Nat.mod_le _ _
-        simp only [regs_setReg_self, caps_setReg]
-        omega
+      -- the rest (idx-zeroing, steps, output pushes) is alloc-free
+      obtain ⟨hd, hp⟩ := hrest.allocFree_space
+        ⟨trivial, (compileSteps_straightAF L steps 0).2, (compileV_straightAF L out).2⟩
+      -- the single bufAllocI charges `m - oldCap ≤ m`
+      omega
 
 /-! ## Checked-entry corollaries
 
@@ -451,16 +448,20 @@ theorem isZeroCompiled_staticTime_cycles : isZeroCompiled.staticTime .cycles = 2
 /-- info: some 2090 -/
 #guard_msgs in #eval (compile 1 testIsZero).map (·.staticTime CostModel.cycles)
 
+/- The output allocation is charged per word (`m * C.allocPerWord`), so programs
+with `m` output elements pay `m` extra unit ticks relative to a flat-alloc model:
+`testXor` (m = 1) pays 1, `testSteps` (m = 2) pays 2, `testBits` (m = 8) pays 8,
+`testMapRange` (m = 4) pays 4. -/
 /-- info: some 11 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testXor
 
-/-- info: some 18 -/
+/-- info: some 19 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 1 testSteps
 
-/-- info: some 45 -/
+/-- info: some 52 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testBits
 
-/-- info: some 24 -/
+/-- info: some 27 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testMapRange
 
 /-- **The headline, end to end**: every execution of the compiled `IsZero` witness

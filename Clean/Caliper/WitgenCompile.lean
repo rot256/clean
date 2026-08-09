@@ -46,7 +46,9 @@ The emitted code contains no `ifNZ` and no `whileNZ`, anywhere:
   so the ladder too is straight-line.
 
 Consequently every compiled program is constant-time (`Exec.straight_time_eq`) and,
-apart from the single output-buffer `bufAlloc`, allocation-free.
+apart from the single output-buffer `bufAllocI` (whose capacity is the *static*
+output length `m`, so it is statically priced and keeps the code straight-line),
+allocation-free.
 
 ## Compilability
 
@@ -63,7 +65,7 @@ phase 3. `WitgenIR.native` makes `compileIR` return `none`.
 
 The raw compiler `compileIR` is *internal and unchecked*: it never consults
 `compilable`, trusts its caller to pass `L = steps.length`, and truncates every
-index and the output length to 64-bit immediates. The public entry point is
+index to a 64-bit immediate. The public entry point is
 `compile`, which returns `some` only after all generation-time checks pass
 (structured program, `compilable`, `envBound N`, `N ≤ 2 ^ 64`, `m < 2 ^ 64`) and
 computes `L` itself. The user-facing cost and correctness theorems
@@ -501,14 +503,16 @@ environment-bound, or size checks — unsupported scalar constructors lower to a
 `.imm _ 0`. `compile` performs all checks and computes `L` itself; this raw compiler
 is kept as the object the phase-2/3 proofs do induction over.
 
-The emitted code allocates the output buffer `1` with capacity `m`, zeroes the idx
-register `L`, computes the `let`-steps into registers `0 .. L-1`, then pushes the
-`m` output elements. `native` closures are not compilable. -/
+The emitted code allocates the output buffer `1` with the *immediate* capacity `m`
+(`bufAllocI` — the output length is a static type index, so the allocation is
+statically priced at `C.bufAlloc + m * C.allocPerWord` and the emitted code stays
+straight-line), zeroes the idx register `L`, computes the `let`-steps into
+registers `0 .. L-1`, then pushes the `m` output elements. `native` closures are
+not compilable. -/
 def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
   | .native _ => none
   | .ir steps out => some (
-      .imm (L + 1) (BitVec.ofNat w m) ;;
-      .bufAlloc 1 (L + 1) ;;
+      .bufAllocI 1 m ;;
       .imm L 0 ;;
       compileSteps L steps 0 ;;
       compileV L out)
@@ -525,7 +529,9 @@ def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
   dead `.imm _ 0`), and all `localVar` references well-sorted,
 * `WitgenIR.envBound N ir` — every environment read is below `N`,
 * `N ≤ 2 ^ 64` — so in-bound environment indices survive their 64-bit immediates,
-* `m < 2 ^ 64` — so the output length survives its 64-bit `bufAlloc` immediate,
+* `m < 2 ^ 64` — so per-output-element immediates (`mapRange` indices, `bitsOf`
+  bit positions, all `< m`) survive their 64-bit encodings (the output-buffer
+  capacity itself is a `bufAllocI` immediate, a bare `ℕ` that never wraps),
 
 and delegates to the internal `compileIR` with the local-register count computed
 from the program itself (`L := steps.length`) — there is no `L` parameter, so a
@@ -837,8 +843,9 @@ could still wrap in their immediates, so the `N ≤ 2 ^ 64` check refuses. -/
 #guard_msgs in #eval
   (compile testRow.size (WitgenIR.native fun _ => #v[(0 : Fb)])).isNone
 
-/- An output length `m ≥ 2 ^ 64` would wrap in the `bufAlloc` capacity immediate;
-the `m < 2 ^ 64` check refuses before any unrolling (see also the general guard
+/- An output length `m ≥ 2 ^ 64` would wrap the per-element 64-bit immediates the
+unrolled output loops emit (the `bufAllocI` capacity itself is a bare `ℕ`); the
+`m < 2 ^ 64` check refuses before any unrolling (see also the general guard
 lemma `compile_eq_none_of_output_ge`). -/
 /-- info: true -/
 #guard_msgs in #eval

@@ -636,19 +636,14 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
   subst hcode
   simp only [WitgenIR.compilable, Bool.and_eq_true] at hcomp
   simp only [WitgenIR.envBound, Bool.and_eq_true] at hbound
-  -- the state after the preamble (`imm` capacity, `bufAlloc 1`, `imm L 0`)
-  have hcapm : ((s.setReg (steps.length + 1) (BitVec.ofNat 64 m)).regs
-      (steps.length + 1)).toNat = m := by
-    rw [regs_setReg_self, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hm]
+  -- the state after the preamble (`bufAllocI 1 m`, `imm L 0`)
   have hLM : LocalsMatch ([] : List VSort) (#[] : Array (F p ⊕ UInt64)) :=
     ⟨rfl, fun i hi => absurd hi (by simp)⟩
   have hs₃ : StateEnc envArr ([] : List VSort) (#[] : Array (F p ⊕ UInt64)) 0
       steps.length (steps.length + 1)
-      (((s.setReg (steps.length + 1) (BitVec.ofNat 64 m)).allocBuf 1
-          (((s.setReg (steps.length + 1) (BitVec.ofNat 64 m)).regs
-            (steps.length + 1)).toNat)).setReg steps.length 0) := by
+      ((s.allocBuf 1 m).setReg steps.length 0) := by
     refine ⟨?_, by simp, by omega, fun i hi => absurd hi (by simp), ?_⟩
-    · rw [bufs_setReg, bufs_allocBuf_ne _ _ (show (0:ℕ) ≠ 1 by omega), bufs_setReg]
+    · rw [bufs_setReg, bufs_allocBuf_ne _ _ (show (0:ℕ) ≠ 1 by omega)]
       exact hbuf
     · rw [regs_setReg_self]; rfl
   obtain ⟨s₄, t₄, d₄, p₄, hex₄, hs₄, hL₄, hbf₄, hcp₄⟩ :=
@@ -657,13 +652,13 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
   rw [List.nil_append] at hs₄ hL₄
   have hcap₄ : (s₄.bufs 1).size + m ≤ s₄.caps 1 := by
     rw [hbf₄, hcp₄]
-    simp only [bufs_setReg, caps_setReg, bufs_allocBuf_self, caps_allocBuf_self, hcapm]
+    simp only [bufs_setReg, caps_setReg, bufs_allocBuf_self, caps_allocBuf_self]
     simp
   obtain ⟨s₅, t₅, d₅, p₅, hex₅, hout₅, _, _, _⟩ :=
     compileV_sim p hp2 hpw env N envArr henv hN (steps.map Step.sort)
       (evalSteps env steps #[]) steps.length hL₄ out s₄ hcomp.2 hbound.2
       (le_of_lt hm) hs₄ hcap₄
-  refine ⟨s₅, _, _, _, .seq .imm (.seq .bufAlloc (.seq .imm (.seq hex₄ hex₅))), ?_⟩
+  refine ⟨s₅, _, _, _, .seq .bufAllocI (.seq .imm (.seq hex₄ hex₅)), ?_⟩
   rw [hout₅, hbf₄]
   simp only [bufs_setReg, bufs_allocBuf_self, WitgenIR.eval]
   rw [Array.empty_append]
