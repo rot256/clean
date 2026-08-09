@@ -42,6 +42,9 @@ prevents mixing elements of different fields at generation time. -/
 structure Fp (w p : ℕ) where
   val : Reg
 
+/-- A field element keeps its one value register live. -/
+instance {p : ℕ} : RegCarrier (Fp w p) := ⟨fun x => [x.val]⟩
+
 namespace Fp
 
 /-! ## The gadgets
@@ -111,18 +114,26 @@ theorem mulCode_spec {C : CostModel} {p : ℕ} (hp : 1 < p) (hpw : p * p ≤ 2 ^
 
 /-! ## Builder interface
 
-Fresh destination and scratch registers make the distinctness side conditions true by
-construction at every call site. -/
+Fresh destination and scratch registers make the distinctness side conditions true
+by construction at every call site. The raw `addCode`/`mulCode` (and their specs
+above) take caller-provided registers and contain **no** `regAlloc`/`regFree` —
+the register lifecycle lives entirely in these `Build` wrappers, which acquire
+their registers through `freshReg` (emitting `regAlloc`) and release the internal
+scratch through `Build.scope` (emitting `regFree`). -/
 
-/-- `x + y` in `ZMod p`. -/
-def add {p : ℕ} (x y : Fp w p) : Build w (Fp w p) := do
+/-- `x + y` in `ZMod p`. Register lifecycle: acquires the modulus scratch `t` and
+the destination `d` (`regAlloc t; regAlloc d`), emits the 3-instruction
+`addCode`, and frees `t` at the end of the scope (`regFree t`); `d` — the result
+register — stays live. Net one register. -/
+def add {p : ℕ} (x y : Fp w p) : Build w (Fp w p) := Build.scope do
   let t ← Build.freshReg
   let d ← Build.freshReg
   Build.emit (addCode p d x.val y.val t)
   return ⟨d⟩
 
-/-- `x * y` in `ZMod p`. -/
-def mul {p : ℕ} (x y : Fp w p) : Build w (Fp w p) := do
+/-- `x * y` in `ZMod p`. Register lifecycle: as `Fp.add` — the modulus scratch `t`
+is freed when the scope ends, only the result register `d` stays live. -/
+def mul {p : ℕ} (x y : Fp w p) : Build w (Fp w p) := Build.scope do
   let t ← Build.freshReg
   let d ← Build.freshReg
   Build.emit (mulCode p d x.val y.val t)
@@ -143,8 +154,12 @@ deferred; `Examples.lean` checks it executably.
 The witgen compiler has its own copy of this ladder, `WitgenCompile.invLadder`
 (built over `WitgenCompile.toBits` rather than `Nat.bits`): that one carries the
 correctness proof — `invLadder_exec_inv` in `WitgenSim.lean` — while this builder
-version keeps the executable check only. -/
-def inv {p : ℕ} (x : Fp w p) : Build w (Fp w p) := do
+version keeps the executable check only.
+
+Register lifecycle: acquires the modulus scratch `t` and the accumulator `acc`
+(the ladder itself works in place, no per-step temporaries); `t` is freed when
+the scope ends, `acc` — the result — stays live. Net one register. -/
+def inv {p : ℕ} (x : Fp w p) : Build w (Fp w p) := Build.scope do
   let t ← Build.var (Exp.lit (BitVec.ofNat w p))
   let acc ← Build.var 1
   for bit in (p - 2).bits.reverse do
