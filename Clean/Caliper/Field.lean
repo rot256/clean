@@ -119,14 +119,14 @@ def add {p : ℕ} (x y : Fp w p) : Build w (Fp w p) := do
   let t ← Build.freshReg
   let d ← Build.freshReg
   Build.emit (addCode p d x.val y.val t)
-  pure ⟨d⟩
+  return ⟨d⟩
 
 /-- `x * y` in `ZMod p`. -/
 def mul {p : ℕ} (x y : Fp w p) : Build w (Fp w p) := do
   let t ← Build.freshReg
   let d ← Build.freshReg
   Build.emit (mulCode p d x.val y.val t)
-  pure ⟨d⟩
+  return ⟨d⟩
 
 /-- `x⁻¹` in `ZMod p` by Fermat: `x ^ (p - 2)`, as a square-and-multiply ladder over
 the bits of `p - 2`. For prime `p > 2` this matches the witness IR's convention
@@ -153,7 +153,7 @@ def inv {p : ℕ} (x : Fp w p) : Build w (Fp w p) := do
     if bit then
       Build.assign acc ((acc : Exp w) * x.val)
       Build.emit (.bin .umod acc acc t)
-  pure ⟨acc⟩
+  return ⟨acc⟩
 
 end Fp
 

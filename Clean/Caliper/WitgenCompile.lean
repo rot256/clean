@@ -723,7 +723,7 @@ private def diffOutputs {m : ℕ} (prog : WitgenIR Fb m) : Option (List ℕ) × 
   let machine : Option (List ℕ) := do
     let code ← compile testRow.size prog
     let (s', _, _, _) ← run CostModel.unit 100000 code testState
-    pure ((s'.bufs 1).toList.map (·.toNat))
+    return ((s'.bufs 1).toList.map (·.toNat))
   (machine, (prog.eval testEnv).toList.map FiniteField.val)
 
 /-- Elementwise machine-vs-reference agreement. -/
@@ -737,7 +737,7 @@ model. -/
 private def timeCost {m : ℕ} (prog : WitgenIR Fb m) : Option ℕ := do
   let code ← compile testRow.size prog
   let (_, t, _, _) ← run CostModel.unit 100000 code testState
-  pure t
+  return t
 
 /-- Test 1 — the `IsZeroField` witness program: exercises `expr`, `const`, `feq`,
 `ite` (mask select) and `inv` (Fermat ladder). `var ⟨0⟩ = 3`, so the output is
