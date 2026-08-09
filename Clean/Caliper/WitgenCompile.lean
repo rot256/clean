@@ -25,6 +25,31 @@ Given `L` = the number of `let`-steps of the program:
 * buffer `0` is the environment (input, pre-existing: cell `j` holds the canonical
   word of `env.get j`), buffer `1` is the output, allocated by the compiled program.
 
+## Register lifecycles
+
+Registers are an allocated resource (`Stmt.regAlloc`/`Stmt.regFree`, `Core.lean`),
+and the compiled code acquires every register it writes:
+
+* the prologue acquires the locals and the idx register — `reg.alloc 0 .. L`
+  (`allocRegs (L + 1)`), and the matching `reg.free L .. 0` (`freeTemps 0 (L + 1)`)
+  is the program's last code: locals and idx live for the whole program;
+* every fresh temporary is acquired *at creation*: each instruction writing a fresh
+  temp `r` is preceded by `reg.alloc r` (the `regAlloc next ;; imm next v` pattern —
+  including inside the helpers `fieldOp`/`selectCode`, which acquire the registers
+  they write). Copy-elision arms (`localVar`, `idx`, `U64Expr.val`) allocate
+  nothing: they emit no code and name an already-live register;
+* temporaries die in bulk at *step boundaries*: `compileStep` frees its
+  expression's temps `L+1 .. next'-1` (highest first, stack-like) right after the
+  binding `mov`, and each output element of `compileV` does the same after its
+  `memPush` (for `bitsOf`, the decomposed value's temps survive the per-bit blocks
+  and are freed after the loop).
+
+The resulting live set at any point is: locals + idx (`L + 1` words) plus the
+temporaries of the *current* step or output element — so the certified register
+peak is `L + 1 + max` over steps/elements of their temp counts, the exact register
+file a (interval-colorable) register allocator needs (`compile_space_le`,
+`WitgenCost.lean`).
+
 Values are represented as follows: field elements as their canonical word
 `BitVec.ofNat w (FiniteField.val x)`, u64 values as the `UInt64` bit pattern
 (truncation-free for `w ≥ 64`; the design value is `w = 64`), conditions as `{0, 1}`
@@ -48,7 +73,8 @@ The emitted code contains no `ifNZ` and no `whileNZ`, anywhere:
 Consequently every compiled program is constant-time (`Exec.straight_time_eq`) and,
 apart from the single output-buffer `memAllocI` (whose capacity is the *static*
 output length `m`, so it is statically priced and keeps the code straight-line),
-allocation-free.
+heap-allocation-free: all remaining acquisitions are single-word register
+acquisitions, metered by the register-lifecycle discipline above.
 
 ## Compilability
 
@@ -255,6 +281,24 @@ def toBits : ℕ → List Bool
   | n + 1 => ((n + 1) % 2 == 1) :: toBits ((n + 1) / 2)
 decreasing_by omega
 
+/-! ## Register-lifecycle helpers
+
+The two bulk register-lifecycle emitters: `allocRegs` acquires the locals + idx
+prologue block, `freeTemps` releases a step's (or element's, or the program's)
+registers at a scope boundary — highest first, stack-like. -/
+
+/-- `reg.free` for the `k` registers `base .. base + k - 1`, highest first
+(stack-like scope exit). `freeTemps base 0 = skip`. -/
+def freeTemps (base : ℕ) : ℕ → Stmt w
+  | 0 => .skip
+  | k + 1 => .regFree (base + k) ;; freeTemps base k
+
+/-- `reg.alloc` for the `k` registers `0 .. k - 1`, lowest first — the prologue
+acquisition of the locals `0 .. L-1` and the idx register `L` (at `k = L + 1`). -/
+def allocRegs : ℕ → Stmt w
+  | 0 => .skip
+  | k + 1 => allocRegs k ;; .regAlloc k
+
 /-! ## Scalar compilation
 
 All scalar compilers thread an explicit `next` free-register counter and return
@@ -268,28 +312,36 @@ copy elision is sound because expression code only ever writes registers `≥ ne
 locals `0 .. L-1` and the idx register `L` are stable while any enclosing
 expression is still being evaluated (only `compileStep`'s binding `.mov` writes
 locals, and only `mapRange`'s per-iteration `.imm L i` writes the idx register —
-each iteration's uses of the index complete before the next one is loaded). -/
+each iteration's uses of the index complete before the next one is loaded).
+
+Every register in `[next, next')` is *acquired at creation*: the instruction that
+writes a fresh temp `r` is preceded by `reg.alloc r`. Expression code emits no
+`reg.free` — temps die in bulk at the step/element boundaries (`compileStep` /
+`compileV`), see the module docstring. -/
 
 /-- `d ← (a ⟨op⟩ b) % p` with `d := next + 1` and the modulus immediate in
 `t := next`: the single-word field reduction pattern of `Fp.addCode`/`Fp.mulCode`
-(`Field.lean`) — at `.add`/`.mul` the emitted instructions are identical to those
-gadgets at `d := next + 1`, `t := next`. Kept as its own generic-`op` definition
-(rather than delegating via a match on `op`) so that it stays `rfl`-transparent at a
-*variable* `op`, which `fieldOp_straightAF` and the `WitgenCost` proofs rely on. -/
+(`Field.lean`) — at `.add`/`.mul` the emitted arithmetic instructions are identical
+to those gadgets at `d := next + 1`, `t := next`, with the two registers this
+pattern writes acquired here (`reg.alloc`) at their first write. Kept as its own
+generic-`op` definition (rather than delegating via a match on `op`) so that it
+stays `rfl`-transparent at a *variable* `op`, which `fieldOp_shape` and the
+`WitgenCost` proofs rely on. -/
 def fieldOp (p : ℕ) (op : BinOp) (a b : Reg) (next : Reg) : Stmt w × Reg × Reg :=
-  (.imm next (BitVec.ofNat w p) ;;
-     .bin op (next + 1) a b ;;
+  (.regAlloc next ;; .imm next (BitVec.ofNat w p) ;;
+     .regAlloc (next + 1) ;; .bin op (next + 1) a b ;;
      .bin .umod (next + 1) (next + 1) next,
    next + 1, next + 2)
 
 /-- Branch-free select of `t`/`e` (any words) by the `{0, 1}` flag `flag`:
-`mask ← -flag` (all-ones or `0`), then `r ← (t &&& mask) ||| (e &&& ~~~mask)`. -/
+`mask ← -flag` (all-ones or `0`), then `r ← (t &&& mask) ||| (e &&& ~~~mask)`.
+Acquires the five registers it writes. -/
 def selectCode (flag t e : Reg) (next : Reg) : Stmt w × Reg × Reg :=
-  (.un .neg next flag ;;
-     .un .not (next + 1) next ;;
-     .bin .and (next + 2) t next ;;
-     .bin .and (next + 3) e (next + 1) ;;
-     .bin .or (next + 4) (next + 2) (next + 3),
+  (.regAlloc next ;; .un .neg next flag ;;
+     .regAlloc (next + 1) ;; .un .not (next + 1) next ;;
+     .regAlloc (next + 2) ;; .bin .and (next + 2) t next ;;
+     .regAlloc (next + 3) ;; .bin .and (next + 3) e (next + 1) ;;
+     .regAlloc (next + 4) ;; .bin .or (next + 4) (next + 2) (next + 3),
    next + 4, next + 5)
 
 /-- Straight-line Fermat ladder: `acc ← acc ^ (p - 2) * ...` — precisely, MSB-first
@@ -314,9 +366,11 @@ buffer `0` at the static index `v.index`; `add`/`mul` reduce mod `p`. -/
 def compileExpr (e : Expression F) (next : Reg) : Stmt w × Reg × Reg :=
   match e with
   | .var v =>
-    (.imm next (BitVec.ofNat w v.index) ;; .memLoad (next + 1) 0 next,
+    (.regAlloc next ;; .imm next (BitVec.ofNat w v.index) ;;
+       .regAlloc (next + 1) ;; .memLoad (next + 1) 0 next,
      next + 1, next + 2)
-  | .const c => (.imm next (BitVec.ofNat w (FiniteField.val c)), next, next + 1)
+  | .const c =>
+    (.regAlloc next ;; .imm next (BitVec.ofNat w (FiniteField.val c)), next, next + 1)
   | .add x y =>
     let (cx, rx, n₁) := compileExpr x next
     let (cy, ry, n₂) := compileExpr y n₁
@@ -336,7 +390,8 @@ The excluded constructors (`listGet`, `dataGet`, `hintGet`) compile to a dead
 `.imm _ 0` to keep the compiler total; `compilable` rules them out. -/
 def compileF (L : ℕ) : FExpr F → Reg → Stmt w × Reg × Reg
   | .expr e, next => compileExpr e next
-  | .const c, next => (.imm next (BitVec.ofNat w (FiniteField.val c)), next, next + 1)
+  | .const c, next =>
+    (.regAlloc next ;; .imm next (BitVec.ofNat w (FiniteField.val c)), next, next + 1)
   | .localVar i, next => (.skip, i, next)
   | .add x y, next =>
     let (cx, rx, n₁) := compileF L x next
@@ -351,14 +406,15 @@ def compileF (L : ℕ) : FExpr F → Reg → Stmt w × Reg × Reg
   | .inv x, next =>
     let (cx, rx, n₁) := compileF L x next
     -- modulus in t := n₁, accumulator (result) in n₁ + 1, initialized to 1
-    (cx ;; .imm n₁ (BitVec.ofNat w (FiniteField.size F)) ;;
-       .imm (n₁ + 1) 1 ;; invLadder (FiniteField.size F) (n₁ + 1) rx n₁,
+    (cx ;; .regAlloc n₁ ;; .imm n₁ (BitVec.ofNat w (FiniteField.size F)) ;;
+       .regAlloc (n₁ + 1) ;; .imm (n₁ + 1) 1 ;;
+       invLadder (FiniteField.size F) (n₁ + 1) rx n₁,
      n₁ + 1, n₁ + 2)
   | .ofU64 n, next =>
     let (cn, rn, n₁) := compileU L n next
     -- `fromNat` on values < 2^w ≡ reduction mod p (Nat.cast on prime fields)
-    (cn ;; .imm n₁ (BitVec.ofNat w (FiniteField.size F)) ;;
-       .bin .umod (n₁ + 1) rn n₁,
+    (cn ;; .regAlloc n₁ ;; .imm n₁ (BitVec.ofNat w (FiniteField.size F)) ;;
+       .regAlloc (n₁ + 1) ;; .bin .umod (n₁ + 1) rn n₁,
      n₁ + 1, n₁ + 2)
   | .ite c t e, next =>
     let (cc, rc, n₁) := compileB L c next
@@ -366,15 +422,16 @@ def compileF (L : ℕ) : FExpr F → Reg → Stmt w × Reg × Reg
     let (ce, re, n₃) := compileF L e n₂
     let (cs, r, n₄) := selectCode (w := w) rc rt re n₃
     (cc ;; ct ;; ce ;; cs, r, n₄)
-  | .listGet .., next => (.imm next 0, next, next + 1)
-  | .dataGet .., next => (.imm next 0, next, next + 1)
-  | .hintGet .., next => (.imm next 0, next, next + 1)
+  | .listGet .., next => (.regAlloc next ;; .imm next 0, next, next + 1)
+  | .dataGet .., next => (.regAlloc next ;; .imm next 0, next, next + 1)
+  | .hintGet .., next => (.regAlloc next ;; .imm next 0, next, next + 1)
 
 /-- Compile a u64-sorted expression (the `UInt64` bit pattern as the word value).
 u64 shifts mask the shift amount with `w - 1` first, matching `UInt64`'s mod-64
 semantics (the machine's shifts zero out for amounts `≥ w`). -/
 def compileU (L : ℕ) : U64Expr F → Reg → Stmt w × Reg × Reg
-  | .const n, next => (.imm next (BitVec.ofNat w n.toNat), next, next + 1)
+  | .const n, next =>
+    (.regAlloc next ;; .imm next (BitVec.ofNat w n.toNat), next, next + 1)
   | .val x, next =>
     -- the canonical word of `x` *is* the value (`val x < p ≤ 2 ^ w`): no conversion,
     -- no copy — the child's result register is the result
@@ -384,42 +441,44 @@ def compileU (L : ℕ) : U64Expr F → Reg → Stmt w × Reg × Reg
   | .add x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .bin .add n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .add n₂ rx ry, n₂, n₂ + 1)
   | .mul x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .bin .mul n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .mul n₂ rx ry, n₂, n₂ + 1)
   | .div x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .bin .udiv n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .udiv n₂ rx ry, n₂, n₂ + 1)
   | .mod x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .bin .umod n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .umod n₂ rx ry, n₂, n₂ + 1)
   | .land x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .bin .and n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .and n₂ rx ry, n₂, n₂ + 1)
   | .lor x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .bin .or n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .or n₂ rx ry, n₂, n₂ + 1)
   | .lxor x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .bin .xor n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .xor n₂ rx ry, n₂, n₂ + 1)
   | .shiftL x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .imm n₂ (BitVec.ofNat w (w - 1)) ;;
-       .bin .and (n₂ + 1) ry n₂ ;; .bin .shl (n₂ + 2) rx (n₂ + 1),
+    (cx ;; cy ;; .regAlloc n₂ ;; .imm n₂ (BitVec.ofNat w (w - 1)) ;;
+       .regAlloc (n₂ + 1) ;; .bin .and (n₂ + 1) ry n₂ ;;
+       .regAlloc (n₂ + 2) ;; .bin .shl (n₂ + 2) rx (n₂ + 1),
      n₂ + 2, n₂ + 3)
   | .shiftR x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .imm n₂ (BitVec.ofNat w (w - 1)) ;;
-       .bin .and (n₂ + 1) ry n₂ ;; .bin .shr (n₂ + 2) rx (n₂ + 1),
+    (cx ;; cy ;; .regAlloc n₂ ;; .imm n₂ (BitVec.ofNat w (w - 1)) ;;
+       .regAlloc (n₂ + 1) ;; .bin .and (n₂ + 1) ry n₂ ;;
+       .regAlloc (n₂ + 2) ;; .bin .shr (n₂ + 2) rx (n₂ + 1),
      n₂ + 2, n₂ + 3)
   | .ite c t e, next =>
     let (cc, rc, n₁) := compileB L c next
@@ -431,51 +490,55 @@ def compileU (L : ℕ) : U64Expr F → Reg → Stmt w × Reg × Reg
 /-- Compile a condition (`{0, 1}`-word representation). Note `BExpr.neq` is u64
 *equality* (despite the name), so it compiles to `.eq` like `feq`. -/
 def compileB (L : ℕ) : BExpr F → Reg → Stmt w × Reg × Reg
-  | .true, next => (.imm next 1, next, next + 1)
-  | .false, next => (.imm next 0, next, next + 1)
+  | .true, next => (.regAlloc next ;; .imm next 1, next, next + 1)
+  | .false, next => (.regAlloc next ;; .imm next 0, next, next + 1)
   | .feq x y, next =>
     let (cx, rx, n₁) := compileF L x next
     let (cy, ry, n₂) := compileF L y n₁
-    (cx ;; cy ;; .bin .eq n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .eq n₂ rx ry, n₂, n₂ + 1)
   | .neq x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .bin .eq n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .eq n₂ rx ry, n₂, n₂ + 1)
   | .lt x y, next =>
     let (cx, rx, n₁) := compileU L x next
     let (cy, ry, n₂) := compileU L y n₁
-    (cx ;; cy ;; .bin .ult n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .ult n₂ rx ry, n₂, n₂ + 1)
   | .flt x y, next =>
     -- canonical words compare like the `ℕ` values
     let (cx, rx, n₁) := compileF L x next
     let (cy, ry, n₂) := compileF L y n₁
-    (cx ;; cy ;; .bin .ult n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .ult n₂ rx ry, n₂, n₂ + 1)
   | .bit x i, next =>
     let (cx, rx, n₁) := compileF L x next
-    (cx ;; .imm n₁ (BitVec.ofNat w i) ;; .bin .shr (n₁ + 1) rx n₁ ;;
-       .imm (n₁ + 2) 1 ;; .bin .and (n₁ + 3) (n₁ + 1) (n₁ + 2),
+    (cx ;; .regAlloc n₁ ;; .imm n₁ (BitVec.ofNat w i) ;;
+       .regAlloc (n₁ + 1) ;; .bin .shr (n₁ + 1) rx n₁ ;;
+       .regAlloc (n₁ + 2) ;; .imm (n₁ + 2) 1 ;;
+       .regAlloc (n₁ + 3) ;; .bin .and (n₁ + 3) (n₁ + 1) (n₁ + 2),
      n₁ + 3, n₁ + 4)
   | .not b, next =>
     let (cb, rb, n₁) := compileB L b next
-    (cb ;; .un .isZero n₁ rb, n₁, n₁ + 1)
+    (cb ;; .regAlloc n₁ ;; .un .isZero n₁ rb, n₁, n₁ + 1)
   | .and x y, next =>
     let (cx, rx, n₁) := compileB L x next
     let (cy, ry, n₂) := compileB L y n₁
-    (cx ;; cy ;; .bin .and n₂ rx ry, n₂, n₂ + 1)
+    (cx ;; cy ;; .regAlloc n₂ ;; .bin .and n₂ rx ry, n₂, n₂ + 1)
 
 end
 
 /-! ## Program compilation -/
 
 /-- Compile one `let`-step into register `j`: the step expression is compiled with
-temporaries from `L + 1`, then the result is moved into the step's local register. -/
+temporaries from `L + 1`, the result is moved into the step's local register, and
+the step's temporaries `L+1 .. next'-1` are released in bulk (highest first) — the
+step boundary is the temps' scope exit. -/
 def compileStep (L : ℕ) (j : Reg) : Step F → Stmt w
   | .letF e =>
-    let (c, r, _) := compileF (w := w) L e (L + 1)
-    c ;; .mov j r
+    let (c, r, n') := compileF (w := w) L e (L + 1)
+    c ;; .mov j r ;; freeTemps (L + 1) ((n' : ℕ) - (L + 1))
   | .letU e =>
-    let (c, r, _) := compileU (w := w) L e (L + 1)
-    c ;; .mov j r
+    let (c, r, n') := compileU (w := w) L e (L + 1)
+    c ;; .mov j r ;; freeTemps (L + 1) ((n' : ℕ) - (L + 1))
 
 /-- Compile the `let`-steps left to right, step `j` into register `j`. -/
 def compileSteps (L : ℕ) (steps : List (Step F)) (j : ℕ) : Stmt w :=
@@ -483,45 +546,57 @@ def compileSteps (L : ℕ) (steps : List (Step F)) (j : ℕ) : Stmt w :=
   | [] => .skip
   | s :: rest => compileStep L j s ;; compileSteps L rest (j + 1)
 
-/-- Compile a vector output: per element, compile (temporaries from `L + 1`) and
-`memPush` the result to the output buffer `1`. `mapRange`, `envRange` and `bitsOf`
-are unrolled; `mapRange` sets the idx register `L` before each body instance and
-resets it to `0` after the loop. -/
+/-- Compile a vector output: per element, compile (temporaries from `L + 1`),
+`memPush` the result to the output buffer `1`, and release the element's
+temporaries in bulk — each element is a temp scope, like a `let`-step. `mapRange`,
+`envRange` and `bitsOf` are unrolled; `mapRange` sets the idx register `L` before
+each body instance and resets it to `0` after the loop; `bitsOf` keeps the
+decomposed value's temporaries live across its per-bit blocks (each block scopes
+only its own four registers) and releases them after the loop. -/
 def compileV (L : ℕ) : {n : ℕ} → VExpr F n → Stmt w
   | _, .lit es =>
     es.toList.foldl (init := .skip) fun c e =>
-      let (ce, r, _) := compileF (w := w) L e (L + 1)
-      c ;; ce ;; .memPush 1 r
+      let (ce, r, n') := compileF (w := w) L e (L + 1)
+      c ;; ce ;; .memPush 1 r ;; freeTemps (L + 1) ((n' : ℕ) - (L + 1))
   | _, .mapRange n body =>
     ((List.range n).foldl (init := .skip) fun c i =>
-      let (cb, r, _) := compileF (w := w) L body (L + 1)
-      c ;; .imm L (BitVec.ofNat w i) ;; cb ;; .memPush 1 r) ;;
+      let (cb, r, n') := compileF (w := w) L body (L + 1)
+      c ;; (.imm L (BitVec.ofNat w i) ;; cb) ;; .memPush 1 r ;;
+        freeTemps (L + 1) ((n' : ℕ) - (L + 1))) ;;
     .imm L 0
   | n, .envRange offset =>
     (List.range n).foldl (init := .skip) fun c i =>
-      c ;; .imm (L + 1) (BitVec.ofNat w (offset + i)) ;;
-        .memLoad (L + 2) 0 (L + 1) ;; .memPush 1 (L + 2)
+      c ;; (.regAlloc (L + 1) ;; .imm (L + 1) (BitVec.ofNat w (offset + i)) ;;
+          .regAlloc (L + 2) ;; .memLoad (L + 2) 0 (L + 1)) ;;
+        .memPush 1 (L + 2) ;; freeTemps (L + 1) 2
   | n, .bitsOf x =>
     let (cx, rx, n₁) := compileF (w := w) L x (L + 1)
     cx ;;
-    (List.range n).foldl (init := .skip) fun c i =>
-      c ;; .imm n₁ (BitVec.ofNat w i) ;; .bin .shr (n₁ + 1) rx n₁ ;;
-        .imm (n₁ + 2) 1 ;; .bin .and (n₁ + 3) (n₁ + 1) (n₁ + 2) ;;
-        .memPush 1 (n₁ + 3)
+    ((List.range n).foldl (init := .skip) fun c i =>
+      c ;; (.regAlloc n₁ ;; .imm n₁ (BitVec.ofNat w i) ;;
+          .regAlloc (n₁ + 1) ;; .bin .shr (n₁ + 1) rx n₁ ;;
+          .regAlloc (n₁ + 2) ;; .imm (n₁ + 2) 1 ;;
+          .regAlloc (n₁ + 3) ;; .bin .and (n₁ + 3) (n₁ + 1) (n₁ + 2)) ;;
+        .memPush 1 (n₁ + 3) ;; freeTemps n₁ 4) ;;
+    freeTemps (L + 1) ((n₁ : ℕ) - (L + 1))
   | _, .append a b => compileV L a ;; compileV L b
 
 /-- The code emitted for a structured program (`steps`, `out`) — the shared codegen
 body of `compileIR`'s `.ir` and `.certified` arms. It allocates the output buffer
 `1` with the *immediate* capacity `m` (`memAllocI` — the output length is a static
 type index, so the allocation is statically priced at
-`C.memAlloc + m * C.allocPerWord` and the emitted code stays straight-line), zeroes
-the idx register `L`, computes the `let`-steps into registers `0 .. L-1`, then
-pushes the `m` output elements. -/
+`C.memAlloc + m * C.allocPerWord` and the emitted code stays straight-line),
+acquires the locals and the idx register (`reg.alloc 0 .. L`), zeroes the idx
+register `L`, computes the `let`-steps into registers `0 .. L-1`, pushes the `m`
+output elements, and finally releases the locals and idx (`reg.free L .. 0`) —
+program end is their scope exit. -/
 def compileIRCode (L : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m) : Stmt w :=
   .memAllocI 1 m ;;
+  allocRegs (L + 1) ;;
   .imm L 0 ;;
   compileSteps L steps 0 ;;
-  compileV L out
+  compileV L out ;;
+  freeTemps 0 (L + 1)
 
 /-- **Internal, unchecked** — use the checked entry point `compile` instead.
 
@@ -866,8 +941,10 @@ def testMapRange : WitgenIR Fb 4 :=
 /-- info: true -/
 #guard_msgs in #eval diffOk testMapRange
 
-/- The inv ladder dominates test 1's running time. -/
-/-- info: some 140 -/
+/- The inv ladder dominates test 1's running time; the register lifecycle adds 15
+unit ticks over the free-register era (1 idx-register acquisition + 14 temporary
+acquisitions; the 15 releases are free). -/
+/-- info: some 155 -/
 #guard_msgs in #eval timeCost testIsZero
 
 /- All test programs pass the compilability check. -/
@@ -897,7 +974,7 @@ output `b` (which mentions `z` as `var ⟨1⟩`), does.
 * the `z ← witness (.ite (x =? 0) 0 x⁻¹)` payload — this is `isZeroCircuitIR`, and
   it is **definitionally equal** to `testIsZero` (`isZeroCircuitIR_eq_testIsZero`,
   by `rfl`), so every theorem about `testIsZero` — `compile_testIsZero`,
-  `isZeroCompiled_staticTime_unit`, `isZero_witgen_correct_140` — is literally a
+  `isZeroCompiled_staticTime_unit`, `isZero_witgen_correct_155` — is literally a
   theorem about the circuit's own witness program;
 * the trivial copy generator `isZeroCircuitCopyIR` from `let b <== 1 - x * z`,
   which just evaluates the circuit expression `1 - x * z` over already-known cells.
@@ -923,8 +1000,8 @@ def isZeroCircuitIR : WitgenIR Fb 1 :=
 /-- **The extracted IR is the test IR** — definitionally. This is the anchor that
 turns the `testIsZero` headline theorems into statements about the Clean circuit
 `Gadgets.IsZeroField.circuit`: circuit → extracted IR (this theorem) → `compile`
-(`compile_testIsZero`) → 140 unit steps, correct output
-(`isZero_witgen_correct_140_circuit` in `WitgenSimIR.lean`). -/
+(`compile_testIsZero`) → 155 unit steps, correct output
+(`isZero_witgen_correct_155_circuit` in `WitgenSimIR.lean`). -/
 theorem isZeroCircuitIR_eq_testIsZero : isZeroCircuitIR = testIsZero := rfl
 
 /-- The circuit's only other witness generator: the `<==` copy for the output
@@ -1061,8 +1138,8 @@ against the closure itself, computability, export — to the closure.
 The demo closure below is the `IsZeroField` conditional-inverse witness written in
 ordinary Lean; its IR reimplementation is `testIsZero`'s program, so the certified
 program compiles to exactly `isZeroCompiled` (see `compile_isZeroCertified` and the
-pinned 140-step cost in `WitgenCost.lean`, the machine-computes-the-closure
-simulation corollary `isZeroCertified_witgen_correct_140` in `WitgenSimIR.lean`, and
+pinned 155-step cost in `WitgenCost.lean`, the machine-computes-the-closure
+simulation corollary `isZeroCertified_witgen_correct_155` in `WitgenSimIR.lean`, and
 the `OnlyAccessedBelow` discharge for the bare closure in `WitgenComputable.lean`). -/
 
 /-- The `IsZeroField` witness as a *native closure*: the conditional inverse of
@@ -1124,7 +1201,7 @@ private theorem compileU_eq_lemmas_realized : True := by
 
 set_option linter.unusedSimpArgs false in
 private theorem compileB_eq_lemmas_realized : True := by
-  simp -failIfUnchanged only [compileB, compileV]
+  simp -failIfUnchanged only [compileB, compileV, freeTemps, allocRegs]
 
 set_option linter.unusedSimpArgs false in
 private theorem compilable_eq_lemmas_realized : True := by

@@ -205,9 +205,10 @@ theorem fieldOp_exec_add (hpw : p * p ≤ 2 ^ 64) {a b next : ℕ}
   have hyv := ZMod.val_lt y
   have h2 := (Fact.out : p.Prime).two_le
   have hplt : p < 2 ^ 64 := p_lt_two_pow_64 hpw
-  refine ⟨_, _, _, _, .seq .imm (.seq .bin .bin), ?_, ?_, rfl, rfl⟩
+  refine ⟨_, _, _, _, .seq .regAlloc (.seq .imm (.seq .regAlloc (.seq .bin .bin))),
+    ?_, ?_, rfl, rfl⟩
   · apply BitVec.eq_of_toNat_eq
-    simp only [regs_setReg_self, BinOp.eval,
+    simp only [regs_setReg_self, regs_setRegAlloc, BinOp.eval,
       regs_setReg_ne _ _ (show a ≠ next by omega),
       regs_setReg_ne _ _ (show b ≠ next by omega),
       regs_setReg_ne _ _ (show next ≠ next + 1 by omega),
@@ -217,8 +218,8 @@ theorem fieldOp_exec_add (hpw : p * p ≤ 2 ^ 64) {a b next : ℕ}
       Nat.mod_eq_of_lt (show x.val + y.val < 2 ^ 64 by nlinarith), ZMod.val_add]
   · intro q hq
     rw [regs_setReg_ne _ _ (show q ≠ next + 1 by omega),
-      regs_setReg_ne _ _ (show q ≠ next + 1 by omega),
-      regs_setReg_ne _ _ (show q ≠ next by omega)]
+      regs_setReg_ne _ _ (show q ≠ next + 1 by omega), regs_setRegAlloc,
+      regs_setReg_ne _ _ (show q ≠ next by omega), regs_setRegAlloc]
 
 /-- `fieldOp .mul`: from canonical operands in `a`, `b` (both `< next`), the result
 register `next + 1` holds the canonical word of the field product. -/
@@ -233,9 +234,10 @@ theorem fieldOp_exec_mul (hpw : p * p ≤ 2 ^ 64) {a b next : ℕ}
   have hyv := ZMod.val_lt y
   have h2 := (Fact.out : p.Prime).two_le
   have hplt : p < 2 ^ 64 := p_lt_two_pow_64 hpw
-  refine ⟨_, _, _, _, .seq .imm (.seq .bin .bin), ?_, ?_, rfl, rfl⟩
+  refine ⟨_, _, _, _, .seq .regAlloc (.seq .imm (.seq .regAlloc (.seq .bin .bin))),
+    ?_, ?_, rfl, rfl⟩
   · apply BitVec.eq_of_toNat_eq
-    simp only [regs_setReg_self, BinOp.eval,
+    simp only [regs_setReg_self, regs_setRegAlloc, BinOp.eval,
       regs_setReg_ne _ _ (show a ≠ next by omega),
       regs_setReg_ne _ _ (show b ≠ next by omega),
       regs_setReg_ne _ _ (show next ≠ next + 1 by omega),
@@ -245,8 +247,8 @@ theorem fieldOp_exec_mul (hpw : p * p ≤ 2 ^ 64) {a b next : ℕ}
       Nat.mod_eq_of_lt (show x.val * y.val < 2 ^ 64 by nlinarith), ZMod.val_mul]
   · intro q hq
     rw [regs_setReg_ne _ _ (show q ≠ next + 1 by omega),
-      regs_setReg_ne _ _ (show q ≠ next + 1 by omega),
-      regs_setReg_ne _ _ (show q ≠ next by omega)]
+      regs_setReg_ne _ _ (show q ≠ next + 1 by omega), regs_setRegAlloc,
+      regs_setReg_ne _ _ (show q ≠ next by omega), regs_setRegAlloc]
 
 /-- `selectCode`: from a `{0, 1}` flag word in `flag` and arbitrary words in `ra`,
 `rb` (all `< next`), the result register `next + 4` holds the selected word. -/
@@ -258,8 +260,11 @@ theorem selectCode_exec {flag ra rb next : ℕ}
       s'.regs (next + 4) = (if c then v₁ else v₂) ∧
       (∀ q, q < next → s'.regs q = s.regs q) ∧
       s'.bufs = s.bufs ∧ s'.caps = s.caps := by
-  refine ⟨_, _, _, _, .seq .un (.seq .un (.seq .bin (.seq .bin .bin))), ?_, ?_, rfl, rfl⟩
-  · simp only [regs_setReg_self, UnOp.eval, BinOp.eval,
+  refine ⟨_, _, _, _,
+    .seq .regAlloc (.seq .un (.seq .regAlloc (.seq .un (.seq .regAlloc
+      (.seq .bin (.seq .regAlloc (.seq .bin (.seq .regAlloc .bin)))))))),
+    ?_, ?_, rfl, rfl⟩
+  · simp only [regs_setReg_self, regs_setRegAlloc, UnOp.eval, BinOp.eval,
       regs_setReg_ne _ _ (show ra ≠ next by omega),
       regs_setReg_ne _ _ (show ra ≠ next + 1 by omega),
       regs_setReg_ne _ _ (show rb ≠ next by omega),
@@ -274,11 +279,11 @@ theorem selectCode_exec {flag ra rb next : ℕ}
       rw [show (18446744073709551615#64 : Word 64) = BitVec.allOnes 64 from rfl,
         BitVec.and_allOnes]
   · intro q hq
-    rw [regs_setReg_ne _ _ (show q ≠ next + 4 by omega),
-      regs_setReg_ne _ _ (show q ≠ next + 3 by omega),
-      regs_setReg_ne _ _ (show q ≠ next + 2 by omega),
-      regs_setReg_ne _ _ (show q ≠ next + 1 by omega),
-      regs_setReg_ne _ _ (show q ≠ next by omega)]
+    rw [regs_setReg_ne _ _ (show q ≠ next + 4 by omega), regs_setRegAlloc,
+      regs_setReg_ne _ _ (show q ≠ next + 3 by omega), regs_setRegAlloc,
+      regs_setReg_ne _ _ (show q ≠ next + 2 by omega), regs_setRegAlloc,
+      regs_setReg_ne _ _ (show q ≠ next + 1 by omega), regs_setRegAlloc,
+      regs_setReg_ne _ _ (show q ≠ next by omega), regs_setRegAlloc]
 
 /-- One multiply-reduce block of the Fermat ladder, appended to already-executed code
 `c`: `acc ← acc * r mod p`. The operand register `r` may be `acc` itself (the squaring

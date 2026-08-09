@@ -28,11 +28,13 @@ built on the scalar-expression simulation of `Clean/Caliper/WitgenSimExpr.lean`.
   environment encoding remain.
 
 Combined with phase 2 (`WitgenCost.lean`: exact static running time, space ≤ output
-length), this yields end-to-end corollaries like `isZero_witgen_correct_140` and its
-circuit-anchored form `isZero_witgen_correct_140_circuit`: the compiled witness
-program of the BabyBear `Gadgets.IsZeroField.circuit` — extracted from the circuit
-itself, see `isZeroCircuitIR_eq_testIsZero` in `WitgenCompile.lean` — computes the
-correct encoded witness output in exactly 140 unit steps with peak memory 1 word.
+length + the certified register live set), this yields end-to-end corollaries like
+`isZero_witgen_correct_155` and its circuit-anchored form
+`isZero_witgen_correct_155_circuit`: the compiled witness program of the BabyBear
+`Gadgets.IsZeroField.circuit` — extracted from the circuit itself, see
+`isZeroCircuitIR_eq_testIsZero` in `WitgenCompile.lean` — computes the correct
+encoded witness output in exactly 155 unit steps with peak live memory 16 words
+(the output word plus the 15-register live set `isZero_regPeak`).
 
 Everything is at the compiler's design point: word size `w = 64`, `F = F p` for a
 prime `p` with `2 < p` and `p * p ≤ 2 ^ 64` (facts the internal lemmas take as
@@ -169,26 +171,30 @@ theorem compileStep_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L :
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileF_sim p hp2 hpw env N envArr henv hN Γ locals 0 L hL e (L + 1) s hc hb hs
     simp only [hE] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hb₂, hc₂⟩ :=
+      freeTemps_exec (C := C) (L + 1) ((n' : ℕ) - (L + 1))
+        (s₁.setReg locals.size (s₁.regs r))
     obtain ⟨hbuf, h1, h2, h3, h4⟩ := hs
     simp only [compileStep, hE]
-    refine ⟨_, _, _, _, .seq hex₁ .mov, ⟨?_, ?_, h2, fun i hi => ?_, ?_⟩, ?_, ?_, ?_⟩
-    · rw [bufs_setReg, hbf₁]; exact hbuf
+    refine ⟨_, _, _, _, .seq hex₁ (.seq .mov hex₂), ⟨?_, ?_, h2, fun i hi => ?_, ?_⟩,
+      ?_, ?_, ?_⟩
+    · rw [hb₂, bufs_setReg, hbf₁]; exact hbuf
     · rw [Array.size_push]; omega
     · rw [Array.size_push] at hi
       rcases Nat.lt_or_ge i locals.size with hlt | hge
-      · rw [regs_setReg_ne _ _ (show i ≠ locals.size by omega), hp₁ i (by omega),
-          Array.getElem_push_lt hlt]
+      · rw [hr₂, regs_setReg_ne _ _ (show i ≠ locals.size by omega),
+          hp₁ i (by omega), Array.getElem_push_lt hlt]
         exact h3 i hlt
       · have : i = locals.size := by omega
         subst this
-        rw [regs_setReg_self]
+        rw [hr₂, regs_setReg_self]
         simp only [stepValue, Array.getElem_push_eq, encLocal]
         exact hr₁
-    · rw [regs_setReg_ne _ _ (show L ≠ locals.size by omega), hp₁ L (by omega)]
+    · rw [hr₂, regs_setReg_ne _ _ (show L ≠ locals.size by omega), hp₁ L (by omega)]
       exact h4
     · exact LocalsMatch_push_inl hL _
-    · rw [bufs_setReg, hbf₁]
-    · rw [caps_setReg, hcp₁]
+    · rw [hb₂, bufs_setReg, hbf₁]
+    · rw [hc₂, caps_setReg, hcp₁]
   | .letU e, s, hc, hb, hs => by
     simp only [Step.compilable] at hc
     simp only [Step.envBound] at hb
@@ -196,26 +202,30 @@ theorem compileStep_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L :
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
       compileU_sim p hp2 hpw env N envArr henv hN Γ locals 0 L hL e (L + 1) s hc hb hs
     simp only [hE] at hex₁ hr₁
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hb₂, hc₂⟩ :=
+      freeTemps_exec (C := C) (L + 1) ((n' : ℕ) - (L + 1))
+        (s₁.setReg locals.size (s₁.regs r))
     obtain ⟨hbuf, h1, h2, h3, h4⟩ := hs
     simp only [compileStep, hE]
-    refine ⟨_, _, _, _, .seq hex₁ .mov, ⟨?_, ?_, h2, fun i hi => ?_, ?_⟩, ?_, ?_, ?_⟩
-    · rw [bufs_setReg, hbf₁]; exact hbuf
+    refine ⟨_, _, _, _, .seq hex₁ (.seq .mov hex₂), ⟨?_, ?_, h2, fun i hi => ?_, ?_⟩,
+      ?_, ?_, ?_⟩
+    · rw [hb₂, bufs_setReg, hbf₁]; exact hbuf
     · rw [Array.size_push]; omega
     · rw [Array.size_push] at hi
       rcases Nat.lt_or_ge i locals.size with hlt | hge
-      · rw [regs_setReg_ne _ _ (show i ≠ locals.size by omega), hp₁ i (by omega),
-          Array.getElem_push_lt hlt]
+      · rw [hr₂, regs_setReg_ne _ _ (show i ≠ locals.size by omega),
+          hp₁ i (by omega), Array.getElem_push_lt hlt]
         exact h3 i hlt
       · have : i = locals.size := by omega
         subst this
-        rw [regs_setReg_self]
+        rw [hr₂, regs_setReg_self]
         simp only [stepValue, Array.getElem_push_eq, encLocal]
         exact hr₁
-    · rw [regs_setReg_ne _ _ (show L ≠ locals.size by omega), hp₁ L (by omega)]
+    · rw [hr₂, regs_setReg_ne _ _ (show L ≠ locals.size by omega), hp₁ L (by omega)]
       exact h4
     · exact LocalsMatch_push_inr hL _
-    · rw [bufs_setReg, hbf₁]
-    · rw [caps_setReg, hcp₁]
+    · rw [hb₂, bufs_setReg, hbf₁]
+    · rw [hc₂, caps_setReg, hcp₁]
 
 /-- **Simulation for the `let`-step list**: the compiled steps run left to right,
 extending the encoded context step by step, and the final state encodes the fully
@@ -275,7 +285,9 @@ private theorem compileV_lit_fold (Γ : List VSort) (locals : Array (F p ⊕ UIn
       ∃ s' t d pp,
         Exec C (l.foldl (fun c e =>
             c ;; (compileF (w := 64) L e (L + 1)).1 ;;
-              .memPush 1 (compileF (w := 64) L e (L + 1)).2.1) c₀) s s' t d pp ∧
+              .memPush 1 (compileF (w := 64) L e (L + 1)).2.1 ;;
+              freeTemps (L + 1)
+                (((compileF (w := 64) L e (L + 1)).2.2 : ℕ) - (L + 1))) c₀) s s' t d pp ∧
         s'.bufs 1 = s₀.bufs 1 ++
           (l.map fun e => encF (FExpr.eval { env, locals } e)).toArray ∧
         StateEnc envArr Γ locals 0 L (L + 1) s' ∧
@@ -298,15 +310,21 @@ private theorem compileV_lit_fold (Γ : List VSort) (locals : Array (F p ⊕ UIn
         (s₁.setBuf 1 ((s₁.bufs 1).push (s₁.regs (compileF (w := 64) L e (L + 1)).2.1))) :=
       StateEnc_frame (StateEnc_frame hs hp₁ (by rw [hbf₁])) (fun _ _ => rfl)
         (bufs_setBuf_ne _ _ (by decide))
+    obtain ⟨s₃, t₃, d₃, p₃, hexF, hrF, hbF, hcF⟩ :=
+      freeTemps_exec (C := C) (L + 1)
+        (((compileF (w := 64) L e (L + 1)).2.2 : ℕ) - (L + 1))
+        (s₁.setBuf 1 ((s₁.bufs 1).push (s₁.regs (compileF (w := 64) L e (L + 1)).2.1)))
     obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
-      ih (.seq hex₀ (.seq hex₁ (.memPush hpush))) hc.2 hb.2 hs₂
-        (by rw [bufs_setBuf_self, Array.size_push, caps_setBuf, hbf₁, hcp₁]; omega)
+      ih (.seq hex₀ (.seq hex₁ (.seq (.memPush hpush) hexF))) hc.2 hb.2
+        (StateEnc_frame hs₂ (fun q _ => by rw [hrF]) (by rw [hbF]))
+        (by rw [hbF, hcF, bufs_setBuf_self, Array.size_push, caps_setBuf, hbf₁, hcp₁]
+            omega)
     refine ⟨s', t', d', pp', hex', ?_, hs', ?_, ?_⟩
-    · rw [hout', bufs_setBuf_self, hbf₁, hr₁, List.map_cons]
+    · rw [hout', hbF, bufs_setBuf_self, hbf₁, hr₁, List.map_cons]
       exact push_append_toArray _ _ _
     · intro b hb1
-      rw [hbo' b hb1, bufs_setBuf_ne _ _ hb1, hbf₁]
-    · rw [hcp', caps_setBuf, hcp₁]
+      rw [hbo' b hb1, hbF, bufs_setBuf_ne _ _ hb1, hbf₁]
+    · rw [hcp', hcF, caps_setBuf, hcp₁]
 
 /-- Fold lemma for `.mapRange` outputs: each block sets the idx register `L` to the
 element index, computes the body at that index, and pushes the result. The final idx
@@ -320,8 +338,11 @@ private theorem compileV_mapRange_fold (Γ : List VSort) (locals : Array (F p �
       (s₀.bufs 1).size + is.length ≤ s₀.caps 1 →
       ∃ s' t d pp j',
         Exec C (is.foldl (fun c i =>
-            c ;; .imm L (BitVec.ofNat 64 i) ;; (compileF (w := 64) L body (L + 1)).1 ;;
-              .memPush 1 (compileF (w := 64) L body (L + 1)).2.1) c₀) s s' t d pp ∧
+            c ;; (.imm L (BitVec.ofNat 64 i) ;; (compileF (w := 64) L body (L + 1)).1) ;;
+              .memPush 1 (compileF (w := 64) L body (L + 1)).2.1 ;;
+              freeTemps (L + 1)
+                (((compileF (w := 64) L body (L + 1)).2.2 : ℕ) - (L + 1))) c₀)
+          s s' t d pp ∧
         s'.bufs 1 = s₀.bufs 1 ++
           (is.map fun i => encF (FExpr.eval { env, locals, idx := i } body)).toArray ∧
         StateEnc envArr Γ locals j' L (L + 1) s' ∧
@@ -346,21 +367,29 @@ private theorem compileV_mapRange_fold (Γ : List VSort) (locals : Array (F p �
           (s₂.regs (compileF (w := 64) L body (L + 1)).2.1))) :=
       StateEnc_frame (StateEnc_frame hs₁ hp₂ (by rw [hbf₂])) (fun _ _ => rfl)
         (bufs_setBuf_ne _ _ (by decide))
+    obtain ⟨s₃, t₃, d₃, p₃, hexF, hrF, hbF, hcF⟩ :=
+      freeTemps_exec (C := C) (L + 1)
+        (((compileF (w := 64) L body (L + 1)).2.2 : ℕ) - (L + 1))
+        (s₂.setBuf 1 ((s₂.bufs 1).push
+          (s₂.regs (compileF (w := 64) L body (L + 1)).2.1)))
     obtain ⟨s', t', d', pp', j', hex', hout', hs', hbo', hcp'⟩ :=
-      ih (.seq hex₀ (.seq .imm (.seq hex₂ (.memPush hpush)))) hs₃
-        (by rw [bufs_setBuf_self, Array.size_push, caps_setBuf, hbf₂, hcp₂]
+      ih (.seq hex₀ (.seq (.seq .imm hex₂) (.seq (.memPush hpush) hexF)))
+        (StateEnc_frame hs₃ (fun q _ => by rw [hrF]) (by rw [hbF]))
+        (by rw [hbF, hcF, bufs_setBuf_self, Array.size_push, caps_setBuf, hbf₂, hcp₂]
             simp only [bufs_setReg, caps_setReg]; omega)
     refine ⟨s', t', d', pp', j', hex', ?_, hs', ?_, ?_⟩
-    · rw [hout', bufs_setBuf_self, hbf₂, bufs_setReg, hr₂, List.map_cons]
+    · rw [hout', hbF, bufs_setBuf_self, hbf₂, bufs_setReg, hr₂, List.map_cons]
       exact push_append_toArray _ _ _
     · intro b hb1
-      rw [hbo' b hb1, bufs_setBuf_ne _ _ hb1, hbf₂, bufs_setReg]
-    · rw [hcp', caps_setBuf, hcp₂, caps_setReg]
+      rw [hbo' b hb1, hbF, bufs_setBuf_ne _ _ hb1, hbf₂, bufs_setReg]
+    · rw [hcp', hcF, caps_setBuf, hcp₂, caps_setReg]
 
 omit [Fact (Nat.Prime p)] hp2 hpw in
-/-- Fold lemma for `.envRange` outputs: each block loads the static environment index
-(temporary `L + 1`), reads the environment buffer `0`, and pushes the cell — which by
-`EnvEnc` is the canonical word of the reference environment value. -/
+/-- Fold lemma for `.envRange` outputs: each block acquires its two temporaries,
+loads the static environment index (temporary `L + 1`), reads the environment
+buffer `0` (temporary `L + 2`), pushes the cell — which by `EnvEnc` is the
+canonical word of the reference environment value — and releases the two
+temporaries again (`freeTemps (L + 1) 2`). -/
 private theorem compileV_envRange_fold (Γ : List VSort) (locals : Array (F p ⊕ UInt64))
     (L : ℕ) (offset : ℕ) :
     ∀ (is : List ℕ), (∀ i ∈ is, offset + i < N) →
@@ -370,8 +399,9 @@ private theorem compileV_envRange_fold (Γ : List VSort) (locals : Array (F p �
       (s₀.bufs 1).size + is.length ≤ s₀.caps 1 →
       ∃ s' t d pp,
         Exec C (is.foldl (fun c i =>
-            c ;; .imm (L + 1) (BitVec.ofNat 64 (offset + i)) ;;
-              .memLoad (L + 2) 0 (L + 1) ;; .memPush 1 (L + 2)) c₀) s s' t d pp ∧
+            c ;; (.regAlloc (L + 1) ;; .imm (L + 1) (BitVec.ofNat 64 (offset + i)) ;;
+                .regAlloc (L + 2) ;; .memLoad (L + 2) 0 (L + 1)) ;;
+              .memPush 1 (L + 2) ;; freeTemps (L + 1) 2) c₀) s s' t d pp ∧
         s'.bufs 1 = s₀.bufs 1 ++
           (is.map fun i => encF (env.get (offset + i))).toArray ∧
         StateEnc envArr Γ locals 0 L (L + 1) s' ∧
@@ -385,60 +415,60 @@ private theorem compileV_envRange_fold (Γ : List VSort) (locals : Array (F p �
     intro his c₀ s s₀ t₀ d₀ p₀ hex₀ hs hcap
     simp only [List.length_cons] at hcap
     have hoi : offset + i < N := his i (List.mem_cons_self ..)
-    have hidx : ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).regs (L + 1)).toNat
-        = offset + i := by
-      rw [regs_setReg_self, BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)]
-    have hget : ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).regs (L + 1)).toNat
-        < ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).bufs 0).size := by
-      rw [hidx, bufs_setReg, hs.1, henv.1]; exact hoi
-    have hval : ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).bufs 0)[
-        ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).regs (L + 1)).toNat]'hget
-        = encF (env.get (offset + i)) := by
-      rw [← getElem!_pos]
-      simp only [bufs_setReg, hidx, hs.1]
+    -- the read block's states
+    set sI := ((s₀.setRegAlloc (L + 1) true).setReg (L + 1)
+      (BitVec.ofNat 64 (offset + i))).setRegAlloc (L + 2) true with hsIdef
+    have hidx : (sI.regs (L + 1)).toNat = offset + i := by
+      rw [hsIdef, regs_setRegAlloc, regs_setReg_self, BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt (by omega)]
+    have hget : (sI.regs (L + 1)).toNat < (sI.bufs 0).size := by
+      rw [hidx, hsIdef, bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc, hs.1, henv.1]
+      exact hoi
+    set sL := sI.setReg (L + 2) ((sI.bufs 0)[(sI.regs (L + 1)).toNat]'hget) with hsLdef
+    have hval : sL.regs (L + 2) = encF (env.get (offset + i)) := by
+      rw [hsLdef, regs_setReg_self, ← getElem!_pos]
+      rw [hidx, hsIdef, bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc, hs.1]
       exact henv.2 _ hoi
-    -- the three writes: index temp, loaded cell, push
-    have hp3 : ∀ q, q < L + 1 →
-        (((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).setReg (L + 2)
-            (((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).bufs 0)[
-              ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).regs
-                (L + 1)).toNat]'hget)).setBuf 1
-          ((((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).setReg (L + 2)
-            (((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).bufs 0)[
-              ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).regs
-                (L + 1)).toNat]'hget)).bufs 1).push
-            (((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).setReg (L + 2)
-              (((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).bufs 0)[
-                ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).regs
-                  (L + 1)).toNat]'hget)).regs (L + 2)))).regs q = s₀.regs q := by
+    have hpushOk : (sL.bufs 1).size < sL.caps 1 := by
+      rw [hsLdef, bufs_setReg, caps_setReg, hsIdef, bufs_setRegAlloc, bufs_setReg,
+        bufs_setRegAlloc, caps_setRegAlloc, caps_setReg, caps_setRegAlloc]
+      omega
+    set sP := sL.setBuf 1 ((sL.bufs 1).push (sL.regs (L + 2))) with hsPdef
+    obtain ⟨s₃, t₃, d₃, p₃, hexF, hrF, hbF, hcF⟩ :=
+      freeTemps_exec (C := C) (L + 1) 2 sP
+    have hpres : ∀ q, q < L + 1 → sP.regs q = s₀.regs q := by
       intro q hq
-      rw [regs_setBuf, regs_setReg_ne _ _ (show q ≠ L + 2 by omega),
-        regs_setReg_ne _ _ (show q ≠ L + 1 by omega)]
-    have hpush : ∀ {s₂ : State 64}, s₂.bufs 1 = s₀.bufs 1 → s₂.caps 1 = s₀.caps 1 →
-        (s₂.bufs 1).size < s₂.caps 1 := by
-      intro s₂ h1 h2; rw [h1, h2]; omega
+      rw [hsPdef, regs_setBuf, hsLdef, regs_setReg_ne _ _ (show q ≠ L + 2 by omega),
+        hsIdef, regs_setRegAlloc, regs_setReg_ne _ _ (show q ≠ L + 1 by omega),
+        regs_setRegAlloc]
+    have hbP : ∀ b, b ≠ 1 → sP.bufs b = s₀.bufs b := by
+      intro b hb1
+      rw [hsPdef, bufs_setBuf_ne _ _ hb1, hsLdef, bufs_setReg, hsIdef,
+        bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc]
+    have hcP : sP.caps = s₀.caps := by
+      rw [hsPdef, caps_setBuf, hsLdef, caps_setReg, hsIdef, caps_setRegAlloc,
+        caps_setReg, caps_setRegAlloc]
+    have hbP1 : sP.bufs 1 = (s₀.bufs 1).push (encF (env.get (offset + i))) := by
+      rw [hsPdef, bufs_setBuf_self, hval, hsLdef, bufs_setReg, hsIdef,
+        bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc]
     obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
       ih (fun j hj => his j (List.mem_cons_of_mem _ hj))
-        (.seq hex₀ (.seq .imm (.seq (.memLoad hget)
-          (.memPush (hpush (by simp) (by simp))))))
-        (StateEnc_frame hs hp3 (by simp))
-        (by rw [bufs_setBuf_self, Array.size_push, caps_setBuf]
-            simp only [bufs_setReg, caps_setReg]; omega)
+        (.seq hex₀ (.seq (.seq .regAlloc (.seq .imm (.seq .regAlloc (.memLoad hget))))
+          (.seq (.memPush hpushOk) hexF)))
+        (StateEnc_frame hs (fun q hq => by rw [hrF]; exact hpres q hq)
+          (by rw [hbF]; exact hbP 0 (by decide)))
+        (by rw [hbF, hcF, hbP1, hcP, Array.size_push]; omega)
     refine ⟨s', t', d', pp', hex', ?_, hs', ?_, ?_⟩
-    · have hregval : ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).setReg (L + 2)
-          (((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).bufs 0)[
-            ((s₀.setReg (L + 1) (BitVec.ofNat 64 (offset + i))).regs
-              (L + 1)).toNat]'hget)).regs (L + 2) = encF (env.get (offset + i)) := by
-        rw [regs_setReg_self]; exact hval
-      rw [hout', bufs_setBuf_self, hregval, bufs_setReg, bufs_setReg, List.map_cons]
+    · rw [hout', hbF, hbP1, List.map_cons]
       exact push_append_toArray _ _ _
     · intro b hb1
-      rw [hbo' b hb1, bufs_setBuf_ne _ _ hb1, bufs_setReg, bufs_setReg]
-    · rw [hcp', caps_setBuf, caps_setReg, caps_setReg]
+      rw [hbo' b hb1, hbF, hbP b hb1]
+    · rw [hcp', hcF, hcP]
 
 omit henv hN in
 /-- Fold lemma for `.bitsOf` outputs: with the decomposed value's canonical word held
-in register `rx`, each block shifts, masks and pushes one bit as a field element.
+in register `rx`, each block acquires its four temporaries, shifts, masks and pushes
+one bit as a field element, and releases the four again (`freeTemps n₁ 4`).
 Registers `rx` and everything below `L + 1` survive. -/
 private theorem compileV_bitsOf_fold (Γ : List VSort) (locals : Array (F p ⊕ UInt64))
     (L : ℕ) {rx n₁ : ℕ} (hrx : LT.lt (α := ℕ) rx n₁) (hLn : L + 1 ≤ n₁) (v : F p) :
@@ -450,9 +480,11 @@ private theorem compileV_bitsOf_fold (Γ : List VSort) (locals : Array (F p ⊕ 
       (s₀.bufs 1).size + is.length ≤ s₀.caps 1 →
       ∃ s' t d pp,
         Exec C (is.foldl (fun c i =>
-            c ;; .imm n₁ (BitVec.ofNat 64 i) ;; .bin .shr (n₁ + 1) rx n₁ ;;
-              .imm (n₁ + 2) 1 ;; .bin .and (n₁ + 3) (n₁ + 1) (n₁ + 2) ;;
-              .memPush 1 (n₁ + 3)) c₀) s s' t d pp ∧
+            c ;; (.regAlloc n₁ ;; .imm n₁ (BitVec.ofNat 64 i) ;;
+                .regAlloc (n₁ + 1) ;; .bin .shr (n₁ + 1) rx n₁ ;;
+                .regAlloc (n₁ + 2) ;; .imm (n₁ + 2) 1 ;;
+                .regAlloc (n₁ + 3) ;; .bin .and (n₁ + 3) (n₁ + 1) (n₁ + 2)) ;;
+              .memPush 1 (n₁ + 3) ;; freeTemps n₁ 4) c₀) s s' t d pp ∧
         s'.bufs 1 = s₀.bufs 1 ++
           (is.map fun i => encF ((ZMod.val v >>> i % 2 : ℕ) : F p)).toArray ∧
         StateEnc envArr Γ locals 0 L (L + 1) s' ∧
@@ -466,53 +498,66 @@ private theorem compileV_bitsOf_fold (Γ : List VSort) (locals : Array (F p ⊕ 
     intro his c₀ s s₀ t₀ d₀ p₀ hex₀ hrv hs hcap
     simp only [List.length_cons] at hcap
     have hi : i < 2 ^ 64 := his i (List.mem_cons_self ..)
-    -- name the four register-writing steps
-    set s₁ := s₀.setReg n₁ (BitVec.ofNat 64 i) with hs₁def
-    set s₂ := s₁.setReg (n₁ + 1) (BinOp.eval .shr (s₁.regs rx) (s₁.regs n₁)) with hs₂def
-    set s₃ := s₂.setReg (n₁ + 2) 1 with hs₃def
-    set s₄ := s₃.setReg (n₁ + 3)
-      (BinOp.eval .and (s₃.regs (n₁ + 1)) (s₃.regs (n₁ + 2))) with hs₄def
+    -- name the eight register-touching steps
+    set s₁ := (s₀.setRegAlloc n₁ true).setReg n₁ (BitVec.ofNat 64 i) with hs₁def
+    set s₂ := (s₁.setRegAlloc (n₁ + 1) true).setReg (n₁ + 1)
+      (BinOp.eval .shr ((s₁.setRegAlloc (n₁ + 1) true).regs rx)
+        ((s₁.setRegAlloc (n₁ + 1) true).regs n₁)) with hs₂def
+    set s₃ := (s₂.setRegAlloc (n₁ + 2) true).setReg (n₁ + 2) 1 with hs₃def
+    set s₄ := (s₃.setRegAlloc (n₁ + 3) true).setReg (n₁ + 3)
+      (BinOp.eval .and ((s₃.setRegAlloc (n₁ + 3) true).regs (n₁ + 1))
+        ((s₃.setRegAlloc (n₁ + 3) true).regs (n₁ + 2))) with hs₄def
     have hval : s₄.regs (n₁ + 3) = encF ((ZMod.val v >>> i % 2 : ℕ) : F p) := by
-      rw [hs₄def, regs_setReg_self, hs₃def,
-        regs_setReg_ne _ _ (show n₁ + 1 ≠ n₁ + 2 by omega), regs_setReg_self,
-        hs₂def, regs_setReg_self, hs₁def,
-        regs_setReg_ne _ _ (show rx ≠ n₁ by omega), regs_setReg_self, hrv]
+      rw [hs₄def, regs_setReg_self, regs_setRegAlloc, hs₃def,
+        regs_setReg_ne _ _ (show n₁ + 1 ≠ n₁ + 2 by omega), regs_setRegAlloc,
+        regs_setReg_self, hs₂def, regs_setReg_self, regs_setRegAlloc, hs₁def,
+        regs_setReg_ne _ _ (show rx ≠ n₁ by omega), regs_setRegAlloc,
+        regs_setReg_self, hrv]
       simp only [BinOp.eval]
       exact encF_bitWord hp2 hpw v hi
     have hp4 : ∀ q, q < L + 1 → s₄.regs q = s₀.regs q := by
       intro q hq
-      rw [hs₄def, regs_setReg_ne _ _ (show q ≠ n₁ + 3 by omega), hs₃def,
-        regs_setReg_ne _ _ (show q ≠ n₁ + 2 by omega), hs₂def,
-        regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega), hs₁def,
-        regs_setReg_ne _ _ (show q ≠ n₁ by omega)]
+      rw [hs₄def, regs_setReg_ne _ _ (show q ≠ n₁ + 3 by omega), regs_setRegAlloc,
+        hs₃def, regs_setReg_ne _ _ (show q ≠ n₁ + 2 by omega), regs_setRegAlloc,
+        hs₂def, regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega), regs_setRegAlloc,
+        hs₁def, regs_setReg_ne _ _ (show q ≠ n₁ by omega), regs_setRegAlloc]
     have hb4 : s₄.bufs = s₀.bufs := by
-      rw [hs₄def, bufs_setReg, hs₃def, bufs_setReg, hs₂def, bufs_setReg, hs₁def,
-        bufs_setReg]
+      rw [hs₄def, bufs_setReg, bufs_setRegAlloc, hs₃def, bufs_setReg,
+        bufs_setRegAlloc, hs₂def, bufs_setReg, bufs_setRegAlloc, hs₁def,
+        bufs_setReg, bufs_setRegAlloc]
     have hc4 : s₄.caps = s₀.caps := by
-      rw [hs₄def, caps_setReg, hs₃def, caps_setReg, hs₂def, caps_setReg, hs₁def,
-        caps_setReg]
+      rw [hs₄def, caps_setReg, caps_setRegAlloc, hs₃def, caps_setReg,
+        caps_setRegAlloc, hs₂def, caps_setReg, caps_setRegAlloc, hs₁def,
+        caps_setReg, caps_setRegAlloc]
     have hpush : (s₄.bufs 1).size < s₄.caps 1 := by
       rw [hb4, hc4]; omega
-    have hrx4 : (s₄.setBuf 1 ((s₄.bufs 1).push (s₄.regs (n₁ + 3)))).regs rx
-        = encF v := by
-      rw [regs_setBuf, hs₄def, regs_setReg_ne _ _ (show rx ≠ n₁ + 3 by omega), hs₃def,
-        regs_setReg_ne _ _ (show rx ≠ n₁ + 2 by omega), hs₂def,
-        regs_setReg_ne _ _ (show rx ≠ n₁ + 1 by omega), hs₁def,
-        regs_setReg_ne _ _ (show rx ≠ n₁ by omega)]
+    set sP := s₄.setBuf 1 ((s₄.bufs 1).push (s₄.regs (n₁ + 3))) with hsPdef
+    obtain ⟨s₅, t₅, d₅, p₅, hexF, hrF, hbF, hcF⟩ := freeTemps_exec (C := C) n₁ 4 sP
+    have hrx5 : s₅.regs rx = encF v := by
+      rw [hrF, hsPdef, regs_setBuf, hs₄def,
+        regs_setReg_ne _ _ (show rx ≠ n₁ + 3 by omega), regs_setRegAlloc, hs₃def,
+        regs_setReg_ne _ _ (show rx ≠ n₁ + 2 by omega), regs_setRegAlloc, hs₂def,
+        regs_setReg_ne _ _ (show rx ≠ n₁ + 1 by omega), regs_setRegAlloc, hs₁def,
+        regs_setReg_ne _ _ (show rx ≠ n₁ by omega), regs_setRegAlloc]
       exact hrv
     obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
       ih (fun j hj => his j (List.mem_cons_of_mem _ hj))
-        (.seq hex₀ (.seq .imm (.seq .bin (.seq .imm (.seq .bin (.memPush hpush))))))
-        hrx4
-        (StateEnc_frame hs (fun q hq => by rw [regs_setBuf]; exact hp4 q hq)
-          (by rw [bufs_setBuf_ne _ _ (show (0:ℕ) ≠ 1 by omega), hb4]))
-        (by rw [bufs_setBuf_self, Array.size_push, caps_setBuf, hb4, hc4]; omega)
+        (.seq hex₀ (.seq (.seq .regAlloc (.seq .imm (.seq .regAlloc (.seq .bin
+            (.seq .regAlloc (.seq .imm (.seq .regAlloc .bin)))))))
+          (.seq (.memPush hpush) hexF)))
+        hrx5
+        (StateEnc_frame hs
+          (fun q hq => by rw [hrF, hsPdef, regs_setBuf]; exact hp4 q hq)
+          (by rw [hbF, hsPdef, bufs_setBuf_ne _ _ (show (0:ℕ) ≠ 1 by omega), hb4]))
+        (by rw [hbF, hcF, hsPdef, bufs_setBuf_self, Array.size_push, caps_setBuf,
+              hb4, hc4]
+            omega)
     refine ⟨s', t', d', pp', hex', ?_, hs', ?_, ?_⟩
-    · rw [hout', bufs_setBuf_self, hb4, hval, List.map_cons]
+    · rw [hout', hbF, hsPdef, bufs_setBuf_self, hb4, hval, List.map_cons]
       exact push_append_toArray _ _ _
     · intro b hb1
-      rw [hbo' b hb1, bufs_setBuf_ne _ _ hb1, hb4]
-    · rw [hcp', caps_setBuf, hc4]
+      rw [hbo' b hb1, hbF, hsPdef, bufs_setBuf_ne _ _ hb1, hb4]
+    · rw [hcp', hcF, hsPdef, caps_setBuf, hc4]
 
 /-- **Simulation for vector outputs**: the code `compileV` emits for a compilable,
 environment-bounded `VExpr` runs from any state encoding the context (idx `0`,
@@ -590,17 +635,20 @@ theorem compileV_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L : �
         (List.range n) (fun i hi => by have := List.mem_range.mp hi; omega)
         (.skip (s := s₁)) hr₁ (StateEnc_frame hs hp₁ (by rw [hbf₁]))
         (by rw [hbf₁, hcp₁, List.length_range]; exact hcap)
+    obtain ⟨s₆, t₆, d₆, p₆, hexF, hrF, hbF, hcF⟩ :=
+      freeTemps_exec (C := C) (L + 1) ((n₁ : ℕ) - (L + 1)) s'
     simp only [compileV, hE]
-    refine ⟨s', _, _, _, .seq hex₁ hex₂, ?_, hs', ?_, ?_⟩
-    · rw [hout, hbf₁]
+    refine ⟨s₆, _, _, _, .seq hex₁ (.seq hex₂ hexF), ?_, ?_, ?_, ?_⟩
+    · rw [hbF, hout, hbf₁]
       congr 1
       apply Array.ext
       · simp
       · intro i h₁ h₂
         simp [VExpr.eval, Vector.getElem_mapRange]
+    · exact StateEnc_frame hs' (fun q _ => by rw [hrF]) (by rw [hbF])
     · intro b hb1
-      rw [hbo b hb1, hbf₁]
-    · rw [hcp, hcp₁]
+      rw [hbF, hbo b hb1, hbf₁]
+    · rw [hcF, hcp, hcp₁]
   | _, .append a b, s, hc, hb, hn, hs, hcap => by
     simp only [VExpr.compilable, Bool.and_eq_true] at hc
     simp only [VExpr.envBound, Bool.and_eq_true] at hb
@@ -642,11 +690,12 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
   -- the state after the preamble (`memAllocI 1 m`, `imm L 0`)
   have hLM : LocalsMatch ([] : List VSort) (#[] : Array (F p ⊕ UInt64)) :=
     ⟨rfl, fun i hi => absurd hi (by simp)⟩
+  obtain ⟨sA, tA, dA, pA, hexA, hrA, hbA, hcA⟩ :=
+    allocRegs_exec (C := C) (steps.length + 1) (s.allocBuf 1 m)
   have hs₃ : StateEnc envArr ([] : List VSort) (#[] : Array (F p ⊕ UInt64)) 0
-      steps.length (steps.length + 1)
-      ((s.allocBuf 1 m).setReg steps.length 0) := by
+      steps.length (steps.length + 1) (sA.setReg steps.length 0) := by
     refine ⟨?_, by simp, by omega, fun i hi => absurd hi (by simp), ?_⟩
-    · rw [bufs_setReg, bufs_allocBuf_ne _ _ (show (0:ℕ) ≠ 1 by omega)]
+    · rw [bufs_setReg, hbA, bufs_allocBuf_ne _ _ (show (0:ℕ) ≠ 1 by omega)]
       exact hbuf
     · rw [regs_setReg_self]; rfl
   obtain ⟨s₄, t₄, d₄, p₄, hex₄, hs₄, hL₄, hbf₄, hcp₄⟩ :=
@@ -655,15 +704,22 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
   rw [List.nil_append] at hs₄ hL₄
   have hcap₄ : (s₄.bufs 1).size + m ≤ s₄.caps 1 := by
     rw [hbf₄, hcp₄]
-    simp only [bufs_setReg, caps_setReg, bufs_allocBuf_self, caps_allocBuf_self]
+    simp only [bufs_setReg, caps_setReg]
+    rw [hbA, hcA]
+    simp only [bufs_allocBuf_self, caps_allocBuf_self]
     simp
   obtain ⟨s₅, t₅, d₅, p₅, hex₅, hout₅, _, _, _⟩ :=
     compileV_sim p hp2 hpw env N envArr henv hN (steps.map Step.sort)
       (evalSteps env steps #[]) steps.length hL₄ out s₄ hcomp.2 hbound.2
       (le_of_lt hm) hs₄ hcap₄
-  refine ⟨s₅, _, _, _, .seq .memAllocI (.seq .imm (.seq hex₄ hex₅)), ?_⟩
-  rw [hout₅, hbf₄]
-  simp only [bufs_setReg, bufs_allocBuf_self, WitgenIR.eval]
+  obtain ⟨s₆, t₆, d₆, p₆, hexF, hrF, hbF, hcF⟩ :=
+    freeTemps_exec (C := C) 0 (steps.length + 1) s₅
+  refine ⟨s₆, _, _, _,
+    .seq .memAllocI (.seq hexA (.seq .imm (.seq hex₄ (.seq hex₅ hexF)))), ?_⟩
+  rw [hbF, hout₅, hbf₄]
+  simp only [bufs_setReg]
+  rw [hbA]
+  simp only [bufs_allocBuf_self, WitgenIR.eval]
   rw [Array.empty_append]
 
 omit hp2 hpw hN in
@@ -723,8 +779,9 @@ program `isZeroCompiled` has an execution that
 
 * terminates with buffer `1` holding the **correct encoded witness output**
   (`testIsZero.eval env`, elementwise canonical words),
-* in **exactly 140 unit-cost steps** (in particular far below `2 ^ 40`), and
-* with **peak live memory at most 1 word**.
+* in **exactly 155 unit-cost steps** (in particular far below `2 ^ 40`), and
+* with **peak live memory at most 16 words** — the one output word plus the
+  certified 15-register live set (`isZero_regPeak`).
 
 Exhibiting the execution also proves memory safety (out-of-range accesses have no
 `Exec` derivation). Determinism (`Exec.deterministic`) makes these the costs and the
@@ -734,13 +791,13 @@ Everything goes through the checked entry point: `isZeroCompiled` is defined via
 `compile`, whose checks (`compile_testIsZero` at `N = 1`, generalized to any
 `0 < N ≤ 2 ^ 64` here) feed `compile_sim`, `compile_time_eq` and
 `compile_space_le`. -/
-theorem isZero_witgen_correct_140 {env : ProverEnvironment (F pBabybear)}
+theorem isZero_witgen_correct_155 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
     (hbuf : s.bufs 0 = envArr) :
-    ∃ s' d pp, Exec .unit isZeroCompiled s s' 140 d pp ∧
+    ∃ s' d pp, Exec .unit isZeroCompiled s s' 155 d pp ∧
       s'.bufs 1 = (Vector.map encF (testIsZero.eval env)).toArray ∧
-      pp ≤ 1 := by
+      pp ≤ 16 := by
   have hbound : WitgenIR.envBound N testIsZero = true := by
     simp [testIsZero, WitgenIR.envBound, VExpr.envBound, FExpr.envBound,
       BExpr.envBound, Expression.envBound, hN0]
@@ -749,15 +806,16 @@ theorem isZero_witgen_correct_140 {env : ProverEnvironment (F pBabybear)}
       (by norm_num) (by native_decide) (by native_decide)).trans compileIR_testIsZero
   obtain ⟨s', t, d, pp, hex, hout⟩ :=
     compile_sim (C := .unit) pBabybear env N envArr henv hcode hbuf
-  have ht : t = 140 := by
+  have ht : t = 155 := by
     rw [compile_time_eq hcode hex, isZeroCompiled_staticTime_unit]
-  have hpp : pp ≤ 1 := by
+  have hpp : pp ≤ 16 := by
     have := (compile_space_le hcode hex).2
-    simpa using this
+    rw [isZero_regPeak] at this
+    omega
   exact ⟨s', d, pp, ht ▸ hex, hout, hpp⟩
 
 /-- The `< 2 ^ 40` phrasing of the headline: an execution computing the correct
-encoded witness output exists, and its time is below `2 ^ 40` (it is exactly 140). -/
+encoded witness output exists, and its time is below `2 ^ 40` (it is exactly 155). -/
 theorem isZero_witgen_correct_lt_2_40 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
@@ -766,8 +824,8 @@ theorem isZero_witgen_correct_lt_2_40 {env : ProverEnvironment (F pBabybear)}
       s'.bufs 1 = (Vector.map encF (testIsZero.eval env)).toArray ∧
       t < 2 ^ 40 ∧ pp < 2 ^ 40 := by
   obtain ⟨s', d, pp, hex, hout, hpp⟩ :=
-    isZero_witgen_correct_140 henv hN0 hN hbuf
-  exact ⟨s', 140, d, pp, hex, hout, by omega, by omega⟩
+    isZero_witgen_correct_155 henv hN0 hN hbuf
+  exact ⟨s', 155, d, pp, hex, hout, by omega, by omega⟩
 
 /-- **The circuit-anchored headline**: the same statement with the witness program
 *derived from the Clean circuit* rather than named as a test fixture. The full
@@ -779,44 +837,45 @@ derivation chain, every link machine-checked:
    `FlatOperation.witnessOperations`, and `isZeroCircuitIR = testIsZero` holds
    definitionally (`isZeroCircuitIR_eq_testIsZero`);
 2. **IR → code**: the checked entry point accepts it and emits `isZeroCompiled`
-   (`compile_testIsZero`, generalized over `N` inside `isZero_witgen_correct_140`);
-3. **code → 140 steps, correct output**: every execution takes exactly 140 unit
+   (`compile_testIsZero`, generalized over `N` inside `isZero_witgen_correct_155`);
+3. **code → 155 steps, correct output**: every execution takes exactly 155 unit
    steps and ends with buffer `1` holding the encoded `WitgenIR.eval` output, with
-   peak memory ≤ 1 word (`compile_sim` + `compile_time_eq` + `compile_space_le`).
+   peak memory ≤ 16 words — output word + certified register live set
+   (`compile_sim` + `compile_time_eq` + `compile_space_le`).
 
 The circuit's only other witness generator is the trivial `<==` copy for its output
 `b` (`isZeroCircuit_witnessIRs` lists both, and that they are all of them). -/
-theorem isZero_witgen_correct_140_circuit {env : ProverEnvironment (F pBabybear)}
+theorem isZero_witgen_correct_155_circuit {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
     (hbuf : s.bufs 0 = envArr) :
-    ∃ s' d pp, Exec .unit isZeroCompiled s s' 140 d pp ∧
+    ∃ s' d pp, Exec .unit isZeroCompiled s s' 155 d pp ∧
       s'.bufs 1 = (Vector.map encF (isZeroCircuitIR.eval env)).toArray ∧
-      pp ≤ 1 := by
+      pp ≤ 16 := by
   rw [isZeroCircuitIR_eq_testIsZero]
-  exact isZero_witgen_correct_140 henv hN0 hN hbuf
+  exact isZero_witgen_correct_155 henv hN0 hN hbuf
 
 /-! ## The certified-native headline, instantiated
 
 `isZeroCertified` (`WitgenCompile.lean`) is the `IsZeroField` witness written as an
 ordinary Lean closure (`isZeroNative`), certified against the `testIsZero` IR
 program. The corollary below is `compile_sim_certified` + phase 2 at that instance:
-the machine provably computes **the native closure's own output** — in exactly 140
-unit steps, with peak memory ≤ 1 word. -/
+the machine provably computes **the native closure's own output** — in exactly 155
+unit steps, with peak memory ≤ 16 words. -/
 
 /-- **The certified-native headline**: from every start state whose buffer `0`
 encodes the environment, the code compiled from `isZeroCertified` (which is
 `isZeroCompiled`, `compile_isZeroCertified`) has an execution that terminates with
 buffer `1` holding the encoded output of the **native closure** `isZeroNative`, in
-**exactly 140 unit steps**, with **peak live memory at most 1 word**. -/
-theorem isZeroCertified_witgen_correct_140 {env : ProverEnvironment (F pBabybear)}
+**exactly 155 unit steps**, with **peak live memory at most 16 words**. -/
+theorem isZeroCertified_witgen_correct_155 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
     (hbuf : s.bufs 0 = envArr) :
-    ∃ s' d pp, Exec .unit isZeroCompiled s s' 140 d pp ∧
+    ∃ s' d pp, Exec .unit isZeroCompiled s s' 155 d pp ∧
       s'.bufs 1 = (Vector.map encF (isZeroNative env)).toArray ∧
-      pp ≤ 1 := by
-  obtain ⟨s', d, pp, hex, hout, hpp⟩ := isZero_witgen_correct_140 henv hN0 hN hbuf
+      pp ≤ 16 := by
+  obtain ⟨s', d, pp, hex, hout, hpp⟩ := isZero_witgen_correct_155 henv hN0 hN hbuf
   refine ⟨s', d, pp, hex, ?_, hpp⟩
   rw [hout, ← isZeroNative_eq_testIsZero]
 

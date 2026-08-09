@@ -442,15 +442,16 @@ private theorem binop_glue {C : CostModel} {op : BinOp} {c₁ c₂ : Stmt 64}
     (hp₂ : ∀ q, q < n₁ → s₂.regs q = s₁.regs q)
     (hb₁ : s₁.bufs = s.bufs) (hb₂ : s₂.bufs = s₁.bufs)
     (hc₁ : s₁.caps = s.caps) (hc₂ : s₂.caps = s₁.caps) :
-    ∃ s' t d pp, Exec C (c₁ ;; c₂ ;; .bin op n₂ r₁ r₂) s s' t d pp ∧
+    ∃ s' t d pp, Exec C (c₁ ;; c₂ ;; .regAlloc n₂ ;; .bin op n₂ r₁ r₂) s s' t d pp ∧
       s'.regs n₂ = op.eval v₁ v₂ ∧
       (∀ q, q < next → s'.regs q = s.regs q) ∧ s'.bufs = s.bufs ∧ s'.caps = s.caps := by
-  refine ⟨_, _, _, _, .seq hex₁ (.seq hex₂ .bin), ?_, ?_, ?_, ?_⟩
-  · rw [regs_setReg_self, hp₂ r₁ hr₁n, hv₁, hv₂]
+  refine ⟨_, _, _, _, .seq hex₁ (.seq hex₂ (.seq .regAlloc .bin)), ?_, ?_, ?_, ?_⟩
+  · rw [regs_setReg_self, regs_setRegAlloc, hp₂ r₁ hr₁n, hv₁, hv₂]
   · intro q hq
-    rw [regs_setReg_ne _ _ (show q ≠ n₂ by omega), hp₂ q (by omega), hp₁ q hq]
-  · rw [bufs_setReg, hb₂, hb₁]
-  · rw [caps_setReg, hc₂, hc₁]
+    rw [regs_setReg_ne _ _ (show q ≠ n₂ by omega), regs_setRegAlloc,
+      hp₂ q (by omega), hp₁ q hq]
+  · rw [bufs_setReg, bufs_setRegAlloc, hb₂, hb₁]
+  · rw [caps_setReg, caps_setRegAlloc, hc₂, hc₁]
 
 /-- Composition glue for the strict `ite` nodes: run the compiled condition and both
 compiled branches, then the branch-free mask select on their result registers. -/
@@ -497,25 +498,31 @@ private theorem shift_glue {C : CostModel} {op : BinOp} {c₁ c₂ : Stmt 64}
     (hb₁ : s₁.bufs = s.bufs) (hb₂ : s₂.bufs = s₁.bufs)
     (hc₁ : s₁.caps = s.caps) (hc₂ : s₂.caps = s₁.caps) :
     ∃ s' t d pp,
-      Exec C (c₁ ;; c₂ ;; .imm n₂ (BitVec.ofNat 64 (64 - 1)) ;;
-          .bin .and (n₂ + 1) r₂ n₂ ;; .bin op (n₂ + 2) r₁ (n₂ + 1)) s s' t d pp ∧
+      Exec C (c₁ ;; c₂ ;; .regAlloc n₂ ;; .imm n₂ (BitVec.ofNat 64 (64 - 1)) ;;
+          .regAlloc (n₂ + 1) ;; .bin .and (n₂ + 1) r₂ n₂ ;;
+          .regAlloc (n₂ + 2) ;; .bin op (n₂ + 2) r₁ (n₂ + 1)) s s' t d pp ∧
         s'.regs (n₂ + 2) = op.eval v₁ (v₂ &&& BitVec.ofNat 64 (64 - 1)) ∧
         (∀ q, q < next → s'.regs q = s.regs q) ∧
         s'.bufs = s.bufs ∧ s'.caps = s.caps := by
-  refine ⟨_, _, _, _, .seq hex₁ (.seq hex₂ (.seq .imm (.seq .bin .bin))), ?_, ?_, ?_, ?_⟩
-  · rw [regs_setReg_self,
-      regs_setReg_ne _ _ (show r₁ ≠ n₂ + 1 by omega),
-      regs_setReg_ne _ _ (show r₁ ≠ n₂ by omega), hp₂ r₁ hr₁n, hv₁,
-      regs_setReg_self]
+  refine ⟨_, _, _, _,
+    .seq hex₁ (.seq hex₂ (.seq .regAlloc (.seq .imm (.seq .regAlloc
+      (.seq .bin (.seq .regAlloc .bin)))))), ?_, ?_, ?_, ?_⟩
+  · rw [regs_setReg_self, regs_setRegAlloc,
+      regs_setReg_ne _ _ (show r₁ ≠ n₂ + 1 by omega), regs_setRegAlloc,
+      regs_setReg_ne _ _ (show r₁ ≠ n₂ by omega), regs_setRegAlloc,
+      hp₂ r₁ hr₁n, hv₁, regs_setReg_self]
     simp only [BinOp.eval]
-    rw [regs_setReg_ne _ _ (show r₂ ≠ n₂ by omega), hv₂, regs_setReg_self]
+    rw [regs_setReg_ne _ _ (show r₂ ≠ n₂ by omega), regs_setRegAlloc, hv₂,
+      regs_setReg_self]
   · intro q hq
-    rw [regs_setReg_ne _ _ (show q ≠ n₂ + 2 by omega),
-      regs_setReg_ne _ _ (show q ≠ n₂ + 1 by omega),
-      regs_setReg_ne _ _ (show q ≠ n₂ by omega),
+    rw [regs_setReg_ne _ _ (show q ≠ n₂ + 2 by omega), regs_setRegAlloc,
+      regs_setReg_ne _ _ (show q ≠ n₂ + 1 by omega), regs_setRegAlloc,
+      regs_setReg_ne _ _ (show q ≠ n₂ by omega), regs_setRegAlloc,
       hp₂ q (by omega), hp₁ q hq]
-  · rw [bufs_setReg, bufs_setReg, bufs_setReg, hb₂, hb₁]
-  · rw [caps_setReg, caps_setReg, caps_setReg, hc₂, hc₁]
+  · rw [bufs_setReg, bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc, bufs_setReg,
+      bufs_setRegAlloc, hb₂, hb₁]
+  · rw [caps_setReg, caps_setRegAlloc, caps_setReg, caps_setRegAlloc, caps_setReg,
+      caps_setRegAlloc, hc₂, hc₁]
 
 omit [Fact p.Prime] in
 /-- Whole-case glue for the two-operand `bin` nodes of the mutual simulation
@@ -542,7 +549,7 @@ private theorem binop_sim {C : CostModel} {op : BinOp} {Γ : List VSort}
         (∀ q, q < n₁ → s'.regs q = s₁.regs q) ∧
         s'.bufs = s₁.bufs ∧ s'.caps = s₁.caps)
     (hword : op.eval v₁ v₂ = v) :
-    ∃ s' t d pp, Exec C (cx ;; cy ;; .bin op n₂ rx ry) s s' t d pp ∧
+    ∃ s' t d pp, Exec C (cx ;; cy ;; .regAlloc n₂ ;; .bin op n₂ rx ry) s s' t d pp ∧
       s'.regs n₂ = v ∧ (∀ q, q < next → s'.regs q = s.regs q) ∧
       s'.bufs = s.bufs ∧ s'.caps = s.caps := by
   subst hE₁ hE₂
@@ -576,8 +583,9 @@ private theorem shiftop_sim {C : CostModel} {op : BinOp} {Γ : List VSort}
         s'.bufs = s₁.bufs ∧ s'.caps = s₁.caps)
     (hword : op.eval v₁ (v₂ &&& BitVec.ofNat 64 (64 - 1)) = v) :
     ∃ s' t d pp,
-      Exec C (cx ;; cy ;; .imm n₂ (BitVec.ofNat 64 (64 - 1)) ;;
-          .bin .and (n₂ + 1) ry n₂ ;; .bin op (n₂ + 2) rx (n₂ + 1)) s s' t d pp ∧
+      Exec C (cx ;; cy ;; .regAlloc n₂ ;; .imm n₂ (BitVec.ofNat 64 (64 - 1)) ;;
+          .regAlloc (n₂ + 1) ;; .bin .and (n₂ + 1) ry n₂ ;;
+          .regAlloc (n₂ + 2) ;; .bin op (n₂ + 2) rx (n₂ + 1)) s s' t d pp ∧
         s'.regs (n₂ + 2) = v ∧ (∀ q, q < next → s'.regs q = s.regs q) ∧
         s'.bufs = s.bufs ∧ s'.caps = s.caps := by
   subst hE₁ hE₂
@@ -610,21 +618,28 @@ theorem compileExpr_sim :
     simp only [compileExpr]
     have hidx : (BitVec.ofNat 64 v.index).toNat = v.index := by
       rw [BitVec.toNat_ofNat]; exact Nat.mod_eq_of_lt (by omega)
-    have hlt : ((s.setReg next (BitVec.ofNat 64 v.index)).regs next).toNat <
-        ((s.setReg next (BitVec.ofNat 64 v.index)).bufs 0).size := by
-      rw [bufs_setReg, regs_setReg_self, hidx, hbuf, henv.1]
+    have hlt : ((((s.setRegAlloc next true).setReg next
+          (BitVec.ofNat 64 v.index)).setRegAlloc (next + 1) true).regs next).toNat <
+        ((((s.setRegAlloc next true).setReg next
+          (BitVec.ofNat 64 v.index)).setRegAlloc (next + 1) true).bufs 0).size := by
+      rw [bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc, regs_setRegAlloc,
+        regs_setReg_self, hidx, hbuf, henv.1]
       exact hb
-    refine ⟨_, _, _, _, .seq .imm (.memLoad hlt), ?_, ?_, rfl, rfl⟩
+    refine ⟨_, _, _, _, .seq .regAlloc (.seq .imm (.seq .regAlloc (.memLoad hlt))),
+      ?_, ?_, rfl, rfl⟩
     · rw [regs_setReg_self, ← getElem!_pos]
-      simp only [bufs_setReg, regs_setReg_self, hidx, hbuf]
+      simp only [bufs_setRegAlloc, bufs_setReg, regs_setRegAlloc, regs_setReg_self,
+        hidx, hbuf]
       exact henv.2 v.index hb
     · intro q hq
-      rw [regs_setReg_ne _ _ (show q ≠ next + 1 by omega),
-        regs_setReg_ne _ _ (show q ≠ next by omega)]
+      rw [regs_setReg_ne _ _ (show q ≠ next + 1 by omega), regs_setRegAlloc,
+        regs_setReg_ne _ _ (show q ≠ next by omega), regs_setRegAlloc]
   | .const c, next, s, _, _ => by
     simp only [compileExpr]
-    refine ⟨_, _, _, _, .imm, ?_,
-      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    refine ⟨_, _, _, _, .seq .regAlloc .imm, ?_,
+      fun q hq => by
+        rw [regs_setReg_ne _ _ (show q ≠ next by omega), regs_setRegAlloc],
+      rfl, rfl⟩
     rw [regs_setReg_self]
     rfl
   | .add x y, next, s, hb, hbuf => by
@@ -714,8 +729,10 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     compileExpr_sim p hpw env N envArr henv hN e next s hb hs.1
   | .const c, next, s, _, _, _ => by
     simp only [compileF]
-    refine ⟨_, _, _, _, .imm, ?_,
-      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    refine ⟨_, _, _, _, .seq .regAlloc .imm, ?_,
+      fun q hq => by
+        rw [regs_setReg_ne _ _ (show q ≠ next by omega), regs_setRegAlloc],
+      rfl, rfl⟩
     rw [regs_setReg_self]
     rfl
   | .localVar i, next, s, hc, _, hs => by
@@ -803,22 +820,26 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
       invLadder_exec_inv (p := p) hp2 hpw (acc := n₁ + 1) (xr := rx) (tr := n₁)
         (show Ne (α := ℕ) rx (n₁ + 1) by omega)
         (show Ne (α := ℕ) n₁ (n₁ + 1) by omega)
-        (s := (s₁.setReg n₁ (BitVec.ofNat 64 p)).setReg (n₁ + 1) 1)
+        (s := (((s₁.setRegAlloc n₁ true).setReg n₁
+          (BitVec.ofNat 64 p)).setRegAlloc (n₁ + 1) true).setReg (n₁ + 1) 1)
         (v := FExpr.eval { env, locals, idx } x)
         (by rw [regs_setReg_self]; exact encF_one.symm)
         (by rw [regs_setReg_ne _ _ (show Ne (α := ℕ) rx (n₁ + 1) by omega),
-              regs_setReg_ne _ _ (show Ne (α := ℕ) rx n₁ by omega)]
+              regs_setRegAlloc,
+              regs_setReg_ne _ _ (show Ne (α := ℕ) rx n₁ by omega), regs_setRegAlloc]
             exact hr₁)
         (by rw [regs_setReg_ne _ _ (show Ne (α := ℕ) n₁ (n₁ + 1) by omega),
-              regs_setReg_self])
+              regs_setRegAlloc, regs_setReg_self])
     simp only [compileF, hE₁, FExpr.eval]
-    refine ⟨_, _, _, _, .seq hex₁ (.seq .imm (.seq .imm hex₃)), hr₃, ?_, ?_, ?_⟩
+    refine ⟨_, _, _, _,
+      .seq hex₁ (.seq .regAlloc (.seq .imm (.seq .regAlloc (.seq .imm hex₃)))),
+      hr₃, ?_, ?_, ?_⟩
     · intro q hq
       rw [hp₃ q (show q ≠ n₁ + 1 by omega),
-        regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega),
-        regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
-    · rw [hbf₃, bufs_setReg, bufs_setReg, hbf₁]
-    · rw [hcp₃, caps_setReg, caps_setReg, hcp₁]
+        regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega), regs_setRegAlloc,
+        regs_setReg_ne _ _ (show q ≠ n₁ by omega), regs_setRegAlloc, hp₁ q hq]
+    · rw [hbf₃, bufs_setReg, bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc, hbf₁]
+    · rw [hcp₃, caps_setReg, caps_setRegAlloc, caps_setReg, caps_setRegAlloc, hcp₁]
   | .ofU64 n, next, s, hc, hb, hs => by
     rcases hE₁ : compileU (w := 64) L n next with ⟨cn, rn, n₁⟩
     have hbd₁ := compileU_bounds L (Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1) n next
@@ -828,16 +849,18 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
       compileU_sim Γ locals idx L hL n next s hc hb hs
     simp only [hE₁] at hex₁ hr₁
     simp only [compileF, hE₁, FExpr.eval, FiniteField.fromNat_F]
-    refine ⟨_, _, _, _, .seq hex₁ (.seq .imm .bin), ?_, ?_, ?_, ?_⟩
+    refine ⟨_, _, _, _,
+      .seq hex₁ (.seq .regAlloc (.seq .imm (.seq .regAlloc .bin))), ?_, ?_, ?_, ?_⟩
     · rw [regs_setReg_self]
       simp only [BinOp.eval]
-      rw [regs_setReg_ne _ _ (show Ne (α := ℕ) rn n₁ by omega), hr₁, regs_setReg_self]
+      rw [regs_setRegAlloc, regs_setReg_ne _ _ (show Ne (α := ℕ) rn n₁ by omega),
+        regs_setRegAlloc, hr₁, regs_setReg_self]
       exact encU_umod_p hpw _
     · intro q hq
-      rw [regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega),
-        regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
-    · rw [bufs_setReg, bufs_setReg, hbf₁]
-    · rw [caps_setReg, caps_setReg, hcp₁]
+      rw [regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega), regs_setRegAlloc,
+        regs_setReg_ne _ _ (show q ≠ n₁ by omega), regs_setRegAlloc, hp₁ q hq]
+    · rw [bufs_setReg, bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc, hbf₁]
+    · rw [caps_setReg, caps_setRegAlloc, caps_setReg, caps_setRegAlloc, hcp₁]
   | .ite c t e, next, s, hc, hb, hs => by
     simp only [FExpr.compilable, Bool.and_eq_true] at hc
     simp only [FExpr.envBound, Bool.and_eq_true] at hb
@@ -891,8 +914,10 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
         s'.bufs = s.bufs ∧ s'.caps = s.caps
   | .const n, next, s, _, _, _ => by
     simp only [compileU]
-    refine ⟨_, _, _, _, .imm, ?_,
-      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    refine ⟨_, _, _, _, .seq .regAlloc .imm, ?_,
+      fun q hq => by
+        rw [regs_setReg_ne _ _ (show q ≠ next by omega), regs_setRegAlloc],
+      rfl, rfl⟩
     rw [regs_setReg_self]
     simp only [U64Expr.eval]
     exact encU_ofNat_toNat n
@@ -1089,14 +1114,18 @@ theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
         s'.bufs = s.bufs ∧ s'.caps = s.caps
   | .true, next, s, _, _, _ => by
     simp only [compileB]
-    refine ⟨_, _, _, _, .imm, ?_,
-      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    refine ⟨_, _, _, _, .seq .regAlloc .imm, ?_,
+      fun q hq => by
+        rw [regs_setReg_ne _ _ (show q ≠ next by omega), regs_setRegAlloc],
+      rfl, rfl⟩
     rw [regs_setReg_self]
     rfl
   | .false, next, s, _, _, _ => by
     simp only [compileB]
-    refine ⟨_, _, _, _, .imm, ?_,
-      fun q hq => regs_setReg_ne _ _ (show q ≠ next by omega), rfl, rfl⟩
+    refine ⟨_, _, _, _, .seq .regAlloc .imm, ?_,
+      fun q hq => by
+        rw [regs_setReg_ne _ _ (show q ≠ next by omega), regs_setRegAlloc],
+      rfl, rfl⟩
     rw [regs_setReg_self]
     rfl
   | .feq x y, next, s, hc, hb, hs => by
@@ -1157,19 +1186,23 @@ theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
       compileF_sim Γ locals idx L hL x next s hc.1 hb hs
     simp only [hE₁] at hex₁ hr₁
     simp only [compileB, hE₁, BExpr.eval, FiniteField.val_F]
-    refine ⟨_, _, _, _, .seq hex₁ (.seq .imm (.seq .bin (.seq .imm .bin))),
+    refine ⟨_, _, _, _,
+      .seq hex₁ (.seq .regAlloc (.seq .imm (.seq .regAlloc (.seq .bin
+        (.seq .regAlloc (.seq .imm (.seq .regAlloc .bin))))))),
       ?_, ?_, ?_, ?_⟩
-    · simp only [regs_setReg_self, BinOp.eval,
+    · simp only [regs_setReg_self, regs_setRegAlloc, BinOp.eval,
         regs_setReg_ne _ _ (show Ne (α := ℕ) (n₁ + 1) (n₁ + 2) by omega),
         regs_setReg_ne _ _ (show Ne (α := ℕ) rx n₁ by omega), hr₁]
       exact encF_testBit hpw _ hc.2
     · intro q hq
-      rw [regs_setReg_ne _ _ (show q ≠ n₁ + 3 by omega),
-        regs_setReg_ne _ _ (show q ≠ n₁ + 2 by omega),
-        regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega),
-        regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
-    · rw [bufs_setReg, bufs_setReg, bufs_setReg, bufs_setReg, hbf₁]
-    · rw [caps_setReg, caps_setReg, caps_setReg, caps_setReg, hcp₁]
+      rw [regs_setReg_ne _ _ (show q ≠ n₁ + 3 by omega), regs_setRegAlloc,
+        regs_setReg_ne _ _ (show q ≠ n₁ + 2 by omega), regs_setRegAlloc,
+        regs_setReg_ne _ _ (show q ≠ n₁ + 1 by omega), regs_setRegAlloc,
+        regs_setReg_ne _ _ (show q ≠ n₁ by omega), regs_setRegAlloc, hp₁ q hq]
+    · rw [bufs_setReg, bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc, bufs_setReg,
+        bufs_setRegAlloc, bufs_setReg, bufs_setRegAlloc, hbf₁]
+    · rw [caps_setReg, caps_setRegAlloc, caps_setReg, caps_setRegAlloc, caps_setReg,
+        caps_setRegAlloc, caps_setReg, caps_setRegAlloc, hcp₁]
   | .not b, next, s, hc, hb, hs => by
     rcases hE₁ : compileB (w := 64) L b next with ⟨cb, rb, n₁⟩
     have hbd₁ := compileB_bounds L (Nat.le_trans (Nat.le_of_eq hL.1) hs.2.1) b next
@@ -1179,14 +1212,14 @@ theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
       compileB_sim Γ locals idx L hL b next s hc hb hs
     simp only [hE₁] at hex₁ hr₁
     simp only [compileB, hE₁, BExpr.eval]
-    refine ⟨_, _, _, _, .seq hex₁ .un, ?_, ?_, ?_, ?_⟩
-    · rw [regs_setReg_self, hr₁]
+    refine ⟨_, _, _, _, .seq hex₁ (.seq .regAlloc .un), ?_, ?_, ?_, ?_⟩
+    · rw [regs_setReg_self, regs_setRegAlloc, hr₁]
       simp only [UnOp.eval]
       exact encB_not _
     · intro q hq
-      rw [regs_setReg_ne _ _ (show q ≠ n₁ by omega), hp₁ q hq]
-    · rw [bufs_setReg, hbf₁]
-    · rw [caps_setReg, hcp₁]
+      rw [regs_setReg_ne _ _ (show q ≠ n₁ by omega), regs_setRegAlloc, hp₁ q hq]
+    · rw [bufs_setReg, bufs_setRegAlloc, hbf₁]
+    · rw [caps_setReg, caps_setRegAlloc, hcp₁]
   | .and x y, next, s, hc, hb, hs => by
     simp only [BExpr.compilable, Bool.and_eq_true] at hc
     simp only [BExpr.envBound, Bool.and_eq_true] at hb

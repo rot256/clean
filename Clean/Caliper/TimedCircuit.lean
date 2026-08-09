@@ -308,15 +308,16 @@ end TimedCircuit
 
 /-! ## The demonstration: `IsZeroField` as a `TimedCircuit`
 
-The circuit's two witness generators — `testIsZero` (the inverse witness, 140 unit
-steps) and `isZeroCircuitCopyIR` (the `<==` copy, 19 unit steps) — sum to 159, far
-below the default `2^40` budget. The obligation is one `native_decide`. -/
+The circuit's two witness generators — `testIsZero` (the inverse witness, 155 unit
+steps including its 15 register acquisitions) and `isZeroCircuitCopyIR` (the `<==`
+copy, 32 unit steps including its 13 acquisitions) — sum to 187, far below the
+default `2^40` budget. The obligation is one `native_decide`. -/
 
-/- The pinned total for the instantiated `IsZeroField` circuit: `140 + 19 = 159`
+/- The pinned total for the instantiated `IsZeroField` circuit: `155 + 32 = 187`
 unit steps for its complete witness generation (the same per-generator numbers as
 `isZeroCompiled_staticTime_unit` / `isZeroCopyCompiled_staticTime_unit` in
 `WitgenCost.lean`). -/
-/-- info: some 159 -/
+/-- info: some 187 -/
 #guard_msgs in #eval FlatOperation.witgenTime CostModel.unit 1 isZeroCircuitOps
 
 /-- **The goal shape**: the existing `FormalCircuit` upgraded to a `TimedCircuit`
@@ -324,26 +325,26 @@ by one `native_decide`, at the default budget `2^40` and unit cost model. -/
 def isZeroTimed : TimedCircuit Fb field field :=
   { Gadgets.IsZeroField.circuit with witgen_bounded := by native_decide }
 
-/-- The timed circuit's certified total, pinned: 159 unit steps. -/
+/-- The timed circuit's certified total, pinned: 187 unit steps. -/
 theorem isZeroTimed_witgenTime :
     FlatOperation.witgenTime CostModel.unit (size field) isZeroTimed.canonicalOps
-      = some 159 := by
+      = some 187 := by
   native_decide
 
 /-- The exact-total reading for the demo, end to end: every witness generator of
 the timed `IsZeroField` circuit has compiled code whose every execution takes
-exactly its certified time `t ≤ 159`, with live-memory peak `≤ t`. -/
-theorem isZeroTimed_witgen_le_159 :
+exactly its certified time `t ≤ 187`, with live-memory peak `≤ t`. -/
+theorem isZeroTimed_witgen_le_187 :
     FlatOperation.forAll (size field)
       { witness n _ ir := ∃ t code, compile n ir = some code ∧
-          code.staticTime? CostModel.unit = some t ∧ t ≤ 159 ∧
+          code.staticTime? CostModel.unit = some t ∧ t ≤ 187 ∧
           ∀ {s s' : State 64} {t' : ℕ} {d p : ℤ},
             Exec CostModel.unit code s s' t' d p → t' = t ∧ p ≤ (t : ℤ) }
       isZeroTimed.canonicalOps :=
   (witgenTime_sound _ _ _ isZeroTimed_witgenTime).forAll_exec (by decide) le_rfl
 
-/-- The `< 2^40` reading for the demo: the certified per-generator times `t ≤ 159`
-of `isZeroTimed_witgen_le_159` are in particular strictly below the `2^40`
+/-- The `< 2^40` reading for the demo: the certified per-generator times `t ≤ 187`
+of `isZeroTimed_witgen_le_187` are in particular strictly below the `2^40`
 budget. -/
 theorem isZeroTimed_witgen_lt_2_40 :
     FlatOperation.forAll (size field)
@@ -352,7 +353,7 @@ theorem isZeroTimed_witgen_lt_2_40 :
           ∀ {s s' : State 64} {t' : ℕ} {d p : ℤ},
             Exec CostModel.unit code s s' t' d p → t' = t ∧ p ≤ (t : ℤ) }
       isZeroTimed.canonicalOps := by
-  refine forAll_witness_mono ?_ isZeroTimed_witgen_le_159
+  refine forAll_witness_mono ?_ isZeroTimed_witgen_le_187
   rintro n m ir ⟨t, code, hc, ht, hle, hexec⟩
   exact ⟨t, code, hc, ht, by omega, hexec⟩
 
