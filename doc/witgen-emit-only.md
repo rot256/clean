@@ -36,7 +36,7 @@ bridge lemmas connecting them — all of it exists solely to police read-back
 ## The proposed model
 
 - **`emit v`** is the only interaction with the witness output: append `v` to the
-  output stream. In Caliper terms this is `bufPush` into a **write-only** buffer —
+  output stream. In Caliper terms this is `memPush` into a **write-only** buffer —
   which is already how compiled generators treat their output buffer today. The only
   change is removing the *read* side (currently, reads of the environment buffer at
   the inter-generator interface).
@@ -102,12 +102,12 @@ bridge lemmas connecting them — all of it exists solely to police read-back
 ## Relation to the existing pipeline
 
 The compiled Caliper artifact is already emit-only **per generator**: output goes
-through `bufPush` and is never read; intermediates live in registers; reads touch
+through `memPush` and is never read; intermediates live in registers; reads touch
 only the environment buffer — i.e. read-back survives *only at the inter-generator
 seam*. The planned whole-circuit compilation phase is therefore exactly the fork:
 
 - **Conservative path:** merge output and environment buffers; later generators
-  `bufGet` earlier emissions. Trivial to assemble; memory = trace size.
+  `memLoad` earlier emissions. Trivial to assemble; memory = trace size.
 - **Emit-only path (this proposal):** keep the output write-only; thread
   inter-gadget values through an assembler-computed register map. Requires the
   liveness pass and the global equivalence theorem; memory = live locals.
@@ -115,7 +115,7 @@ seam*. The planned whole-circuit compilation phase is therefore exactly the fork
 A staged adoption is natural: implement the conservative path first (it reuses
 `compile_sim` almost unchanged), then treat emit-only as an optimizing pass over it —
 replace each environment read with the register that provably holds the same value,
-with the replacement lemma (`bufGet` of cell `j` = register `r` under the assembler's
+with the replacement lemma (`memLoad` of cell `j` = register `r` under the assembler's
 allocation invariant) as the only new proof content. Cost only improves (reads become
 register references); memory improves from trace-sized to live-set-sized.
 

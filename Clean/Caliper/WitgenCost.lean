@@ -8,12 +8,12 @@ Phase 2 of the witgen compiler: machine-checked *cost* bounds for the code that
 
 The whole file rests on one structural fact, proved here by syntactic induction over
 the compiler: **everything the compiler emits is straight-line** (no `ifNZ`, no
-`whileNZ`, no dynamic `bufAlloc` — `ite` is a mask select,
+`whileNZ`, no dynamic `memAlloc` — `ite` is a mask select,
 `mapRange`/`envRange`/`bitsOf` are unrolled, the Fermat inverse ladder is unrolled
 over the generation-time bits of `p - 2`, and the single output-buffer allocation
-in `compileIR`'s prologue is a `bufAllocI` whose capacity is the *static* output
-length `m`, hence statically priced at `C.bufAlloc + m * C.allocPerWord`), and,
-apart from that prologue `bufAllocI`, **allocation-free** (`bufPush` moves the fill
+in `compileIR`'s prologue is a `memAllocI` whose capacity is the *static* output
+length `m`, hence statically priced at `C.memAlloc + m * C.allocPerWord`), and,
+apart from that prologue `memAllocI`, **allocation-free** (`memPush` moves the fill
 level inside already-charged capacity, so it is alloc-free by definition).
 
 Consequences, all machine-checked below:
@@ -27,7 +27,7 @@ Consequences, all machine-checked below:
   numeral: computable by `#eval` and certified by evaluation (`native_decide` here,
   since `toBits` is well-founded recursion, which `rfl` cannot reduce) — no
   execution, no semantics, no fuel involved.
-* **Memory is bounded by the output length.** The prologue's single `bufAllocI`
+* **Memory is bounded by the output length.** The prologue's single `memAllocI`
   charges at most `m` words (the static output length); everything after it is
   alloc-free, so both the net live-memory change and the peak stay `≤ m`
   (`compileIR_space_le`). Independently, `Exec.peak_le_time` bounds the peak by
@@ -241,7 +241,7 @@ theorem compileSteps_straightAF (L : ℕ) : ∀ (steps : List (Step F)) (j : ℕ
     straightAF_seq (compileStep_straightAF L j s) (compileSteps_straightAF L rest (j + 1))
 
 /-- Compiled vector outputs are straight-line and alloc-free — in particular the
-output `bufPush`es are alloc-free, since pushed words were charged at `bufAlloc`. -/
+output `memPush`es are alloc-free, since pushed words were charged at `memAlloc`. -/
 theorem compileV_straightAF (L : ℕ) : ∀ {n : ℕ} (v : VExpr F n),
     (compileV (w := w) L v).Straight ∧ (compileV (w := w) L v).AllocFree
   | _, .lit es => by
@@ -345,21 +345,21 @@ theorem witgenTime_data_independent {C : CostModel} {L m : ℕ} {ir : WitgenIR F
 /-! ## The memory theorem: witgen space is bounded by the output length -/
 
 /-- **Compiled witgen code needs at most `m` words of memory** (`m` = the static
-output length): the single prologue `bufAllocI` charges at most `m`, and everything
+output length): the single prologue `memAllocI` charges at most `m`, and everything
 else is alloc-free. Both the net live-memory change and the peak are bounded. -/
 theorem compileIRCode_space_le {C : CostModel} {L m : ℕ} {steps : List (Step F)}
     {out : VExpr F m} {s s' : State w} {t : ℕ} {d p : ℤ}
     (hx : Exec C (compileIRCode (w := w) L steps out) s s' t d p) :
     d ≤ (m : ℤ) ∧ p ≤ (m : ℤ) := by
   simp only [compileIRCode] at hx
-  -- destructure `bufAllocI ;; rest` and its costs
+  -- destructure `memAllocI ;; rest` and its costs
   cases hx with
   | seq h₁ hrest =>
     cases h₁
     -- the rest (idx-zeroing, steps, output pushes) is alloc-free
     obtain ⟨hd, hp⟩ := hrest.allocFree_space
       ⟨trivial, (compileSteps_straightAF L steps 0).2, (compileV_straightAF L out).2⟩
-    -- the single bufAllocI charges `m - oldCap ≤ m`
+    -- the single memAllocI charges `m - oldCap ≤ m`
     omega
 
 /-- The `compileIR` form of `compileIRCode_space_le`. -/

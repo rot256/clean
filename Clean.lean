@@ -1,4 +1,5 @@
 import Clean.Caliper.Core
+import Clean.Caliper.Render
 import Clean.Caliper.Triple
 import Clean.Caliper.Builder
 import Clean.Caliper.Examples

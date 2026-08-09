@@ -46,7 +46,7 @@ The emitted code contains no `ifNZ` and no `whileNZ`, anywhere:
   so the ladder too is straight-line.
 
 Consequently every compiled program is constant-time (`Exec.straight_time_eq`) and,
-apart from the single output-buffer `bufAllocI` (whose capacity is the *static*
+apart from the single output-buffer `memAllocI` (whose capacity is the *static*
 output length `m`, so it is statically priced and keeps the code straight-line),
 allocation-free.
 
@@ -303,12 +303,12 @@ def invLadder (p : ℕ) (acc x t : Reg) : Stmt w :=
 
 variable [instF : FiniteField F]
 
-/-- Compile a circuit `Expression`: `var v` is a `bufGet` from the environment
+/-- Compile a circuit `Expression`: `var v` is a `memLoad` from the environment
 buffer `0` at the static index `v.index`; `add`/`mul` reduce mod `p`. -/
 def compileExpr (e : Expression F) (next : Reg) : Stmt w × Reg × Reg :=
   match e with
   | .var v =>
-    (.imm next (BitVec.ofNat w v.index) ;; .bufGet (next + 1) 0 next,
+    (.imm next (BitVec.ofNat w v.index) ;; .memLoad (next + 1) 0 next,
      next + 1, next + 2)
   | .const c => (.imm next (BitVec.ofNat w (FiniteField.val c)), next, next + 1)
   | .add x y =>
@@ -478,41 +478,41 @@ def compileSteps (L : ℕ) (steps : List (Step F)) (j : ℕ) : Stmt w :=
   | s :: rest => compileStep L j s ;; compileSteps L rest (j + 1)
 
 /-- Compile a vector output: per element, compile (temporaries from `L + 1`) and
-`bufPush` the result to the output buffer `1`. `mapRange`, `envRange` and `bitsOf`
+`memPush` the result to the output buffer `1`. `mapRange`, `envRange` and `bitsOf`
 are unrolled; `mapRange` sets the idx register `L` before each body instance and
 resets it to `0` after the loop. -/
 def compileV (L : ℕ) : {n : ℕ} → VExpr F n → Stmt w
   | _, .lit es =>
     es.toList.foldl (init := .skip) fun c e =>
       let (ce, r, _) := compileF (w := w) L e (L + 1)
-      c ;; ce ;; .bufPush 1 r
+      c ;; ce ;; .memPush 1 r
   | _, .mapRange n body =>
     ((List.range n).foldl (init := .skip) fun c i =>
       let (cb, r, _) := compileF (w := w) L body (L + 1)
-      c ;; .imm L (BitVec.ofNat w i) ;; cb ;; .bufPush 1 r) ;;
+      c ;; .imm L (BitVec.ofNat w i) ;; cb ;; .memPush 1 r) ;;
     .imm L 0
   | n, .envRange offset =>
     (List.range n).foldl (init := .skip) fun c i =>
       c ;; .imm (L + 1) (BitVec.ofNat w (offset + i)) ;;
-        .bufGet (L + 2) 0 (L + 1) ;; .bufPush 1 (L + 2)
+        .memLoad (L + 2) 0 (L + 1) ;; .memPush 1 (L + 2)
   | n, .bitsOf x =>
     let (cx, rx, n₁) := compileF (w := w) L x (L + 1)
     cx ;;
     (List.range n).foldl (init := .skip) fun c i =>
       c ;; .imm n₁ (BitVec.ofNat w i) ;; .bin .shr (n₁ + 1) rx n₁ ;;
         .imm (n₁ + 2) 1 ;; .bin .and (n₁ + 3) (n₁ + 1) (n₁ + 2) ;;
-        .bufPush 1 (n₁ + 3)
+        .memPush 1 (n₁ + 3)
   | _, .append a b => compileV L a ;; compileV L b
 
 /-- The code emitted for a structured program (`steps`, `out`) — the shared codegen
 body of `compileIR`'s `.ir` and `.certified` arms. It allocates the output buffer
-`1` with the *immediate* capacity `m` (`bufAllocI` — the output length is a static
+`1` with the *immediate* capacity `m` (`memAllocI` — the output length is a static
 type index, so the allocation is statically priced at
-`C.bufAlloc + m * C.allocPerWord` and the emitted code stays straight-line), zeroes
+`C.memAlloc + m * C.allocPerWord` and the emitted code stays straight-line), zeroes
 the idx register `L`, computes the `let`-steps into registers `0 .. L-1`, then
 pushes the `m` output elements. -/
 def compileIRCode (L : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m) : Stmt w :=
-  .bufAllocI 1 m ;;
+  .memAllocI 1 m ;;
   .imm L 0 ;;
   compileSteps L steps 0 ;;
   compileV L out
@@ -566,8 +566,8 @@ def compileChecked (N : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m)
 * `N ≤ 2 ^ 64` — so in-bound environment indices survive their 64-bit immediates,
 * `m < 2 ^ 64` — so per-output-element immediates (`mapRange` indices, `bitsOf`
   bit positions, all `< m`) survive their 64-bit encodings (the output-buffer
-  capacity itself is a `bufAllocI` immediate, a bare `ℕ`: the capacity
-  *accounting* never wraps, but `bufLen` on the output buffer is exact only for
+  capacity itself is a `memAllocI` immediate, a bare `ℕ`: the capacity
+  *accounting* never wraps, but `memLen` on the output buffer is exact only for
   fill levels `< 2 ^ 64` — which this same `m < 2 ^ 64` check guarantees),
 
 and delegates to the internal `compileIR` with the local-register count computed
@@ -922,7 +922,7 @@ could still wrap in their immediates, so the `N ≤ 2 ^ 64` check refuses. -/
   (compile testRow.size (WitgenIR.native fun _ => #v[(0 : Fb)])).isNone
 
 /- An output length `m ≥ 2 ^ 64` would wrap the per-element 64-bit immediates the
-unrolled output loops emit (the `bufAllocI` capacity itself is a bare `ℕ`); the
+unrolled output loops emit (the `memAllocI` capacity itself is a bare `ℕ`); the
 `m < 2 ^ 64` check refuses before any unrolling (see also the general guard
 lemma `compile_eq_none_of_output_ge`). -/
 /-- info: true -/

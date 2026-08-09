@@ -272,7 +272,7 @@ private theorem compileV_lit_fold (Γ : List VSort) (locals : Array (F p ⊕ UIn
       ∃ s' t d pp,
         Exec C (l.foldl (fun c e =>
             c ;; (compileF (w := 64) L e (L + 1)).1 ;;
-              .bufPush 1 (compileF (w := 64) L e (L + 1)).2.1) c₀) s s' t d pp ∧
+              .memPush 1 (compileF (w := 64) L e (L + 1)).2.1) c₀) s s' t d pp ∧
         s'.bufs 1 = s₀.bufs 1 ++
           (l.map fun e => encF (FExpr.eval { env, locals } e)).toArray ∧
         StateEnc envArr Γ locals 0 L (L + 1) s' ∧
@@ -296,7 +296,7 @@ private theorem compileV_lit_fold (Γ : List VSort) (locals : Array (F p ⊕ UIn
       StateEnc_frame (StateEnc_frame hs hp₁ (by rw [hbf₁])) (fun _ _ => rfl)
         (bufs_setBuf_ne _ _ (by decide))
     obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
-      ih (.seq hex₀ (.seq hex₁ (.bufPush hpush))) hc.2 hb.2 hs₂
+      ih (.seq hex₀ (.seq hex₁ (.memPush hpush))) hc.2 hb.2 hs₂
         (by rw [bufs_setBuf_self, Array.size_push, caps_setBuf, hbf₁, hcp₁]; omega)
     refine ⟨s', t', d', pp', hex', ?_, hs', ?_, ?_⟩
     · rw [hout', bufs_setBuf_self, hbf₁, hr₁, List.map_cons]
@@ -318,7 +318,7 @@ private theorem compileV_mapRange_fold (Γ : List VSort) (locals : Array (F p �
       ∃ s' t d pp j',
         Exec C (is.foldl (fun c i =>
             c ;; .imm L (BitVec.ofNat 64 i) ;; (compileF (w := 64) L body (L + 1)).1 ;;
-              .bufPush 1 (compileF (w := 64) L body (L + 1)).2.1) c₀) s s' t d pp ∧
+              .memPush 1 (compileF (w := 64) L body (L + 1)).2.1) c₀) s s' t d pp ∧
         s'.bufs 1 = s₀.bufs 1 ++
           (is.map fun i => encF (FExpr.eval { env, locals, idx := i } body)).toArray ∧
         StateEnc envArr Γ locals j' L (L + 1) s' ∧
@@ -344,7 +344,7 @@ private theorem compileV_mapRange_fold (Γ : List VSort) (locals : Array (F p �
       StateEnc_frame (StateEnc_frame hs₁ hp₂ (by rw [hbf₂])) (fun _ _ => rfl)
         (bufs_setBuf_ne _ _ (by decide))
     obtain ⟨s', t', d', pp', j', hex', hout', hs', hbo', hcp'⟩ :=
-      ih (.seq hex₀ (.seq .imm (.seq hex₂ (.bufPush hpush)))) hs₃
+      ih (.seq hex₀ (.seq .imm (.seq hex₂ (.memPush hpush)))) hs₃
         (by rw [bufs_setBuf_self, Array.size_push, caps_setBuf, hbf₂, hcp₂]
             simp only [bufs_setReg, caps_setReg]; omega)
     refine ⟨s', t', d', pp', j', hex', ?_, hs', ?_, ?_⟩
@@ -368,7 +368,7 @@ private theorem compileV_envRange_fold (Γ : List VSort) (locals : Array (F p �
       ∃ s' t d pp,
         Exec C (is.foldl (fun c i =>
             c ;; .imm (L + 1) (BitVec.ofNat 64 (offset + i)) ;;
-              .bufGet (L + 2) 0 (L + 1) ;; .bufPush 1 (L + 2)) c₀) s s' t d pp ∧
+              .memLoad (L + 2) 0 (L + 1) ;; .memPush 1 (L + 2)) c₀) s s' t d pp ∧
         s'.bufs 1 = s₀.bufs 1 ++
           (is.map fun i => encF (env.get (offset + i))).toArray ∧
         StateEnc envArr Γ locals 0 L (L + 1) s' ∧
@@ -416,8 +416,8 @@ private theorem compileV_envRange_fold (Γ : List VSort) (locals : Array (F p �
       intro s₂ h1 h2; rw [h1, h2]; omega
     obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
       ih (fun j hj => his j (List.mem_cons_of_mem _ hj))
-        (.seq hex₀ (.seq .imm (.seq (.bufGet hget)
-          (.bufPush (hpush (by simp) (by simp))))))
+        (.seq hex₀ (.seq .imm (.seq (.memLoad hget)
+          (.memPush (hpush (by simp) (by simp))))))
         (StateEnc_frame hs hp3 (by simp))
         (by rw [bufs_setBuf_self, Array.size_push, caps_setBuf]
             simp only [bufs_setReg, caps_setReg]; omega)
@@ -449,7 +449,7 @@ private theorem compileV_bitsOf_fold (Γ : List VSort) (locals : Array (F p ⊕ 
         Exec C (is.foldl (fun c i =>
             c ;; .imm n₁ (BitVec.ofNat 64 i) ;; .bin .shr (n₁ + 1) rx n₁ ;;
               .imm (n₁ + 2) 1 ;; .bin .and (n₁ + 3) (n₁ + 1) (n₁ + 2) ;;
-              .bufPush 1 (n₁ + 3)) c₀) s s' t d pp ∧
+              .memPush 1 (n₁ + 3)) c₀) s s' t d pp ∧
         s'.bufs 1 = s₀.bufs 1 ++
           (is.map fun i => encF ((ZMod.val v >>> i % 2 : ℕ) : F p)).toArray ∧
         StateEnc envArr Γ locals 0 L (L + 1) s' ∧
@@ -499,7 +499,7 @@ private theorem compileV_bitsOf_fold (Γ : List VSort) (locals : Array (F p ⊕ 
       exact hrv
     obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
       ih (fun j hj => his j (List.mem_cons_of_mem _ hj))
-        (.seq hex₀ (.seq .imm (.seq .bin (.seq .imm (.seq .bin (.bufPush hpush))))))
+        (.seq hex₀ (.seq .imm (.seq .bin (.seq .imm (.seq .bin (.memPush hpush))))))
         hrx4
         (StateEnc_frame hs (fun q hq => by rw [regs_setBuf]; exact hp4 q hq)
           (by rw [bufs_setBuf_ne _ _ (show (0:ℕ) ≠ 1 by omega), hb4]))
@@ -636,7 +636,7 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
   subst hcode
   simp only [WitgenIR.compilable, Bool.and_eq_true] at hcomp
   simp only [WitgenIR.envBound, Bool.and_eq_true] at hbound
-  -- the state after the preamble (`bufAllocI 1 m`, `imm L 0`)
+  -- the state after the preamble (`memAllocI 1 m`, `imm L 0`)
   have hLM : LocalsMatch ([] : List VSort) (#[] : Array (F p ⊕ UInt64)) :=
     ⟨rfl, fun i hi => absurd hi (by simp)⟩
   have hs₃ : StateEnc envArr ([] : List VSort) (#[] : Array (F p ⊕ UInt64)) 0
@@ -658,7 +658,7 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
     compileV_sim p hp2 hpw env N envArr henv hN (steps.map Step.sort)
       (evalSteps env steps #[]) steps.length hL₄ out s₄ hcomp.2 hbound.2
       (le_of_lt hm) hs₄ hcap₄
-  refine ⟨s₅, _, _, _, .seq .bufAllocI (.seq .imm (.seq hex₄ hex₅)), ?_⟩
+  refine ⟨s₅, _, _, _, .seq .memAllocI (.seq .imm (.seq hex₄ hex₅)), ?_⟩
   rw [hout₅, hbf₄]
   simp only [bufs_setReg, bufs_allocBuf_self, WitgenIR.eval]
   rw [Array.empty_append]

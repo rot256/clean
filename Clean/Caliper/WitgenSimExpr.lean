@@ -22,7 +22,7 @@ the induction glue and the word-level facts for the remaining instructions.
 
 Everything is at the compiler's design point: word size `w = 64`, `F = F p` for a
 prime `p` with `2 < p` and `p * p ≤ 2 ^ 64`. The environment is encoded in buffer `0`
-(`EnvEnc`); its length `N` must satisfy `N ≤ 2 ^ 64` so that the static `bufGet`
+(`EnvEnc`); its length `N` must satisfy `N ≤ 2 ^ 64` so that the static `memLoad`
 indices baked as 64-bit immediates read back exactly (`Expression.envBound` bounds
 every environment read by `N`, and the immediate wraps mod `2 ^ 64`).
 -/
@@ -614,7 +614,7 @@ theorem compileExpr_sim :
         ((s.setReg next (BitVec.ofNat 64 v.index)).bufs 0).size := by
       rw [bufs_setReg, regs_setReg_self, hidx, hbuf, henv.1]
       exact hb
-    refine ⟨_, _, _, _, .seq .imm (.bufGet hlt), ?_, ?_, rfl, rfl⟩
+    refine ⟨_, _, _, _, .seq .imm (.memLoad hlt), ?_, ?_, rfl, rfl⟩
     · rw [regs_setReg_self, ← getElem!_pos]
       simp only [bufs_setReg, regs_setReg_self, hidx, hbuf]
       exact henv.2 v.index hb
