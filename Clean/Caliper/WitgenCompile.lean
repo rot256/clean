@@ -59,7 +59,10 @@ closure) are excluded. The compiler stays *total* on the syntax — excluded sca
 constructors compile to a dead `.imm r 0` — and a decidable `compilable` check
 (against a context `Γ : List VSort` of step sorts, which also enforces that
 `localVar` references are well-sorted) rules them out for the correctness theorem of
-phase 3. `WitgenIR.native` makes `compileIR` return `none`.
+phase 3. `WitgenIR.native` makes `compileIR` return `none`; `WitgenIR.certified`
+compiles as its carried IR reimplementation (the packed equivalence proof transports
+the guarantees to the native closure — see "Certified native witnesses" in the test
+section and `doc/caliper.md`).
 
 ## The trust boundary
 
@@ -154,10 +157,13 @@ def VExpr.compilable (Γ : List VSort) : {n : ℕ} → VExpr F n → Bool
   | _, .bitsOf x => FExpr.compilable Γ x
   | _, .append a b => VExpr.compilable Γ a && VExpr.compilable Γ b
 
-/-- Compilability of a whole witness program. `native` closures are not compilable. -/
+/-- Compilability of a whole witness program. `native` closures are not compilable;
+`certified` programs are checked on their IR reimplementation (the packed equivalence
+proof transports compilation guarantees to the native closure). -/
 def WitgenIR.compilable : {m : ℕ} → WitgenIR F m → Bool
   | _, .native _ => false
-  | _, .ir steps out =>
+  | _, .ir steps out
+  | _, @Witgen.WitgenIR.certified _ _ _ _ steps out _ =>
     stepsCompilable [] steps && VExpr.compilable (steps.map Step.sort) out
 
 /-! ## Environment-bound checks
@@ -223,10 +229,13 @@ def VExpr.envBound (N : ℕ) : {n : ℕ} → VExpr F n → Bool
   | _, .bitsOf x => FExpr.envBound N x
   | _, .append a b => VExpr.envBound N a && VExpr.envBound N b
 
-/-- Environment-boundedness of a whole witness program. -/
+/-- Environment-boundedness of a whole witness program. `certified` programs are
+checked on their IR reimplementation. -/
 def WitgenIR.envBound (N : ℕ) : {m : ℕ} → WitgenIR F m → Bool
   | _, .native _ => false
-  | _, .ir steps out => steps.all (Step.envBound N) && VExpr.envBound N out
+  | _, .ir steps out
+  | _, @Witgen.WitgenIR.certified _ _ _ _ steps out _ =>
+    steps.all (Step.envBound N) && VExpr.envBound N out
 
 /-! ## Generation-time bit decomposition
 
@@ -292,7 +301,7 @@ def invLadder (p : ℕ) (acc x t : Reg) : Stmt w :=
     let sq := c ;; .bin .mul acc acc acc ;; .bin .umod acc acc t
     if b then sq ;; .bin .mul acc acc x ;; .bin .umod acc acc t else sq
 
-variable [FiniteField F]
+variable [instF : FiniteField F]
 
 /-- Compile a circuit `Expression`: `var v` is a `bufGet` from the environment
 buffer `0` at the static index `v.index`; `add`/`mul` reduce mod `p`. -/
@@ -516,6 +525,15 @@ def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
       .imm L 0 ;;
       compileSteps L steps 0 ;;
       compileV L out)
+  | @Witgen.WitgenIR.certified _ _ _ _ steps out _ => some (
+      -- the `compileSteps`/`compileV` calls are deliberately at the *ambient*
+      -- `FiniteField` instance `instF` (not the one packed in the constructor), so
+      -- a certified program compiles to literally the code of its IR
+      -- reimplementation in every context
+      .bufAllocI 1 m ;;
+      .imm L 0 ;;
+      @compileSteps F w instF L steps 0 ;;
+      @compileV F w instF L m out)
 
 /-! ## The checked entry point -/
 
@@ -523,7 +541,9 @@ def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
 `w = 64`. `compile N ir` (with `N` the environment size) returns `some code` iff
 *all* generation-time checks pass:
 
-* `ir` is a structured program `.ir steps out` (`native` closures → `none`),
+* `ir` carries structured IR — a `.ir` program, or a `.certified` program whose
+  checks and code are those of its IR reimplementation (`native` closures →
+  `none`),
 * `WitgenIR.compilable ir` — no unsupported constructors
   (`listGet`/`dataGet`/`hintGet`, which the raw compiler would silently lower to a
   dead `.imm _ 0`), and all `localVar` references well-sorted,
@@ -551,6 +571,16 @@ def compile (N : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt 64)
       compileIR (w := 64) steps.length (WitgenIR.ir steps out)
     else
       none
+  | @Witgen.WitgenIR.certified _ _ _ _ steps out _ =>
+    -- same checks and code as the `.ir` arm on the carried IR reimplementation; the
+    -- `compileIR` call is pinned to the *ambient* instance `instF` (not the one
+    -- packed in the constructor), keeping `compile_certified_eq_ir` definitional
+    if WitgenIR.compilable (WitgenIR.ir steps out)
+        && WitgenIR.envBound N (WitgenIR.ir steps out)
+        && decide (N ≤ 2 ^ 64) && decide (m < 2 ^ 64) then
+      @compileIR F 64 instF steps.length m (WitgenIR.ir steps out)
+    else
+      none
 
 /-- Destructuring the checks: a successful `compile` certifies compilability, the
 environment bound, and both size bounds. -/
@@ -568,21 +598,51 @@ theorem compile_checks {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
       obtain ⟨⟨⟨hc, hb⟩, hN⟩, hm⟩ := hcond
       exact ⟨hc, hb, hN, hm⟩
     · exact absurd h (by simp)
+  | certified f steps out hcert =>
+    simp only [compile] at h
+    split at h
+    · rename_i hcond
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+      obtain ⟨⟨⟨hc, hb⟩, hN⟩, hm⟩ := hcond
+      exact ⟨hc, hb, hN, hm⟩
+    · exact absurd h (by simp)
 
-/-- Destructuring the delegation: a successful `compile` is a `compileIR` call at
-the correct `L = steps.length`. -/
+/-- Destructuring the delegation: a successful `compile` is a `compileIR` call on a
+structured `.ir` program at the correct `L = steps.length` — the program itself for
+`.ir`, the carried IR reimplementation for `.certified` (whose `irEval` is exactly
+that program's evaluation) — and that program passes `compilable` and `envBound`. -/
 theorem compile_toCompileIR {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     (h : compile N ir = some code) :
-    ∃ (steps : List (Step F)) (out : VExpr F m), ir = WitgenIR.ir steps out ∧
-      compileIR (w := 64) steps.length ir = some code := by
+    ∃ (steps : List (Step F)) (out : VExpr F m),
+      ir.irEval = (WitgenIR.ir steps out).eval ∧
+      WitgenIR.compilable (WitgenIR.ir steps out) = true ∧
+      WitgenIR.envBound N (WitgenIR.ir steps out) = true ∧
+      compileIR (w := 64) steps.length (WitgenIR.ir steps out) = some code := by
   cases ir with
   | native _ => simp [compile] at h
   | ir steps out =>
     refine ⟨steps, out, rfl, ?_⟩
     simp only [compile] at h
     split at h
-    · exact h
+    · rename_i hcond
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+      exact ⟨hcond.1.1.1, hcond.1.1.2, h⟩
     · exact absurd h (by simp)
+  | certified f steps out hcert =>
+    refine ⟨steps, out, rfl, ?_⟩
+    simp only [compile] at h
+    split at h
+    · rename_i hcond
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+      exact ⟨hcond.1.1.1, hcond.1.1.2, h⟩
+    · exact absurd h (by simp)
+
+/-- The checked entry point treats a certified program exactly like its IR
+reimplementation: same checks, same code. Definitional. -/
+theorem compile_certified_eq_ir {N m : ℕ} (f : ProverEnvironment F → Vector F m)
+    (steps : List (Step F)) (out : VExpr F m)
+    (h : ∀ env, f env = (WitgenIR.ir steps out).eval env) :
+    compile N (WitgenIR.certified f steps out h) = compile N (WitgenIR.ir steps out) := rfl
 
 /-- The forward direction: when all checks hold, `compile` *is* the raw compiler at
 `L = steps.length`. Used to discharge concrete programs. -/
@@ -604,6 +664,12 @@ theorem compile_eq_none_of_output_ge {N m : ℕ} (hm : 2 ^ 64 ≤ m)
   cases ir with
   | native _ => rfl
   | ir steps out =>
+    simp only [compile]
+    rw [if_neg]
+    simp only [Bool.and_eq_true, decide_eq_true_eq, not_and]
+    intro _ _
+    omega
+  | certified f steps out hcert =>
     simp only [compile]
     rw [if_neg]
     simp only [Bool.and_eq_true, decide_eq_true_eq, not_and]
@@ -850,6 +916,59 @@ lemma `compile_eq_none_of_output_ge`). -/
 /-- info: true -/
 #guard_msgs in #eval
   (compile (2 ^ 64) (WitgenIR.ir [] (.envRange 0) : WitgenIR Fb (2 ^ 64))).isNone
+
+/-! ### Certified native witnesses, demonstrated
+
+`WitgenIR.certified` bundles a native Lean closure (kept as the prover's fast
+evaluation path — `eval` returns the closure), an IR reimplementation, and a proof
+that the two agree on every environment. A bare closure can carry no cost bound —
+cost is intensional, and Lean functions are extensional — so `compile` rejects
+`.native`; the certified form is the sanctioned way to keep native evaluation *and*
+get certified compilation. The checks and the emitted code are those of the carried
+IR, and the equivalence transports every guarantee — exact cost, output correctness
+against the closure itself, computability, export — to the closure.
+
+The demo closure below is the `IsZeroField` conditional-inverse witness written in
+ordinary Lean; its IR reimplementation is `testIsZero`'s program, so the certified
+program compiles to exactly `isZeroCompiled` (see `compile_isZeroCertified` and the
+pinned 140-step cost in `WitgenCost.lean`, the machine-computes-the-closure
+simulation corollary `isZeroCertified_witgen_correct_140` in `WitgenSimIR.lean`, and
+the `OnlyAccessedBelow` discharge for the bare closure in `WitgenComputable.lean`). -/
+
+/-- The `IsZeroField` witness as a *native closure*: the conditional inverse of
+environment cell 0, written in ordinary Lean rather than in the IR. -/
+def isZeroNative (env : ProverEnvironment Fb) : Vector Fb 1 :=
+  #v[if env.get 0 = 0 then 0 else (env.get 0)⁻¹]
+
+/-- The equivalence of the native closure with its IR reimplementation
+(`testIsZero`'s program): a pure-function lemma, by unfolding both evaluators. -/
+theorem isZeroNative_eq_testIsZero (env : ProverEnvironment Fb) :
+    isZeroNative env = testIsZero.eval env := by
+  ext i hi
+  rcases Nat.lt_one_iff.mp hi
+  simp [isZeroNative, testIsZero, WitgenIR.eval, VExpr.eval, FExpr.eval, BExpr.eval,
+    evalSteps, Expression.eval]
+
+/-- The demo certified witness: `isZeroNative` as the fast evaluation path,
+`testIsZero`'s IR program as the certified reimplementation. -/
+def isZeroCertified : WitgenIR Fb 1 :=
+  .certify isZeroNative []
+    (.lit #v[.ite (.feq (.expr (var ⟨0⟩)) (.const 0)) (.const 0)
+      (.inv (.expr (var ⟨0⟩)))])
+    isZeroNative_eq_testIsZero
+
+/- Unlike a bare `.native` closure, the certified program is compilable ... -/
+/-- info: true -/
+#guard_msgs in #eval (compile testRow.size isZeroCertified).isSome
+
+/- ... and the differential test compares the machine's output (compiled from the
+IR reimplementation) against `isZeroCertified.eval` — which *is* the native closure:
+the compiled-vs-native agreement that the packed equivalence proof certifies. -/
+/-- info: (some [1342177281], [1342177281]) -/
+#guard_msgs in #eval diffOutputs isZeroCertified
+
+/-- info: true -/
+#guard_msgs in #eval diffOk isZeroCertified
 
 end Tests
 

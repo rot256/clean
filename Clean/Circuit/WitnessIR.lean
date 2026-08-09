@@ -343,12 +343,45 @@ inductive WitgenIR (F : Type) : ℕ → Type where
   | native {m : ℕ} (f : ProverEnvironment F → Vector F m) : WitgenIR F m
   /-- Structured straight-line program: `let`-steps, then a vector output. -/
   | ir {m : ℕ} (steps : List (Step F)) (out : VExpr F m) : WitgenIR F m
+  /-- **Certified native witness**: a native Lean closure `f` (kept as the fast
+  evaluation path — `eval (certified f ..) = f` holds definitionally), bundled with
+  an IR reimplementation (`steps`, `out`) and a proof that the two agree on every
+  environment. Compilation, cost accounting, export and computability checks all go
+  through the IR fields; the equivalence transports every IR-side guarantee to the
+  closure. The IR fields are carried directly (not as a nested `WitgenIR`) so no
+  junk terms like certified-of-certified exist.
+
+  A closure alone can carry no cost bound — cost is intensional, and Lean functions
+  are extensional — so this is the sanctioned way to keep native evaluation *and*
+  get certified compilation: reimplement in the IR, prove equivalence once. Bare
+  `.native` remains the visibly-uncertified escape hatch that `compile` rejects. -/
+  | certified {m : ℕ} [FiniteField F] (f : ProverEnvironment F → Vector F m)
+      (steps : List (Step F)) (out : VExpr F m)
+      (h : ∀ env, f env = out.eval { env := env, locals := evalSteps env steps }) :
+      WitgenIR F m
 
 def WitgenIR.eval {m : ℕ} [FiniteField F] :
     WitgenIR F m → ProverEnvironment F → Vector F m
   | .native f => f
   | .ir steps out => fun env =>
     out.eval { env, locals := evalSteps env steps }
+  | @WitgenIR.certified _ _ _ f _steps _out _h => f
+
+/-- The **IR reference semantics** of a witness program — the semantics compilation
+is verified against. On `.ir` it is `eval` (definitionally); on `.certified` it
+evaluates the carried IR reimplementation, which the packed equivalence proof makes
+agree with the fast path `eval` (the native closure — see `irEval_certified`);
+`.native` has no IR form and falls back to the closure. -/
+def WitgenIR.irEval {m : ℕ} [inst : FiniteField F] :
+    WitgenIR F m → ProverEnvironment F → Vector F m
+  | .native f => f
+  | .ir steps out => fun env =>
+    out.eval { env, locals := evalSteps env steps }
+  | @WitgenIR.certified _ _ _ _f steps out _h => fun env =>
+    -- deliberately at the *ambient* instance `inst` (not the one packed in the
+    -- constructor), so that `irEval` on `.certified` agrees definitionally with
+    -- `eval` on the `.ir` form in every context
+    @VExpr.eval F inst { env := env, locals := @evalSteps F inst env steps #[] } _ out
 
 @[circuit_norm]
 theorem WitgenIR.eval_native {m : ℕ} [FiniteField F]
@@ -358,6 +391,45 @@ theorem WitgenIR.eval_native {m : ℕ} [FiniteField F]
 theorem WitgenIR.eval_native_apply {m : ℕ} [FiniteField F]
     (f : ProverEnvironment F → Vector F m) (env : ProverEnvironment F) :
     (WitgenIR.native f).eval env = f env := rfl
+
+/-- `eval` on a certified witness is the native closure — the fast path. In the same
+`circuit_norm` set as `eval_native`, so certified witnesses simp-normalize to exactly
+the same hypothesis shapes as the closures they certify. -/
+@[circuit_norm]
+theorem WitgenIR.eval_certified {m : ℕ} [FiniteField F]
+    (f : ProverEnvironment F → Vector F m) (steps : List (Step F)) (out : VExpr F m)
+    (h : ∀ env, f env = out.eval { env := env, locals := evalSteps env steps }) :
+    (WitgenIR.certified f steps out h).eval = f := rfl
+
+@[circuit_norm]
+theorem WitgenIR.eval_certified_apply {m : ℕ} [FiniteField F]
+    (f : ProverEnvironment F → Vector F m) (steps : List (Step F)) (out : VExpr F m)
+    (h : ∀ env, f env = out.eval { env := env, locals := evalSteps env steps })
+    (env : ProverEnvironment F) :
+    (WitgenIR.certified f steps out h).eval env = f env := rfl
+
+theorem WitgenIR.irEval_native {m : ℕ} [FiniteField F]
+    (f : ProverEnvironment F → Vector F m) : (WitgenIR.native f).irEval = f := rfl
+
+theorem WitgenIR.irEval_ir {m : ℕ} [FiniteField F] (steps : List (Step F))
+    (out : VExpr F m) : (WitgenIR.ir steps out).irEval = (WitgenIR.ir steps out).eval := rfl
+
+/-- On a certified witness, the IR reference semantics *is* the native closure: the
+packed equivalence proof transports every statement about the compiled IR
+(`irEval`-facts) to the closure itself. -/
+theorem WitgenIR.irEval_certified {m : ℕ} [FiniteField F]
+    (f : ProverEnvironment F → Vector F m) (steps : List (Step F)) (out : VExpr F m)
+    (h : ∀ env, f env = out.eval { env := env, locals := evalSteps env steps }) :
+    (WitgenIR.certified f steps out h).irEval = f := (funext h).symm
+
+/-- On a certified witness, the fast path (`eval`, the closure) and the IR reference
+semantics (`irEval`, what compilation is verified against) agree — this is exactly
+the packed equivalence proof. -/
+theorem WitgenIR.eval_certified_eq_irEval {m : ℕ} [FiniteField F]
+    (f : ProverEnvironment F → Vector F m) (steps : List (Step F)) (out : VExpr F m)
+    (h : ∀ env, f env = out.eval { env := env, locals := evalSteps env steps }) :
+    (WitgenIR.certified f steps out h).eval = (WitgenIR.certified f steps out h).irEval :=
+  funext h
 
 /-!
 ## Smart constructors
@@ -388,6 +460,39 @@ def WitgenIR.nativeValue {value : TypeMap} [ProvableType value]
 theorem WitgenIR.eval_nativeValue [FiniteField F] {value : TypeMap} [ProvableType value]
     (compute : ProverEnvironment F → value F) (env : ProverEnvironment F) :
     (WitgenIR.nativeValue compute).eval env = toElements (compute env) := rfl
+
+/-- Smart constructor for certified native witnesses. Same data as the raw
+`.certified` constructor, but takes the equivalence proof in terms of
+`(WitgenIR.ir steps out).eval` — the shape equivalence lemmas are naturally stated
+in (it is definitionally the raw constructor field). -/
+def WitgenIR.certify [FiniteField F] {m : ℕ} (f : ProverEnvironment F → Vector F m)
+    (steps : List (Step F)) (out : VExpr F m)
+    (h : ∀ env, f env = (WitgenIR.ir steps out).eval env) : WitgenIR F m :=
+  .certified f steps out h
+
+@[circuit_norm]
+theorem WitgenIR.eval_certify [FiniteField F] {m : ℕ}
+    (f : ProverEnvironment F → Vector F m) (steps : List (Step F)) (out : VExpr F m)
+    (h : ∀ env, f env = (WitgenIR.ir steps out).eval env) :
+    (WitgenIR.certify f steps out h).eval = f := rfl
+
+/-- Certified analogue of `nativeValue`: a whole provable value computed by a native
+Lean closure, certified against an IR reimplementation. Like `nativeValue`, this is a
+named definition so that completeness obligations stay recognizable at the level of
+provable values, and it is deliberately not tagged `@[circuit_norm]`. -/
+def WitgenIR.certifiedValue [FiniteField F] {value : TypeMap} [ProvableType value]
+    (compute : ProverEnvironment F → value F)
+    (steps : List (Step F)) (out : VExpr F (size value))
+    (h : ∀ env, toElements (compute env) = (WitgenIR.ir steps out).eval env) :
+    WitgenIR F (size value) :=
+  .certified (fun env => compute env |> toElements) steps out h
+
+theorem WitgenIR.eval_certifiedValue [FiniteField F] {value : TypeMap} [ProvableType value]
+    (compute : ProverEnvironment F → value F)
+    (steps : List (Step F)) (out : VExpr F (size value))
+    (h : ∀ env, toElements (compute env) = (WitgenIR.ir steps out).eval env)
+    (env : ProverEnvironment F) :
+    (WitgenIR.certifiedValue compute steps out h).eval env = toElements (compute env) := rfl
 
 /-- `Witgen.eval` on `fields n` is elementwise evaluation (the witgen analogue of
 `ProvableType.eval_fields`). -/

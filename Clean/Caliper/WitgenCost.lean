@@ -279,6 +279,16 @@ theorem compileIR_straight {L : ℕ} {m : ℕ} {ir : WitgenIR F m} {code : Stmt 
     subst h
     exact ⟨trivial, trivial, (compileSteps_straightAF L steps 0).1,
       (compileV_straightAF L out).1⟩
+  | certified f steps out hcert =>
+    -- the compiled code is literally the IR reimplementation's (at the ambient
+    -- `FiniteField` instance; drop the constructor's packed instance so instance
+    -- synthesis below picks the ambient one)
+    simp only [compileIR, Option.some.injEq] at h
+    subst h
+    rename_i instP
+    clear hcert f instP
+    exact ⟨trivial, trivial, (compileSteps_straightAF L steps 0).1,
+      (compileV_straightAF L out).1⟩
 
 /-! ## The time theorem: witgen time is a syntactic constant -/
 
@@ -352,6 +362,20 @@ theorem compileIR_space_le {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code
         ⟨trivial, (compileSteps_straightAF L steps 0).2, (compileV_straightAF L out).2⟩
       -- the single bufAllocI charges `m - oldCap ≤ m`
       omega
+  | certified f steps out hcert =>
+    -- the compiled code is literally the IR reimplementation's (at the ambient
+    -- `FiniteField` instance; drop the constructor's packed instance so instance
+    -- synthesis below picks the ambient one)
+    simp only [compileIR, Option.some.injEq] at hc
+    subst hc
+    rename_i instP
+    clear hcert f instP
+    cases hx with
+    | seq h₁ hrest =>
+      cases h₁
+      obtain ⟨hd, hp⟩ := hrest.allocFree_space
+        ⟨trivial, (compileSteps_straightAF L steps 0).2, (compileV_straightAF L out).2⟩
+      omega
 
 /-! ## Checked-entry corollaries
 
@@ -363,7 +387,7 @@ versions above. -/
 /-- Everything the checked entry point emits is straight-line. -/
 theorem compile_straight {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     (hc : compile N ir = some code) : code.Straight := by
-  obtain ⟨_, _, -, hIR⟩ := compile_toCompileIR hc
+  obtain ⟨_, _, -, -, -, hIR⟩ := compile_toCompileIR hc
   exact compileIR_straight hIR
 
 /-- **Checked-entry time exactness**: code accepted by `compile` runs in exactly its
@@ -388,7 +412,7 @@ words of memory (`m` = the static output length), both net and peak. -/
 theorem compile_space_le {C : CostModel} {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     {s s' : State 64} {t : ℕ} {d p : ℤ} (hc : compile N ir = some code)
     (hx : Exec C code s s' t d p) : d ≤ (m : ℤ) ∧ p ≤ (m : ℤ) := by
-  obtain ⟨_, _, -, hIR⟩ := compile_toCompileIR hc
+  obtain ⟨_, _, -, -, -, hIR⟩ := compile_toCompileIR hc
   exact compileIR_space_le hIR hx
 
 /-! ## Concrete `< 2^40` bounds for the BabyBear test programs
@@ -565,6 +589,43 @@ theorem isZeroCircuit_total_witgen_lt_2_40 {s₁ s₁' s₂ s₂' : State 64}
     (h₂ : Exec .unit isZeroCopyCompiled s₂ s₂' t₂ d₂ p₂) :
     t₁ + t₂ < 2 ^ 40 := by
   have := isZeroCircuit_total_witgen_time_unit h₁ h₂
+  omega
+
+/-! ### Certified native witnesses: the cost bound transports to the closure
+
+`isZeroCertified` (`WitgenCompile.lean`) keeps the native closure `isZeroNative` as
+its evaluation fast path, but `compile` accepts it — through its certified IR
+reimplementation — and emits *literally* `testIsZero`'s code. So the exact-cost
+theorems apply verbatim: a witness whose Lean-side evaluation is an arbitrary
+closure now carries a machine-checked, input-independent step count, something a
+bare `.native` closure can never have (cost is intensional; Lean functions are
+extensional). -/
+
+/-- The checked entry point accepts the certified program and emits exactly the code
+of its IR reimplementation — `isZeroCompiled`. The first step is definitional
+(`compile_certified_eq_ir`). -/
+theorem compile_isZeroCertified : compile 1 isZeroCertified = some isZeroCompiled :=
+  compile_testIsZero
+
+/- The certified program's pinned cost numerals: the same 140 unit steps / 2090
+cycles as `testIsZero`, now certified *for the native closure's witness*. -/
+/-- info: some 140 -/
+#guard_msgs in #eval (compile 1 isZeroCertified).map (·.staticTime CostModel.unit)
+
+/-- info: some 2090 -/
+#guard_msgs in #eval (compile 1 isZeroCertified).map (·.staticTime CostModel.cycles)
+
+/-- **Exact time for a certified native witness**: every execution of the code
+compiled from `isZeroCertified` — the program whose prover-side evaluation is the
+native closure `isZeroNative` — takes exactly 140 unit steps. -/
+theorem isZeroCertified_witgen_time_unit {s s' : State 64} {t : ℕ} {d p : ℤ}
+    (h : Exec .unit isZeroCompiled s s' t d p) : t = 140 := by
+  rw [compile_time_eq compile_isZeroCertified h, isZeroCompiled_staticTime_unit]
+
+/-- The `< 2^40` form for the certified native witness. -/
+theorem isZeroCertified_witgen_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
+    (h : Exec .unit isZeroCompiled s s' t d p) : t < 2 ^ 40 := by
+  have := isZeroCertified_witgen_time_unit h
   omega
 
 end Caliper.WitgenCompile

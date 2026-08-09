@@ -17,7 +17,11 @@ hatch (`WitgenIR.native`) are exactly the ones `compilable` and `envBound` rejec
 every remaining environment access is an `env.get` at an index `envBound` bounds below
 `N`. So the checks imply that `WitgenIR.eval` is invariant under `AgreesBelow N`
 (`WitgenIR.eval_congr`), i.e. `OnlyAccessedBelow N`
-(`WitgenIR.onlyAccessedBelow_of_checks`).
+(`WitgenIR.onlyAccessedBelow_of_checks`). Certified native witnesses
+(`WitgenIR.certified`) pass the checks through their IR reimplementation, and their
+packed equivalence proof extends `eval_congr` to the native closure their `eval`
+actually runs — so the same one-boolean-evaluation discharge covers closures too
+(`onlyAccessedBelow_certified`, `onlyAccessedBelow_of_ir_equiv`).
 
 Since `Operations.ComputableWitnesses` is *per-offset* — the generator at offset `n`
 must only access the environment below `n` — the whole-circuit form threads the offset:
@@ -249,6 +253,16 @@ theorem WitgenIR.eval_congr {m N : ℕ} {ir : WitgenIR F m}
     simp only [Witgen.WitgenIR.eval]
     rw [evalSteps_congr h steps #[] hb.1]
     exact VExpr.eval_congr h _ 0 out hb.2
+  | certified f steps out hcert =>
+    -- `eval` is the native closure `f`; the packed equivalence rewrites both sides
+    -- to the IR reimplementation's evaluation, on which the per-sort congruence
+    -- lemmas apply (`envBound` checks the IR fields, which is exactly what they
+    -- need)
+    show f env = f env'
+    simp only [WitgenIR.envBound, Bool.and_eq_true] at hb
+    rw [hcert env, hcert env']
+    rw [evalSteps_congr h steps #[] hb.1]
+    exact VExpr.eval_congr h _ 0 out hb.2
 
 /-! ## The bridge -/
 
@@ -279,6 +293,20 @@ theorem onlyAccessedBelow_of_ir_equiv {m N : ℕ} {f : ProverEnvironment F → V
   rw [h env, h env']
   exact WitgenIR.eval_congr hb hagree
 
+/-- The `.certified` form of the native-closure discharge: a certified witness
+program's checks (which run on its IR reimplementation) certify computability for
+**the native closure itself** — the closure's fast evaluation path, not just the IR.
+This is `onlyAccessedBelow_of_ir_equiv` with the equivalence read off the
+constructor; equivalently, `WitgenIR.onlyAccessedBelow_of_checks` already covers
+certified programs since `eval (certified f ..) = f`. -/
+theorem onlyAccessedBelow_certified {m N : ℕ} {f : ProverEnvironment F → Vector F m}
+    {steps : List (Step F)} {out : VExpr F m}
+    {h : ∀ env, f env = (WitgenIR.ir steps out).eval env}
+    (hc : WitgenIR.compilable (WitgenIR.certified f steps out h) = true)
+    (hb : WitgenIR.envBound N (WitgenIR.certified f steps out h) = true) :
+    ProverEnvironment.OnlyAccessedBelow N f :=
+  onlyAccessedBelow_of_ir_equiv (ir := WitgenIR.ir steps out) hc hb h
+
 /-! ## Whole-circuit discharge
 
 `Operations.ComputableWitnesses` is per-offset: the generator at offset `n` must only
@@ -287,7 +315,10 @@ every witness generator of a flat operation list *at that generator's own offset
 one boolean evaluation certifies the whole circuit. -/
 
 /-- Decidable computability check for a flat operation list starting at offset `n`:
-every witness generator passes `compilable` and `envBound` at its own offset. -/
+every witness generator passes `compilable` and `envBound` at its own offset.
+Certified witness operations (`WitgenIR.certified`) are accepted for free: the two
+checks run on their IR reimplementation, and `WitgenIR.eval_congr` transports the
+conclusion to the native closure their `eval` runs. -/
 def computableChecks (n : ℕ) : List (FlatOperation F) → Bool
   | [] => true
   | .witness m c :: ops =>
@@ -367,5 +398,24 @@ carry generator (offset 4) both read only the three input cells. -/
 example : Circuit.ComputableWitnesses (F := Fb)
     (Gadgets.Addition8FullCarry.main ⟨var ⟨0⟩, var ⟨1⟩, var ⟨2⟩⟩) 3 :=
   circuit_computableWitnesses_of_checks (by native_decide)
+
+/-! ### Certified native witnesses
+
+The computability payoff of the certified form (`isZeroCertified`,
+`WitgenCompile.lean`): the decidable checks — which run on the IR reimplementation
+and are discharged by `native_decide` — certify `OnlyAccessedBelow` for **the bare
+native closure** `isZeroNative`, a statement about an arbitrary Lean function that
+no syntactic check could establish directly. -/
+
+/-- The bare closure only accesses the environment below 1 — via its certified IR
+equivalent. -/
+example : ProverEnvironment.OnlyAccessedBelow 1 isZeroNative :=
+  onlyAccessedBelow_of_ir_equiv (ir := testIsZero) (by native_decide) (by native_decide)
+    isZeroNative_eq_testIsZero
+
+/-- The same fact through the generic checks-form on the certified program itself
+(`eval isZeroCertified` *is* `isZeroNative`). -/
+example : ProverEnvironment.OnlyAccessedBelow 1 (isZeroCertified.eval) :=
+  WitgenIR.onlyAccessedBelow_of_checks (by native_decide) (by native_decide)
 
 end Caliper.WitgenCompile

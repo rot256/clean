@@ -669,7 +669,10 @@ entry point accepts — `compile N ir = some code`, which already carries
 compilability, the environment bound, `N ≤ 2 ^ 64` and `m < 2 ^ 64` — from *any*
 start state whose buffer `0` encodes the reference environment, the compiled code
 has an execution that terminates with the output buffer `1` holding exactly the
-encoded reference output `WitgenIR.eval` (elementwise canonical words `encF`).
+encoded IR reference output `WitgenIR.irEval` (elementwise canonical words `encF`).
+On `.ir` programs `irEval` is `eval` definitionally, so this is the familiar
+statement; on `.certified` programs the packed equivalence proof transports it to
+the native closure itself — stated explicitly as `compile_sim_certified` below.
 
 Exhibiting the execution also proves memory safety; by phase 2 its time is exactly
 `code.staticTime C` (`compile_time_eq`) and its memory peak at most `m`
@@ -679,10 +682,30 @@ verified; they cannot be checked at generation time for a generic field. -/
 theorem compile_sim {m : ℕ} {ir : WitgenIR (F p) m} {code : Stmt 64}
     (hcode : compile N ir = some code) {s : State 64} (hbuf : s.bufs 0 = envArr) :
     ∃ s' t d pp, Exec C code s s' t d pp ∧
-      s'.bufs 1 = (Vector.map encF (ir.eval env)).toArray := by
-  obtain ⟨hcomp, hbound, hN', hm⟩ := compile_checks hcode
-  obtain ⟨steps, out, rfl, hIR⟩ := compile_toCompileIR hcode
+      s'.bufs 1 = (Vector.map encF (ir.irEval env)).toArray := by
+  obtain ⟨-, -, hN', hm⟩ := compile_checks hcode
+  obtain ⟨steps, out, heval, hcomp, hbound, hIR⟩ := compile_toCompileIR hcode
+  rw [heval]
   exact compileIR_sim p hp2 hpw env N envArr henv hN' hIR hcomp hbound hm hbuf
+
+omit hN in
+/-- **The certified-native corollary: the machine provably computes the native
+closure's output.** For a certified witness program — a native closure `f` bundled
+with an IR reimplementation and an equivalence proof — every `compile`-accepted code
+has an execution ending with the output buffer holding exactly the encoded output
+**of `f` itself**: `compile_sim` gives the IR reference output, and the packed
+equivalence rewrites it to `f env`. This is the guarantee a bare `.native f` can
+never have; the certified form buys it at the price of one equivalence proof. -/
+theorem compile_sim_certified {m : ℕ} {f : ProverEnvironment (F p) → Vector (F p) m}
+    {steps : List (Step (F p))} {out : VExpr (F p) m}
+    {h : ∀ e, f e = (WitgenIR.ir steps out).eval e} {code : Stmt 64}
+    (hcode : compile N (WitgenIR.certified f steps out h) = some code)
+    {s : State 64} (hbuf : s.bufs 0 = envArr) :
+    ∃ s' t d pp, Exec C code s s' t d pp ∧
+      s'.bufs 1 = (Vector.map encF (f env)).toArray := by
+  obtain ⟨s', t, d, pp, hex, hout⟩ := compile_sim p hp2 hpw env N envArr henv hcode hbuf
+  refine ⟨s', t, d, pp, hex, ?_⟩
+  rw [hout, show (WitgenIR.certified f steps out h).irEval env = f env from (h env).symm]
 
 end Sim
 
@@ -767,5 +790,29 @@ theorem isZero_witgen_correct_140_circuit {env : ProverEnvironment (F pBabybear)
       pp ≤ 1 := by
   rw [isZeroCircuitIR_eq_testIsZero]
   exact isZero_witgen_correct_140 henv hN0 hN hbuf
+
+/-! ## The certified-native headline, instantiated
+
+`isZeroCertified` (`WitgenCompile.lean`) is the `IsZeroField` witness written as an
+ordinary Lean closure (`isZeroNative`), certified against the `testIsZero` IR
+program. The corollary below is `compile_sim_certified` + phase 2 at that instance:
+the machine provably computes **the native closure's own output** — in exactly 140
+unit steps, with peak memory ≤ 1 word. -/
+
+/-- **The certified-native headline**: from every start state whose buffer `0`
+encodes the environment, the code compiled from `isZeroCertified` (which is
+`isZeroCompiled`, `compile_isZeroCertified`) has an execution that terminates with
+buffer `1` holding the encoded output of the **native closure** `isZeroNative`, in
+**exactly 140 unit steps**, with **peak live memory at most 1 word**. -/
+theorem isZeroCertified_witgen_correct_140 {env : ProverEnvironment (F pBabybear)}
+    {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
+    (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
+    (hbuf : s.bufs 0 = envArr) :
+    ∃ s' d pp, Exec .unit isZeroCompiled s s' 140 d pp ∧
+      s'.bufs 1 = (Vector.map encF (isZeroNative env)).toArray ∧
+      pp ≤ 1 := by
+  obtain ⟨s', d, pp, hex, hout, hpp⟩ := isZero_witgen_correct_140 henv hN0 hN hbuf
+  refine ⟨s', d, pp, hex, ?_, hpp⟩
+  rw [hout, ← isZeroNative_eq_testIsZero]
 
 end Caliper.WitgenCompile
