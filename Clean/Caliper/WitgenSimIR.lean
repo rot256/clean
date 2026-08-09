@@ -22,8 +22,10 @@ built on the scalar-expression simulation of `Clean/Caliper/WitgenSimExpr.lean`.
   derivation, this existence theorem doubles as a memory-safety proof.
 * `compile_sim` — **the headline**: the same statement about the checked entry point
   `compile`, with fewer hypotheses — `compile N ir = some code` already carries
-  compilability, the environment bound, `N ≤ 2 ^ 64` and `m < 2 ^ 64`, so only the
-  field side conditions and the environment encoding remain.
+  compilability, the environment bound, `N ≤ 2 ^ 64`, `m < 2 ^ 64`, *and* the
+  field-size side conditions `2 < p` / `p * p ≤ 2 ^ 64` (via
+  `compile_size_checks`), so only primality (`[Fact p.Prime]`) and the
+  environment encoding remain.
 
 Combined with phase 2 (`WitgenCost.lean`: exact static running time, space ≤ output
 length), this yields end-to-end corollaries like `isZero_witgen_correct_140` and its
@@ -33,8 +35,9 @@ itself, see `isZeroCircuitIR_eq_testIsZero` in `WitgenCompile.lean` — computes
 correct encoded witness output in exactly 140 unit steps with peak memory 1 word.
 
 Everything is at the compiler's design point: word size `w = 64`, `F = F p` for a
-prime `p` with `2 < p` and `p * p ≤ 2 ^ 64`, environment length `N ≤ 2 ^ 64`, and
-output length `m < 2 ^ 64`.
+prime `p` with `2 < p` and `p * p ≤ 2 ^ 64` (facts the internal lemmas take as
+hypotheses and the checked-entry theorems derive from `compile … = some code`),
+environment length `N ≤ 2 ^ 64`, and output length `m < 2 ^ 64`.
 -/
 
 namespace Caliper.WitgenCompile
@@ -663,32 +666,35 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
   simp only [bufs_setReg, bufs_allocBuf_self, WitgenIR.eval]
   rw [Array.empty_append]
 
-omit hN in
+omit hp2 hpw hN in
 /-- **The checked-entry end-to-end theorem.** For every witness program the checked
 entry point accepts — `compile N ir = some code`, which already carries
-compilability, the environment bound, `N ≤ 2 ^ 64` and `m < 2 ^ 64` — from *any*
-start state whose buffer `0` encodes the reference environment, the compiled code
-has an execution that terminates with the output buffer `1` holding exactly the
-encoded IR reference output `WitgenIR.irEval` (elementwise canonical words `encF`).
-On `.ir` programs `irEval` is `eval` definitionally, so this is the familiar
-statement; on `.certified` programs the packed equivalence proof transports it to
-the native closure itself — stated explicitly as `compile_sim_certified` below.
+compilability, the environment bound, `N ≤ 2 ^ 64`, `m < 2 ^ 64` *and* the
+field-size side conditions `2 < p`, `p * p ≤ 2 ^ 64` (`compile_size_checks`) —
+from *any* start state whose buffer `0` encodes the reference environment, the
+compiled code has an execution that terminates with the output buffer `1` holding
+exactly the encoded IR reference output `WitgenIR.irEval` (elementwise canonical
+words `encF`). On `.ir` programs `irEval` is `eval` definitionally, so this is the
+familiar statement; on `.certified` programs the packed equivalence proof
+transports it to the native closure itself — stated explicitly as
+`compile_sim_certified` below.
 
 Exhibiting the execution also proves memory safety; by phase 2 its time is exactly
 `code.staticTime C` (`compile_time_eq`) and its memory peak at most `m`
-(`compile_space_le`). The remaining hypotheses — `p` prime, `2 < p`,
-`p * p ≤ 2 ^ 64` — are the field side conditions under which `compile`'s output is
-verified; they cannot be checked at generation time for a generic field. -/
+(`compile_space_le`). The only remaining field hypothesis is primality
+(`[Fact p.Prime]`) — the one side condition that cannot be checked at generation
+time; callers no longer supply `2 < p` or `p * p ≤ 2 ^ 64`. -/
 theorem compile_sim {m : ℕ} {ir : WitgenIR (F p) m} {code : Stmt 64}
     (hcode : compile N ir = some code) {s : State 64} (hbuf : s.bufs 0 = envArr) :
     ∃ s' t d pp, Exec C code s s' t d pp ∧
       s'.bufs 1 = (Vector.map encF (ir.irEval env)).toArray := by
-  obtain ⟨-, -, hN', hm⟩ := compile_checks hcode
+  obtain ⟨-, -, hN', hm, hp2, hpw⟩ := compile_checks hcode
+  rw [size_F] at hp2 hpw
   obtain ⟨steps, out, heval, hcomp, hbound, hIR⟩ := compile_toCompileIR hcode
   rw [heval]
   exact compileIR_sim p hp2 hpw env N envArr henv hN' hIR hcomp hbound hm hbuf
 
-omit hN in
+omit hp2 hpw hN in
 /-- **The certified-native corollary: the machine provably computes the native
 closure's output.** For a certified witness program — a native closure `f` bundled
 with an IR reimplementation and an equivalence proof — every `compile`-accepted code
@@ -703,7 +709,7 @@ theorem compile_sim_certified {m : ℕ} {f : ProverEnvironment (F p) → Vector 
     {s : State 64} (hbuf : s.bufs 0 = envArr) :
     ∃ s' t d pp, Exec C code s s' t d pp ∧
       s'.bufs 1 = (Vector.map encF (f env)).toArray := by
-  obtain ⟨s', t, d, pp, hex, hout⟩ := compile_sim p hp2 hpw env N envArr henv hcode hbuf
+  obtain ⟨s', t, d, pp, hex, hout⟩ := compile_sim p env N envArr henv hcode hbuf
   refine ⟨s', t, d, pp, hex, ?_⟩
   rw [hout, show (WitgenIR.certified f steps out h).irEval env = f env from (h env).symm]
 
@@ -740,10 +746,9 @@ theorem isZero_witgen_correct_140 {env : ProverEnvironment (F pBabybear)}
       BExpr.envBound, Expression.envBound, hN0]
   have hcode : compile N testIsZero = some isZeroCompiled :=
     (compile_eq_compileIR_of_checks (by native_decide) hbound hN
-      (by norm_num)).trans compileIR_testIsZero
+      (by norm_num) (by native_decide) (by native_decide)).trans compileIR_testIsZero
   obtain ⟨s', t, d, pp, hex, hout⟩ :=
-    compile_sim (C := .unit) pBabybear (by norm_num [pBabybear])
-      (by norm_num [pBabybear]) env N envArr henv hcode hbuf
+    compile_sim (C := .unit) pBabybear env N envArr henv hcode hbuf
   have ht : t = 140 := by
     rw [compile_time_eq hcode hex, isZeroCompiled_staticTime_unit]
   have hpp : pp ≤ 1 := by

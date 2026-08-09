@@ -70,12 +70,18 @@ The raw compiler `compileIR` is *internal and unchecked*: it never consults
 `compilable`, trusts its caller to pass `L = steps.length`, and truncates every
 index to a 64-bit immediate. The public entry point is
 `compile`, which returns `some` only after all generation-time checks pass
-(structured program, `compilable`, `envBound N`, `N ≤ 2 ^ 64`, `m < 2 ^ 64`) and
-computes `L` itself. The user-facing cost and correctness theorems
+(structured program, `compilable`, `envBound N`, `N ≤ 2 ^ 64`, `m < 2 ^ 64`,
+and the field-size side conditions `2 < p` and `p * p ≤ 2 ^ 64` — the modulus
+`p = FiniteField.size F` is a generation-time value, so these are decidable here)
+and computes `L` itself. The user-facing cost and correctness theorems
 (`compile_time_eq`, `compile_space_le` in `WitgenCost.lean`; `compile_sim` in
-`WitgenSimIR.lean`) are stated about `compile`; the field side conditions (`p`
-prime, `2 < p`, `p * p ≤ 2 ^ 64`) remain hypotheses of those theorems since they
-cannot be decided for a generic `FiniteField`.
+`WitgenSimIR.lean`) are stated about `compile`; of the field side conditions only
+**primality** (`[Fact p.Prime]`) remains a hypothesis of those theorems — it is
+not generation-time decidable at cryptographic sizes. A field that fails the
+single-word design point is rejected outright: a ~40-bit modulus, Goldilocks, or
+the BN254 scalar field all compile to `none` (see the field-size rejection
+tests), so `compile` can no longer emit code whose `umod` reduction would
+silently overflow.
 -/
 
 namespace Caliper.WitgenCompile
@@ -538,6 +544,11 @@ def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
 
 /-! ## The checked entry point -/
 
+/-- On prime fields the `FiniteField` size is the modulus. Definitional; stated so
+that the field-size facts `compile` certifies (`compile_size_checks`) rewrite into
+the `2 < p` / `p * p ≤ 2 ^ 64` forms the `F p` simulation proofs use. -/
+theorem size_F {p : ℕ} [Fact p.Prime] : FiniteField.size (_root_.F p) = p := rfl
+
 /-- The shared checked body of `compile`'s two structured arms, at the ambient
 `FiniteField` instance: run every generation-time check on the structured program
 (`steps`, `out`) and, if all pass, delegate to the internal `compileIR` with the
@@ -547,7 +558,9 @@ def compileChecked (N : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m)
     Option (Stmt 64) :=
   if WitgenIR.compilable (WitgenIR.ir steps out)
       && WitgenIR.envBound N (WitgenIR.ir steps out)
-      && decide (N ≤ 2 ^ 64) && decide (m < 2 ^ 64) then
+      && decide (N ≤ 2 ^ 64) && decide (m < 2 ^ 64)
+      && decide (2 < FiniteField.size F)
+      && decide (FiniteField.size F * FiniteField.size F ≤ 2 ^ 64) then
     compileIR (w := 64) steps.length (WitgenIR.ir steps out)
   else
     none
@@ -569,16 +582,24 @@ def compileChecked (N : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m)
   capacity itself is a `memAllocI` immediate, a bare `ℕ`: the capacity
   *accounting* never wraps, but `memLen` on the output buffer is exact only for
   fill levels `< 2 ^ 64` — which this same `m < 2 ^ 64` check guarantees),
+* `2 < FiniteField.size F` and
+  `FiniteField.size F * FiniteField.size F ≤ 2 ^ 64` — the single-word-reduction
+  design point. The modulus is a generation-time value carried by the
+  `FiniteField` instance, so both are decidable here; without them the emitted
+  `umod`-after-`add`/`mul` reduction overflows for large moduli (e.g. a ~40-bit
+  field) and the code returns wrong answers while the cost theorems still apply,
 
 and delegates to the internal `compileIR` with the local-register count computed
 from the program itself (`L := steps.length`) — there is no `L` parameter, so a
 wrong-`L` register corruption is impossible by construction.
 
-The field side conditions cannot be decided here for a generic `FiniteField F`;
-they are hypotheses of the correctness theorems: `compile`'s output is verified
-(`compile_sim` for output correctness, `compile_time_eq` /
-`compile_time_data_independent` / `compile_space_le` for costs) for `F = F p` with
-`p` prime, `2 < p`, and `p * p ≤ 2 ^ 64` (single-word moduli). -/
+Of the field side conditions only **primality** cannot be decided here (not at
+cryptographic sizes); it remains the `[Fact p.Prime]` hypothesis of the
+correctness theorems: `compile`'s output is verified (`compile_sim` for output
+correctness, `compile_time_eq` / `compile_time_data_independent` /
+`compile_space_le` for costs) for `F = F p` with `p` prime — the `2 < p` and
+`p * p ≤ 2 ^ 64` facts those proofs need are certified by the checks themselves
+(`compile_size_checks`). -/
 def compile (N : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt 64)
   | .native _ => none
   | .ir steps out
@@ -590,38 +611,54 @@ def compile (N : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt 64)
     @compileChecked F instF N m steps out
 
 /-- Destructuring the shared checked body: a successful `compileChecked` certifies
-compilability, the environment bound, both size bounds, and the delegation to the
-raw compiler at `L = steps.length`. The `compile` destructuring theorems below are
-one application of this per structured arm. -/
+compilability, the environment bound, both size bounds, the field-size side
+conditions, and the delegation to the raw compiler at `L = steps.length`. The
+`compile` destructuring theorems below are one application of this per structured
+arm. -/
 theorem compileChecked_checks {N m : ℕ} {steps : List (Step F)} {out : VExpr F m}
     {code : Stmt 64} (h : compileChecked N steps out = some code) :
     WitgenIR.compilable (WitgenIR.ir steps out) = true ∧
       WitgenIR.envBound N (WitgenIR.ir steps out) = true ∧
       N ≤ 2 ^ 64 ∧ m < 2 ^ 64 ∧
+      2 < FiniteField.size F ∧
+      FiniteField.size F * FiniteField.size F ≤ 2 ^ 64 ∧
       compileIR (w := 64) steps.length (WitgenIR.ir steps out) = some code := by
   simp only [compileChecked] at h
   split at h
   · rename_i hcond
     simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
-    exact ⟨hcond.1.1.1, hcond.1.1.2, hcond.1.2, hcond.2, h⟩
+    exact ⟨hcond.1.1.1.1.1, hcond.1.1.1.1.2, hcond.1.1.1.2, hcond.1.1.2, hcond.1.2,
+      hcond.2, h⟩
   · exact absurd h (by simp)
 
 /-- Destructuring the checks: a successful `compile` certifies compilability, the
-environment bound, and both size bounds. -/
+environment bound, both size bounds, and the field-size side conditions. -/
 theorem compile_checks {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     (h : compile N ir = some code) :
     WitgenIR.compilable ir = true ∧ WitgenIR.envBound N ir = true ∧
-      N ≤ 2 ^ 64 ∧ m < 2 ^ 64 := by
+      N ≤ 2 ^ 64 ∧ m < 2 ^ 64 ∧
+      2 < FiniteField.size F ∧
+      FiniteField.size F * FiniteField.size F ≤ 2 ^ 64 := by
   cases ir with
   | native _ => simp [compile] at h
   | ir steps out =>
     simp only [compile] at h
-    obtain ⟨hc, hb, hN, hm, -⟩ := compileChecked_checks h
-    exact ⟨hc, hb, hN, hm⟩
+    obtain ⟨hc, hb, hN, hm, hp2, hpw, -⟩ := compileChecked_checks h
+    exact ⟨hc, hb, hN, hm, hp2, hpw⟩
   | certified f steps out hcert =>
     simp only [compile] at h
-    obtain ⟨hc, hb, hN, hm, -⟩ := compileChecked_checks (instF := instF) h
-    exact ⟨hc, hb, hN, hm⟩
+    obtain ⟨hc, hb, hN, hm, hp2, hpw, -⟩ := compileChecked_checks (instF := instF) h
+    exact ⟨hc, hb, hN, hm, hp2, hpw⟩
+
+/-- **Destructuring the field-size checks**: a successful `compile` certifies the
+single-word field side conditions. Together with `size_F` this is what lets the
+`F p` correctness theorems (`compile_sim` and its corollaries) *derive* `2 < p`
+and `p * p ≤ 2 ^ 64` from `compile … = some code` instead of asking callers to
+supply them — only primality remains a caller-side hypothesis. -/
+theorem compile_size_checks {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
+    (h : compile N ir = some code) :
+    2 < FiniteField.size F ∧ FiniteField.size F * FiniteField.size F ≤ 2 ^ 64 :=
+  ⟨(compile_checks h).2.2.2.2.1, (compile_checks h).2.2.2.2.2⟩
 
 /-- Destructuring the delegation: a successful `compile` is a `compileIR` call on a
 structured `.ir` program at the correct `L = steps.length` — the program itself for
@@ -638,11 +675,11 @@ theorem compile_toCompileIR {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
   | native _ => simp [compile] at h
   | ir steps out =>
     simp only [compile] at h
-    obtain ⟨hc, hb, -, -, hIR⟩ := compileChecked_checks h
+    obtain ⟨hc, hb, -, -, -, -, hIR⟩ := compileChecked_checks h
     exact ⟨steps, out, rfl, hc, hb, hIR⟩
   | certified f steps out hcert =>
     simp only [compile] at h
-    obtain ⟨hc, hb, -, -, hIR⟩ := compileChecked_checks (instF := instF) h
+    obtain ⟨hc, hb, -, -, -, -, hIR⟩ := compileChecked_checks (instF := instF) h
     exact ⟨steps, out, rfl, hc, hb, hIR⟩
 
 /-- The checked entry point treats a certified program exactly like its IR
@@ -657,13 +694,15 @@ theorem compile_certified_eq_ir {N m : ℕ} (f : ProverEnvironment F → Vector 
 theorem compile_eq_compileIR_of_checks {N m : ℕ} {steps : List (Step F)}
     {out : VExpr F m} (hc : WitgenIR.compilable (WitgenIR.ir steps out) = true)
     (hb : WitgenIR.envBound N (WitgenIR.ir steps out) = true)
-    (hN : N ≤ 2 ^ 64) (hm : m < 2 ^ 64) :
+    (hN : N ≤ 2 ^ 64) (hm : m < 2 ^ 64)
+    (hp2 : 2 < FiniteField.size F)
+    (hpw : FiniteField.size F * FiniteField.size F ≤ 2 ^ 64) :
     compile N (WitgenIR.ir steps out)
       = compileIR (w := 64) steps.length (WitgenIR.ir steps out) := by
   simp only [compile, compileChecked]
   rw [if_pos]
   simp only [Bool.and_eq_true, decide_eq_true_eq]
-  exact ⟨⟨⟨hc, hb⟩, hN⟩, hm⟩
+  exact ⟨⟨⟨⟨⟨hc, hb⟩, hN⟩, hm⟩, hp2⟩, hpw⟩
 
 /-- The output-size guard on the shared checked body: an output length that does
 not fit in a 64-bit immediate is rejected, whatever else holds. -/
@@ -671,9 +710,9 @@ theorem compileChecked_eq_none_of_output_ge {N m : ℕ} (hm : 2 ^ 64 ≤ m)
     (steps : List (Step F)) (out : VExpr F m) : compileChecked N steps out = none := by
   simp only [compileChecked]
   rw [if_neg]
-  simp only [Bool.and_eq_true, decide_eq_true_eq, not_and]
-  intro _ _
-  omega
+  intro hcond
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+  exact absurd hcond.1.1.2 (by omega)
 
 /-- The output-size guard: a program whose static output length does not fit in a
 64-bit immediate is rejected, whatever else holds. -/
@@ -687,6 +726,33 @@ theorem compile_eq_none_of_output_ge {N m : ℕ} (hm : 2 ^ 64 ≤ m)
   | certified f steps out hcert =>
     simp only [compile]
     exact compileChecked_eq_none_of_output_ge (instF := instF) hm steps out
+
+/-- The field-size guard on the shared checked body: a modulus whose square
+overflows the 64-bit word — for which the emitted single-`umod` reduction would
+compute wrong answers — is rejected, whatever else holds. -/
+theorem compileChecked_eq_none_of_sq_gt {N m : ℕ}
+    (hp : 2 ^ 64 < FiniteField.size F * FiniteField.size F)
+    (steps : List (Step F)) (out : VExpr F m) : compileChecked N steps out = none := by
+  simp only [compileChecked]
+  rw [if_neg]
+  intro hcond
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+  exact absurd hcond.2 (Nat.not_le.mpr hp)
+
+/-- The field-size guard: over a field whose modulus squared overflows the word,
+*every* program is rejected — the general lemma behind the Goldilocks / BN254
+rejection tests. -/
+theorem compile_eq_none_of_sq_gt {N m : ℕ}
+    (hp : 2 ^ 64 < FiniteField.size F * FiniteField.size F)
+    (ir : WitgenIR F m) : compile N ir = none := by
+  cases ir with
+  | native _ => rfl
+  | ir steps out =>
+    simp only [compile]
+    exact compileChecked_eq_none_of_sq_gt hp steps out
+  | certified f steps out hcert =>
+    simp only [compile]
+    exact compileChecked_eq_none_of_sq_gt (instF := instF) hp steps out
 
 /-! ## Differential tests
 
@@ -928,6 +994,58 @@ lemma `compile_eq_none_of_output_ge`). -/
 /-- info: true -/
 #guard_msgs in #eval
   (compile (2 ^ 64) (WitgenIR.ir [] (.envRange 0) : WitgenIR Fb (2 ^ 64))).isNone
+
+/-! #### Field-size rejection tests
+
+The compiled field arithmetic reduces with a single `umod` after each `add`/`mul`,
+which is correct only at the single-word design point `p * p ≤ 2 ^ 64`. Over a
+larger modulus the raw compiler would emit code that type-checks, is fully priced
+by the cost theorems, and **returns wrong answers** (the pre-reduction product
+overflows the 64-bit word). The `decide`-able field-size checks make `compile`
+refuse such fields outright. BabyBear (`p ≈ 2^31`, `p² ≈ 2^62`) passes — the
+positive control is every pinned test above. -/
+
+/-- A ~40-bit modulus: the smallest prime above `2 ^ 40`. Its square is ≈ `2 ^ 80`,
+so the single-word reduction would overflow. -/
+def p40 : ℕ := 2 ^ 40 + 15
+
+instance prime_p40 : Fact p40.Prime := by native_decide
+
+/-- The `IsZeroField` witness program over the 40-bit field — same shape as
+`testIsZero`, `compilable` and `envBound` both hold; only the field is wrong. -/
+def testIsZero40 : WitgenIR (_root_.F p40) 1 :=
+  .ir [] (.lit #v[.ite (.feq (.expr (var ⟨0⟩)) (.const 0)) (.const 0)
+    (.inv (.expr (var ⟨0⟩)))])
+
+/- The 40-bit field is rejected: `p40 * p40 ≤ 2 ^ 64` fails. -/
+/-- info: true -/
+#guard_msgs in #eval (compile 1 testIsZero40).isNone
+
+/-- The Goldilocks prime `2 ^ 64 − 2 ^ 32 + 1`. A fine 64-bit field — but not a
+*single-word-reduction* field: its square overflows `2 ^ 64` (its backends use
+`mulhi`-based reduction, which this compiler does not emit). -/
+def pGoldilocks : ℕ := 2 ^ 64 - 2 ^ 32 + 1
+
+/-- **Goldilocks is rejected, for every program.** Stated with the primality
+instance as a hypothesis rather than constructed (trial-division `native_decide`
+at 64 bits is impractical, and the rejection does not depend on primality): if
+`F pGoldilocks` is used as a prime field at all, `compile` returns `none` on
+everything over it. -/
+theorem compile_goldilocks_none [Fact pGoldilocks.Prime] {N m : ℕ}
+    (ir : WitgenIR (_root_.F pGoldilocks) m) : compile N ir = none :=
+  compile_eq_none_of_sq_gt (by rw [size_F]; norm_num [pGoldilocks]) ir
+
+/-- The BN254 scalar-field prime (= `Specs.Poseidon.BN254_PRIME`; restated here to
+keep this file's imports light). -/
+def pBN254 : ℕ :=
+  21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+/-- **The BN254 scalar field is rejected, for every program** — a 254-bit modulus
+is nowhere near the single-word design point. Primality-instance hypothesis for
+the same reason as `compile_goldilocks_none`. -/
+theorem compile_bn254_none [Fact pBN254.Prime] {N m : ℕ}
+    (ir : WitgenIR (_root_.F pBN254) m) : compile N ir = none :=
+  compile_eq_none_of_sq_gt (by rw [size_F]; norm_num [pBN254]) ir
 
 /-! ### Certified native witnesses, demonstrated
 

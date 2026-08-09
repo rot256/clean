@@ -187,9 +187,9 @@ model (`1 ≤ C.allocPerWord` — true of both `CostModel.unit` and
 `CostModel.cycles`), every witness generator's compiled code runs in **exactly** its
 certified time `t ≤ B` on every input, with live-memory peak `≤ t`
 (`Exec.staticTime?_time_eq`, `Exec.peak_le_time`). By the simulation theorem
-`compile_sim` (`WitgenSimIR.lean`), under the field side conditions stated there,
-such an execution exists from every environment-encoding start state and ends with
-the encoded reference output. -/
+`compile_sim` (`WitgenSimIR.lean`) — whose field-size side conditions are certified
+by `compile` itself, leaving only primality — such an execution exists from every
+environment-encoding start state and ends with the encoded reference output. -/
 theorem WitnessCosts.forAll_exec {C : CostModel} (hC : 1 ≤ C.allocPerWord) :
     ∀ {n T : ℕ} {ops : List (FlatOperation F)}, WitnessCosts C n ops T →
       ∀ {B : ℕ}, T ≤ B →
@@ -289,6 +289,20 @@ theorem witgen_lt_budget (tc : TimedCircuit F Input Output)
   refine forAll_witness_mono ?_ ((witgenTime_sound _ _ _ hT).forAll_exec hC le_rfl)
   rintro n m ir ⟨t, code, hc, ht, hle, hexec⟩
   exact ⟨t, code, hc, ht, by omega, hexec⟩
+
+/-- The `CostModel.Admissible` form of `witgen_lt_budget`: instead of the single
+`1 ≤ allocPerWord` field, take the packaged "no table entry is free" predicate —
+satisfied by both shipped tables (`CostModel.unit.admissible`,
+`CostModel.cycles.admissible`), so for them the hypothesis is a named constant. -/
+theorem witgen_lt_budget_admissible (tc : TimedCircuit F Input Output)
+    (hC : tc.costModel.Admissible) :
+    FlatOperation.forAll (size Input)
+      { witness n _ ir := ∃ t code, compile n ir = some code ∧
+          code.staticTime? tc.costModel = some t ∧ t < tc.witgenBudget ∧
+          ∀ {s s' : State 64} {t' : ℕ} {d p : ℤ},
+            Exec tc.costModel code s s' t' d p → t' = t ∧ p ≤ (t : ℤ) }
+      tc.canonicalOps :=
+  tc.witgen_lt_budget hC.allocPerWord
 
 end TimedCircuit
 

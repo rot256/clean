@@ -440,7 +440,7 @@ compiler at `L = 0`. The `compilable`/`envBound` side conditions are certified b
 private theorem compile_isZero_eq_compileIR :
     compile 1 testIsZero = compileIR (w := 64) 0 testIsZero :=
   compile_eq_compileIR_of_checks (by native_decide) (by native_decide)
-    (by norm_num) (by norm_num)
+    (by norm_num) (by norm_num) (by native_decide) (by native_decide)
 
 /-- The checked entry point accepts `testIsZero` and emits `isZeroCompiled`. -/
 theorem compile_testIsZero : compile 1 testIsZero = some isZeroCompiled := by
@@ -542,7 +542,7 @@ compiler at `L = 0`. -/
 private theorem compile_isZeroCopy_eq_compileIR :
     compile 2 isZeroCircuitCopyIR = compileIR (w := 64) 0 isZeroCircuitCopyIR :=
   compile_eq_compileIR_of_checks (by native_decide) (by native_decide)
-    (by norm_num) (by norm_num)
+    (by norm_num) (by norm_num) (by native_decide) (by native_decide)
 
 /-- The checked entry point accepts the copy generator and emits
 `isZeroCopyCompiled`. -/
