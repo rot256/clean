@@ -504,6 +504,19 @@ def compileV (L : ℕ) : {n : ℕ} → VExpr F n → Stmt w
         .bufPush 1 (n₁ + 3)
   | _, .append a b => compileV L a ;; compileV L b
 
+/-- The code emitted for a structured program (`steps`, `out`) — the shared codegen
+body of `compileIR`'s `.ir` and `.certified` arms. It allocates the output buffer
+`1` with the *immediate* capacity `m` (`bufAllocI` — the output length is a static
+type index, so the allocation is statically priced at
+`C.bufAlloc + m * C.allocPerWord` and the emitted code stays straight-line), zeroes
+the idx register `L`, computes the `let`-steps into registers `0 .. L-1`, then
+pushes the `m` output elements. -/
+def compileIRCode (L : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m) : Stmt w :=
+  .bufAllocI 1 m ;;
+  .imm L 0 ;;
+  compileSteps L steps 0 ;;
+  compileV L out
+
 /-- **Internal, unchecked** — use the checked entry point `compile` instead.
 
 Compile a whole witness program. Must be called with `L := steps.length` (a wrong
@@ -512,30 +525,32 @@ environment-bound, or size checks — unsupported scalar constructors lower to a
 `.imm _ 0`. `compile` performs all checks and computes `L` itself; this raw compiler
 is kept as the object the phase-2/3 proofs do induction over.
 
-The emitted code allocates the output buffer `1` with the *immediate* capacity `m`
-(`bufAllocI` — the output length is a static type index, so the allocation is
-statically priced at `C.bufAlloc + m * C.allocPerWord` and the emitted code stays
-straight-line), zeroes the idx register `L`, computes the `let`-steps into
-registers `0 .. L-1`, then pushes the `m` output elements. `native` closures are
-not compilable. -/
+Both structured arms emit the shared `compileIRCode`; for `.certified` the call is
+deliberately pinned to the *ambient* `FiniteField` instance `instF` (not the one
+packed in the constructor), so a certified program compiles to literally the code
+of its IR reimplementation in every context. `native` closures are not
+compilable. -/
 def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
   | .native _ => none
-  | .ir steps out => some (
-      .bufAllocI 1 m ;;
-      .imm L 0 ;;
-      compileSteps L steps 0 ;;
-      compileV L out)
-  | @Witgen.WitgenIR.certified _ _ _ _ steps out _ => some (
-      -- the `compileSteps`/`compileV` calls are deliberately at the *ambient*
-      -- `FiniteField` instance `instF` (not the one packed in the constructor), so
-      -- a certified program compiles to literally the code of its IR
-      -- reimplementation in every context
-      .bufAllocI 1 m ;;
-      .imm L 0 ;;
-      @compileSteps F w instF L steps 0 ;;
-      @compileV F w instF L m out)
+  | .ir steps out
+  | @Witgen.WitgenIR.certified _ _ _ _ steps out _ =>
+    some (@compileIRCode F w instF L m steps out)
 
 /-! ## The checked entry point -/
+
+/-- The shared checked body of `compile`'s two structured arms, at the ambient
+`FiniteField` instance: run every generation-time check on the structured program
+(`steps`, `out`) and, if all pass, delegate to the internal `compileIR` with the
+local-register count computed from the program itself (`L := steps.length`). See
+`compile` for what the individual checks mean. -/
+def compileChecked (N : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m) :
+    Option (Stmt 64) :=
+  if WitgenIR.compilable (WitgenIR.ir steps out)
+      && WitgenIR.envBound N (WitgenIR.ir steps out)
+      && decide (N ≤ 2 ^ 64) && decide (m < 2 ^ 64) then
+    compileIR (w := 64) steps.length (WitgenIR.ir steps out)
+  else
+    none
 
 /-- **The checked public entry point** of the witgen compiler, at the design point
 `w = 64`. `compile N ir` (with `N` the environment size) returns `some code` iff
@@ -551,7 +566,9 @@ def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
 * `N ≤ 2 ^ 64` — so in-bound environment indices survive their 64-bit immediates,
 * `m < 2 ^ 64` — so per-output-element immediates (`mapRange` indices, `bitsOf`
   bit positions, all `< m`) survive their 64-bit encodings (the output-buffer
-  capacity itself is a `bufAllocI` immediate, a bare `ℕ` that never wraps),
+  capacity itself is a `bufAllocI` immediate, a bare `ℕ`: the capacity
+  *accounting* never wraps, but `bufLen` on the output buffer is exact only for
+  fill levels `< 2 ^ 64` — which this same `m < 2 ^ 64` check guarantees),
 
 and delegates to the internal `compileIR` with the local-register count computed
 from the program itself (`L := steps.length`) — there is no `L` parameter, so a
@@ -564,23 +581,30 @@ they are hypotheses of the correctness theorems: `compile`'s output is verified
 `p` prime, `2 < p`, and `p * p ≤ 2 ^ 64` (single-word moduli). -/
 def compile (N : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt 64)
   | .native _ => none
-  | .ir steps out =>
-    if WitgenIR.compilable (WitgenIR.ir steps out)
-        && WitgenIR.envBound N (WitgenIR.ir steps out)
-        && decide (N ≤ 2 ^ 64) && decide (m < 2 ^ 64) then
-      compileIR (w := 64) steps.length (WitgenIR.ir steps out)
-    else
-      none
+  | .ir steps out
   | @Witgen.WitgenIR.certified _ _ _ _ steps out _ =>
-    -- same checks and code as the `.ir` arm on the carried IR reimplementation; the
-    -- `compileIR` call is pinned to the *ambient* instance `instF` (not the one
-    -- packed in the constructor), keeping `compile_certified_eq_ir` definitional
-    if WitgenIR.compilable (WitgenIR.ir steps out)
-        && WitgenIR.envBound N (WitgenIR.ir steps out)
-        && decide (N ≤ 2 ^ 64) && decide (m < 2 ^ 64) then
-      @compileIR F 64 instF steps.length m (WitgenIR.ir steps out)
-    else
-      none
+    -- both structured arms delegate to the shared checked body `compileChecked`
+    -- on the (carried, for `.certified`) IR program; the call is pinned to the
+    -- *ambient* instance `instF` (not the one packed in the constructor), keeping
+    -- `compile_certified_eq_ir` definitional
+    @compileChecked F instF N m steps out
+
+/-- Destructuring the shared checked body: a successful `compileChecked` certifies
+compilability, the environment bound, both size bounds, and the delegation to the
+raw compiler at `L = steps.length`. The `compile` destructuring theorems below are
+one application of this per structured arm. -/
+theorem compileChecked_checks {N m : ℕ} {steps : List (Step F)} {out : VExpr F m}
+    {code : Stmt 64} (h : compileChecked N steps out = some code) :
+    WitgenIR.compilable (WitgenIR.ir steps out) = true ∧
+      WitgenIR.envBound N (WitgenIR.ir steps out) = true ∧
+      N ≤ 2 ^ 64 ∧ m < 2 ^ 64 ∧
+      compileIR (w := 64) steps.length (WitgenIR.ir steps out) = some code := by
+  simp only [compileChecked] at h
+  split at h
+  · rename_i hcond
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+    exact ⟨hcond.1.1.1, hcond.1.1.2, hcond.1.2, hcond.2, h⟩
+  · exact absurd h (by simp)
 
 /-- Destructuring the checks: a successful `compile` certifies compilability, the
 environment bound, and both size bounds. -/
@@ -592,20 +616,12 @@ theorem compile_checks {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
   | native _ => simp [compile] at h
   | ir steps out =>
     simp only [compile] at h
-    split at h
-    · rename_i hcond
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
-      obtain ⟨⟨⟨hc, hb⟩, hN⟩, hm⟩ := hcond
-      exact ⟨hc, hb, hN, hm⟩
-    · exact absurd h (by simp)
+    obtain ⟨hc, hb, hN, hm, -⟩ := compileChecked_checks h
+    exact ⟨hc, hb, hN, hm⟩
   | certified f steps out hcert =>
     simp only [compile] at h
-    split at h
-    · rename_i hcond
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
-      obtain ⟨⟨⟨hc, hb⟩, hN⟩, hm⟩ := hcond
-      exact ⟨hc, hb, hN, hm⟩
-    · exact absurd h (by simp)
+    obtain ⟨hc, hb, hN, hm, -⟩ := compileChecked_checks (instF := instF) h
+    exact ⟨hc, hb, hN, hm⟩
 
 /-- Destructuring the delegation: a successful `compile` is a `compileIR` call on a
 structured `.ir` program at the correct `L = steps.length` — the program itself for
@@ -621,21 +637,13 @@ theorem compile_toCompileIR {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
   cases ir with
   | native _ => simp [compile] at h
   | ir steps out =>
-    refine ⟨steps, out, rfl, ?_⟩
     simp only [compile] at h
-    split at h
-    · rename_i hcond
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
-      exact ⟨hcond.1.1.1, hcond.1.1.2, h⟩
-    · exact absurd h (by simp)
+    obtain ⟨hc, hb, -, -, hIR⟩ := compileChecked_checks h
+    exact ⟨steps, out, rfl, hc, hb, hIR⟩
   | certified f steps out hcert =>
-    refine ⟨steps, out, rfl, ?_⟩
     simp only [compile] at h
-    split at h
-    · rename_i hcond
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
-      exact ⟨hcond.1.1.1, hcond.1.1.2, h⟩
-    · exact absurd h (by simp)
+    obtain ⟨hc, hb, -, -, hIR⟩ := compileChecked_checks (instF := instF) h
+    exact ⟨steps, out, rfl, hc, hb, hIR⟩
 
 /-- The checked entry point treats a certified program exactly like its IR
 reimplementation: same checks, same code. Definitional. -/
@@ -652,10 +660,20 @@ theorem compile_eq_compileIR_of_checks {N m : ℕ} {steps : List (Step F)}
     (hN : N ≤ 2 ^ 64) (hm : m < 2 ^ 64) :
     compile N (WitgenIR.ir steps out)
       = compileIR (w := 64) steps.length (WitgenIR.ir steps out) := by
-  simp only [compile]
+  simp only [compile, compileChecked]
   rw [if_pos]
   simp only [Bool.and_eq_true, decide_eq_true_eq]
   exact ⟨⟨⟨hc, hb⟩, hN⟩, hm⟩
+
+/-- The output-size guard on the shared checked body: an output length that does
+not fit in a 64-bit immediate is rejected, whatever else holds. -/
+theorem compileChecked_eq_none_of_output_ge {N m : ℕ} (hm : 2 ^ 64 ≤ m)
+    (steps : List (Step F)) (out : VExpr F m) : compileChecked N steps out = none := by
+  simp only [compileChecked]
+  rw [if_neg]
+  simp only [Bool.and_eq_true, decide_eq_true_eq, not_and]
+  intro _ _
+  omega
 
 /-- The output-size guard: a program whose static output length does not fit in a
 64-bit immediate is rejected, whatever else holds. -/
@@ -665,16 +683,10 @@ theorem compile_eq_none_of_output_ge {N m : ℕ} (hm : 2 ^ 64 ≤ m)
   | native _ => rfl
   | ir steps out =>
     simp only [compile]
-    rw [if_neg]
-    simp only [Bool.and_eq_true, decide_eq_true_eq, not_and]
-    intro _ _
-    omega
+    exact compileChecked_eq_none_of_output_ge hm steps out
   | certified f steps out hcert =>
     simp only [compile]
-    rw [if_neg]
-    simp only [Bool.and_eq_true, decide_eq_true_eq, not_and]
-    intro _ _
-    omega
+    exact compileChecked_eq_none_of_output_ge (instF := instF) hm steps out
 
 /-! ## Differential tests
 

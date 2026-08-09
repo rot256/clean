@@ -632,7 +632,7 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
     (hm : m < 2 ^ 64) {s : State 64} (hbuf : s.bufs 0 = envArr) :
     ∃ s' t d pp, Exec C code s s' t d pp ∧
       s'.bufs 1 = (Vector.map encF ((WitgenIR.ir steps out).eval env)).toArray := by
-  simp only [compileIR, Option.some.injEq] at hcode
+  simp only [compileIR, compileIRCode, Option.some.injEq] at hcode
   subst hcode
   simp only [WitgenIR.compilable, Bool.and_eq_true] at hcomp
   simp only [WitgenIR.envBound, Bool.and_eq_true] at hbound

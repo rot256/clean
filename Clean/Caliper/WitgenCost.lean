@@ -268,6 +268,12 @@ theorem compileV_straightAF (L : ℕ) : ∀ {n : ℕ} (v : VExpr F n),
   | _, .append a b =>
     straightAF_seq (compileV_straightAF L a) (compileV_straightAF L b)
 
+/-- The shared codegen body `compileIRCode` is straight-line. -/
+theorem compileIRCode_straight (L : ℕ) {m : ℕ} (steps : List (Step F))
+    (out : VExpr F m) : (compileIRCode (w := w) L steps out).Straight :=
+  ⟨trivial, trivial, (compileSteps_straightAF L steps 0).1,
+    (compileV_straightAF L out).1⟩
+
 /-- **Everything `compileIR` emits is straight-line**: no `ifNZ`, no `whileNZ`,
 anywhere. This is the fact that turns running time into a syntactic constant. -/
 theorem compileIR_straight {L : ℕ} {m : ℕ} {ir : WitgenIR F m} {code : Stmt w}
@@ -276,19 +282,15 @@ theorem compileIR_straight {L : ℕ} {m : ℕ} {ir : WitgenIR F m} {code : Stmt 
   | native f => simp [compileIR] at h
   | ir steps out =>
     simp only [compileIR, Option.some.injEq] at h
-    subst h
-    exact ⟨trivial, trivial, (compileSteps_straightAF L steps 0).1,
-      (compileV_straightAF L out).1⟩
+    exact h ▸ compileIRCode_straight L steps out
   | certified f steps out hcert =>
     -- the compiled code is literally the IR reimplementation's (at the ambient
     -- `FiniteField` instance; drop the constructor's packed instance so instance
     -- synthesis below picks the ambient one)
     simp only [compileIR, Option.some.injEq] at h
-    subst h
     rename_i instP
     clear hcert f instP
-    exact ⟨trivial, trivial, (compileSteps_straightAF L steps 0).1,
-      (compileV_straightAF L out).1⟩
+    exact h ▸ compileIRCode_straight L steps out
 
 /-! ## The time theorem: witgen time is a syntactic constant -/
 
@@ -345,6 +347,22 @@ theorem witgenTime_data_independent {C : CostModel} {L m : ℕ} {ir : WitgenIR F
 /-- **Compiled witgen code needs at most `m` words of memory** (`m` = the static
 output length): the single prologue `bufAllocI` charges at most `m`, and everything
 else is alloc-free. Both the net live-memory change and the peak are bounded. -/
+theorem compileIRCode_space_le {C : CostModel} {L m : ℕ} {steps : List (Step F)}
+    {out : VExpr F m} {s s' : State w} {t : ℕ} {d p : ℤ}
+    (hx : Exec C (compileIRCode (w := w) L steps out) s s' t d p) :
+    d ≤ (m : ℤ) ∧ p ≤ (m : ℤ) := by
+  simp only [compileIRCode] at hx
+  -- destructure `bufAllocI ;; rest` and its costs
+  cases hx with
+  | seq h₁ hrest =>
+    cases h₁
+    -- the rest (idx-zeroing, steps, output pushes) is alloc-free
+    obtain ⟨hd, hp⟩ := hrest.allocFree_space
+      ⟨trivial, (compileSteps_straightAF L steps 0).2, (compileV_straightAF L out).2⟩
+    -- the single bufAllocI charges `m - oldCap ≤ m`
+    omega
+
+/-- The `compileIR` form of `compileIRCode_space_le`. -/
 theorem compileIR_space_le {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code : Stmt w}
     {s s' : State w} {t : ℕ} {d p : ℤ} (hc : compileIR (w := w) L ir = some code)
     (hx : Exec C code s s' t d p) : d ≤ (m : ℤ) ∧ p ≤ (m : ℤ) := by
@@ -353,15 +371,7 @@ theorem compileIR_space_le {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code
   | ir steps out =>
     simp only [compileIR, Option.some.injEq] at hc
     subst hc
-    -- destructure `bufAllocI ;; rest` and its costs
-    cases hx with
-    | seq h₁ hrest =>
-      cases h₁
-      -- the rest (idx-zeroing, steps, output pushes) is alloc-free
-      obtain ⟨hd, hp⟩ := hrest.allocFree_space
-        ⟨trivial, (compileSteps_straightAF L steps 0).2, (compileV_straightAF L out).2⟩
-      -- the single bufAllocI charges `m - oldCap ≤ m`
-      omega
+    exact compileIRCode_space_le hx
   | certified f steps out hcert =>
     -- the compiled code is literally the IR reimplementation's (at the ambient
     -- `FiniteField` instance; drop the constructor's packed instance so instance
@@ -370,12 +380,7 @@ theorem compileIR_space_le {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code
     subst hc
     rename_i instP
     clear hcert f instP
-    cases hx with
-    | seq h₁ hrest =>
-      cases h₁
-      obtain ⟨hd, hp⟩ := hrest.allocFree_space
-        ⟨trivial, (compileSteps_straightAF L steps 0).2, (compileV_straightAF L out).2⟩
-      omega
+    exact compileIRCode_space_le hx
 
 /-! ## Checked-entry corollaries
 

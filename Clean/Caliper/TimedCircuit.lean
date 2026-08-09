@@ -12,7 +12,7 @@ static cost sums to a total below the circuit's `witgenBudget`.
 The obligation is one boolean evaluation (`underBudget`), dischargeable by
 `native_decide` — but the number it certifies is not just a number:
 
-* `Operations.witgenTime` folds `FlatOperation.witgenCost` over the circuit's flat
+* `FlatOperation.witgenTime` folds `FlatOperation.witgenCost` over the circuit's flat
   operations, threading the offset exactly like `FlatOperation.localLength` and
   `computableChecks` (`WitgenComputable.lean`): each generator is priced — and its
   `envBound` checked by `compile` — at its own accumulated offset.
@@ -75,31 +75,31 @@ The offset is threaded exactly like `FlatOperation.localLength` and
 `envBound` checked by `compile` — at its own accumulated offset. `some T` means the
 whole list is certified; one uncompilable generator (in particular any bare
 `.native` closure) poisons the total to `none`. -/
-def Operations.witgenTime (C : CostModel) : ℕ → List (FlatOperation F) → Option ℕ
+def FlatOperation.witgenTime (C : CostModel) : ℕ → List (FlatOperation F) → Option ℕ
   | _, [] => some 0
   | n, op :: ops =>
     (FlatOperation.witgenCost C n op).bind fun t =>
-      (Operations.witgenTime C (FlatOperation.singleLocalLength op + n) ops).map (t + ·)
+      (FlatOperation.witgenTime C (FlatOperation.singleLocalLength op + n) ops).map (t + ·)
 
 /-- Decidable budget check: the whole-list fold produces a certified total strictly
 below `budget`. One boolean — `native_decide` discharges it at concrete circuits. -/
 def underBudget (C : CostModel) (n budget : ℕ) (ops : List (FlatOperation F)) : Bool :=
-  match Operations.witgenTime C n ops with
+  match FlatOperation.witgenTime C n ops with
   | some T => T < budget
   | none => false
 
 theorem underBudget_iff {C : CostModel} {n budget : ℕ} {ops : List (FlatOperation F)} :
     underBudget C n budget ops = true ↔
-      ∃ T, Operations.witgenTime C n ops = some T ∧ T < budget := by
+      ∃ T, FlatOperation.witgenTime C n ops = some T ∧ T < budget := by
   unfold underBudget
-  cases h : Operations.witgenTime C n ops <;> simp
+  cases h : FlatOperation.witgenTime C n ops <;> simp
 
 /-! ## The meaning theorem: the number is a per-generator certificate -/
 
 /-- Per-generator cost certificate for a flat operation list starting at offset `n`,
 with total `T`: every witness generator, **at its own accumulated offset**, is
 accepted by the checked compiler with a static time, and the static times sum to
-`T`. This is the fold `Operations.witgenTime` computes, reified as a relation —
+`T`. This is the fold `FlatOperation.witgenTime` computes, reified as a relation —
 the shape the meaning theorems below are read off from. -/
 inductive WitnessCosts (C : CostModel) : ℕ → List (FlatOperation F) → ℕ → Prop where
   | nil {n : ℕ} : WitnessCosts C n [] 0
@@ -120,12 +120,12 @@ generator in the list is individually certified at its own offset, and the certi
 static times sum to exactly `T`. -/
 theorem witgenTime_sound {C : CostModel} :
     ∀ (ops : List (FlatOperation F)) (n T : ℕ),
-      Operations.witgenTime C n ops = some T → WitnessCosts C n ops T
+      FlatOperation.witgenTime C n ops = some T → WitnessCosts C n ops T
   | [], _, _, h => by
-    simp only [Operations.witgenTime, Option.some.injEq] at h
+    simp only [FlatOperation.witgenTime, Option.some.injEq] at h
     exact h ▸ WitnessCosts.nil
   | .witness m ir :: ops, n, T, h => by
-    simp only [Operations.witgenTime, FlatOperation.witgenCost,
+    simp only [FlatOperation.witgenTime, FlatOperation.witgenCost,
       FlatOperation.singleLocalLength] at h
     cases hc : compile n ir with
     | none => simp [hc] at h
@@ -133,32 +133,32 @@ theorem witgenTime_sound {C : CostModel} :
       cases ht : code.staticTime? C with
       | none => simp [hc, ht] at h
       | some t =>
-        cases hrest : Operations.witgenTime C (m + n) ops with
+        cases hrest : FlatOperation.witgenTime C (m + n) ops with
         | none => simp [hc, ht, hrest] at h
         | some rest =>
           simp only [hc, ht, hrest, Option.bind_some, Option.map_some,
             Option.some.injEq] at h
           exact h ▸ WitnessCosts.witness code hc ht (witgenTime_sound ops (m + n) rest hrest)
   | .assert e :: ops, n, T, h => by
-    simp only [Operations.witgenTime, FlatOperation.witgenCost,
+    simp only [FlatOperation.witgenTime, FlatOperation.witgenCost,
       FlatOperation.singleLocalLength, Nat.zero_add, Option.bind_some] at h
-    cases hrest : Operations.witgenTime C n ops with
+    cases hrest : FlatOperation.witgenTime C n ops with
     | none => simp [hrest] at h
     | some rest =>
       simp only [hrest, Option.map_some, Option.some.injEq] at h
       exact h ▸ WitnessCosts.assert (witgenTime_sound ops n rest hrest)
   | .lookup l :: ops, n, T, h => by
-    simp only [Operations.witgenTime, FlatOperation.witgenCost,
+    simp only [FlatOperation.witgenTime, FlatOperation.witgenCost,
       FlatOperation.singleLocalLength, Nat.zero_add, Option.bind_some] at h
-    cases hrest : Operations.witgenTime C n ops with
+    cases hrest : FlatOperation.witgenTime C n ops with
     | none => simp [hrest] at h
     | some rest =>
       simp only [hrest, Option.map_some, Option.some.injEq] at h
       exact h ▸ WitnessCosts.lookup (witgenTime_sound ops n rest hrest)
   | .interact i :: ops, n, T, h => by
-    simp only [Operations.witgenTime, FlatOperation.witgenCost,
+    simp only [FlatOperation.witgenTime, FlatOperation.witgenCost,
       FlatOperation.singleLocalLength, Nat.zero_add, Option.bind_some] at h
-    cases hrest : Operations.witgenTime C n ops with
+    cases hrest : FlatOperation.witgenTime C n ops with
     | none => simp [hrest] at h
     | some rest =>
       simp only [hrest, Option.map_some, Option.some.injEq] at h
@@ -260,7 +260,7 @@ def canonicalOps (tc : TimedCircuit F Input Output) : List (FlatOperation F) :=
 /-- The obligation, read back: the canonical instantiation's total certified witgen
 time exists and is strictly below the budget. -/
 theorem witgenTime_lt_budget (tc : TimedCircuit F Input Output) :
-    ∃ T, Operations.witgenTime tc.costModel (size Input) tc.canonicalOps = some T ∧
+    ∃ T, FlatOperation.witgenTime tc.costModel (size Input) tc.canonicalOps = some T ∧
       T < tc.witgenBudget :=
   underBudget_iff.mp tc.witgen_bounded
 
@@ -303,7 +303,7 @@ unit steps for its complete witness generation (the same per-generator numbers a
 `isZeroCompiled_staticTime_unit` / `isZeroCopyCompiled_staticTime_unit` in
 `WitgenCost.lean`). -/
 /-- info: some 159 -/
-#guard_msgs in #eval Operations.witgenTime CostModel.unit 1 isZeroCircuitOps
+#guard_msgs in #eval FlatOperation.witgenTime CostModel.unit 1 isZeroCircuitOps
 
 /-- **The goal shape**: the existing `FormalCircuit` upgraded to a `TimedCircuit`
 by one `native_decide`, at the default budget `2^40` and unit cost model. -/
@@ -312,14 +312,14 @@ def isZeroTimed : TimedCircuit Fb field field :=
 
 /-- The timed circuit's certified total, pinned: 159 unit steps. -/
 theorem isZeroTimed_witgenTime :
-    Operations.witgenTime CostModel.unit (size field) isZeroTimed.canonicalOps
+    FlatOperation.witgenTime CostModel.unit (size field) isZeroTimed.canonicalOps
       = some 159 := by
   native_decide
 
-/-- The `< 2^40` reading for the demo, end to end: every witness generator of the
-timed `IsZeroField` circuit has compiled code whose every execution takes exactly
-its certified time `t ≤ 159 < 2^40`, with live-memory peak `≤ t`. -/
-theorem isZeroTimed_witgen_lt_2_40 :
+/-- The exact-total reading for the demo, end to end: every witness generator of
+the timed `IsZeroField` circuit has compiled code whose every execution takes
+exactly its certified time `t ≤ 159`, with live-memory peak `≤ t`. -/
+theorem isZeroTimed_witgen_le_159 :
     FlatOperation.forAll (size field)
       { witness n _ ir := ∃ t code, compile n ir = some code ∧
           code.staticTime? CostModel.unit = some t ∧ t ≤ 159 ∧
@@ -327,5 +327,19 @@ theorem isZeroTimed_witgen_lt_2_40 :
             Exec CostModel.unit code s s' t' d p → t' = t ∧ p ≤ (t : ℤ) }
       isZeroTimed.canonicalOps :=
   (witgenTime_sound _ _ _ isZeroTimed_witgenTime).forAll_exec (by decide) le_rfl
+
+/-- The `< 2^40` reading for the demo: the certified per-generator times `t ≤ 159`
+of `isZeroTimed_witgen_le_159` are in particular strictly below the `2^40`
+budget. -/
+theorem isZeroTimed_witgen_lt_2_40 :
+    FlatOperation.forAll (size field)
+      { witness n _ ir := ∃ t code, compile n ir = some code ∧
+          code.staticTime? CostModel.unit = some t ∧ t < 2 ^ 40 ∧
+          ∀ {s s' : State 64} {t' : ℕ} {d p : ℤ},
+            Exec CostModel.unit code s s' t' d p → t' = t ∧ p ≤ (t : ℤ) }
+      isZeroTimed.canonicalOps := by
+  refine forAll_witness_mono ?_ isZeroTimed_witgen_le_159
+  rintro n m ir ⟨t, code, hc, ht, hle, hexec⟩
+  exact ⟨t, code, hc, ht, by omega, hexec⟩
 
 end Caliper.WitgenCompile
