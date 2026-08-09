@@ -1,3 +1,4 @@
+import Clean.Caliper.Attacks
 import Clean.Caliper.Core
 import Clean.Caliper.Triple
 import Clean.Caliper.Builder

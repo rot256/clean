@@ -21,6 +21,7 @@ compute the reference `WitgenIR.eval` output (see "The witgen pipeline" below).
 | `WitgenCompile.lean` | **Phase 1**: the witgen-IR → `Stmt` compiler (Expression/FExpr/U64Expr/BExpr, let-steps, VExpr), generic over `FiniteField`; straight-line by design (mask-select `ite`, unrolled `mapRange`/`envRange`/`bitsOf`); decidable `compilable`/`envBound` checks and the **checked entry point `compile`**; differential and trust-boundary regression tests against `WitgenIR.eval` at BabyBear; the headline program `testIsZero` is proved to be the witness IR extracted from the Clean circuit `Gadgets.IsZeroField.circuit` (`isZeroCircuitIR_eq_testIsZero`) |
 | `WitgenCost.lean` | **Phase 2**: straightness/alloc-freeness of all compiled code; `compile_time_eq` (every execution takes *exactly* `staticTime` — data-independent, `compile_time_data_independent`), the Option-valued static clock `witgenTime` (defined through `staticTime?`, so it cannot quote a number for loopy code), `compile_space_le` (memory ≤ output length), and concrete certified bounds: `isZero_witgen_lt_2_40` |
 | `WitgenSim.lean` + `WitgenSimExpr.lean` + `WitgenSimIR.lean` | **Phase 3**: verified lowering, end to end — encodings (`encF`/`encU`/`encB`), state relations, Fermat-ladder correctness, the scalar-expression simulation theorems, and the program-level simulation `compile_sim`: every witness program accepted by `compile` has an execution ending with the output buffer holding exactly the encoded `WitgenIR.eval` output (which doubles as memory safety); combined with phase 2 in `isZero_witgen_correct_140` |
+| `Attacks.lean` | **Adversarial pass**: machine-checked demonstrations that a certificate can sit far below the real resource use — unmetered registers and code, unbounded word width, unconstrained `CostModel`, caller-funded memory, the unchecked field-size condition, and the value-only native-closure bridge. Written up, with severities and fixes, in `doc/caliper-attacks.md` |
 | `WitgenComputable.lean` | **The checks → circuit-layer bridge**: `compilable` + `envBound N` imply `ProverEnvironment.OnlyAccessedBelow N` (`WitgenIR.onlyAccessedBelow_of_checks`; `onlyAccessedBelow_of_ir_equiv` for native closures with a certified IR equivalent), lifted per-offset to whole circuits (`circuit_computableWitnesses_of_checks`) so that `Circuit.ComputableWitnesses` obligations discharge by one boolean evaluation — demonstrated on the instantiated `IsZeroField` and `Addition8FullCarry` circuits by `native_decide` |
 
 ## The witgen pipeline: `witgen in < 2^N steps`, machine-checked
@@ -321,7 +322,11 @@ gone: with explicit capacity, every instruction is worst-case constant time.)
 
 ## What is NOT proved
 
-The theorems stop at the abstract machine. Stated plainly:
+The theorems stop at the abstract machine. Stated plainly (and see
+`doc/caliper-attacks.md` for an adversarial pass that turns several of these into
+machine-checked demonstrations of certificates far below real resource use, plus
+gaps not listed here — chiefly the unmetered register file, the unconstrained
+`CostModel`, and `compile`'s missing field-size check):
 
 - **No verified backend exists.** There is no verified lowering from `Stmt` to a
   physical ISA, allocator, or runtime. The compilation contract above — each
