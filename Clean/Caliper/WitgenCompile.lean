@@ -984,4 +984,38 @@ the compiled-vs-native agreement that the packed equivalence proof certifies. -/
 
 end Tests
 
+/-! ### Build performance: pre-realize unfolding equations
+
+The first `simp only [f]` for a recursive `f` proves its `f.eq_def` / `f.eq_*`
+unfolding lemmas on demand, and that work is redone in *every module* that unfolds
+`f` — unless the realizations were already made inside a retained theorem of an
+imported module, in which case they ship in the `.olean`. The no-op `simp` below
+forces all unfolding lemmas of the recursive compiler/check definitions here, in
+one asynchronous proof at the definition site, so the (measured, multi-second)
+re-realization cost disappears from `WitgenSimExpr`, `WitgenSimIR`,
+`WitgenComputable` and other importers. Placed after `Tests` because `#eval`
+commands act as barriers on outstanding asynchronous proofs — putting these
+first would stall the test evals on the realization work. -/
+set_option linter.unusedSimpArgs false in
+private theorem compileF_eq_lemmas_realized : True := by
+  simp -failIfUnchanged only [compileExpr, compileF]
+
+set_option linter.unusedSimpArgs false in
+private theorem compileU_eq_lemmas_realized : True := by
+  simp -failIfUnchanged only [compileU]
+
+set_option linter.unusedSimpArgs false in
+private theorem compileB_eq_lemmas_realized : True := by
+  simp -failIfUnchanged only [compileB, compileV]
+
+set_option linter.unusedSimpArgs false in
+private theorem compilable_eq_lemmas_realized : True := by
+  simp -failIfUnchanged only [FExpr.compilable, U64Expr.compilable, BExpr.compilable,
+    VExpr.compilable]
+
+set_option linter.unusedSimpArgs false in
+private theorem envBound_eq_lemmas_realized : True := by
+  simp -failIfUnchanged only [FExpr.envBound, U64Expr.envBound, BExpr.envBound,
+    VExpr.envBound, Expression.envBound]
+
 end Caliper.WitgenCompile
