@@ -1134,49 +1134,50 @@ theorem compileIR_testIsZero : compileIR (w := 64) 0 testIsZero = some isZeroCom
   compile_isZero_eq_compileIR ▸ compile_testIsZero
 
 /-- The static time of the compiled `IsZero` witness under the uniform cost model —
-the same 155 the differential test of `WitgenCompile.lean` measured by running it:
-the 140 arithmetic ticks of the free-register era plus 15 register acquisitions
+the same 154 the differential test of `WitgenCompile.lean` measured by running it:
+139 arithmetic/allocation ticks (the output allocation costs just its per-word
+tick — the `memAlloc` base is 0) plus 15 register acquisitions
 (1 idx + 14 temps; the matching releases are free). (`rfl` cannot evaluate this
 because `toBits` — the ladder's bit list — is defined by well-founded recursion,
 which does not reduce definitionally; `native_decide` does.) -/
-theorem isZeroCompiled_staticTime_unit : isZeroCompiled.staticTime .unit = 155 := by
+theorem isZeroCompiled_staticTime_unit : isZeroCompiled.staticTime .unit = 154 := by
   native_decide
 
 /-- The static time of the compiled `IsZero` witness under the calibrated
 `CostModel.cycles` table (the 15 register acquisitions cost one cycle each there
 too — `regAlloc + allocPerWord = 0 + 1`). -/
-theorem isZeroCompiled_staticTime_cycles : isZeroCompiled.staticTime .cycles = 2105 := by
+theorem isZeroCompiled_staticTime_cycles : isZeroCompiled.staticTime .cycles = 2055 := by
   native_decide
 
-/-- info: some 155 -/
+/-- info: some 154 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testIsZero
 
-/-- info: some 2105 -/
+/-- info: some 2055 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.cycles 0 testIsZero
 
 /- The same numbers through the checked entry point (no `L` to supply). -/
-/-- info: some 155 -/
+/-- info: some 154 -/
 #guard_msgs in #eval (compile 1 testIsZero).map (·.staticTime CostModel.unit)
 
-/-- info: some 2105 -/
+/-- info: some 2055 -/
 #guard_msgs in #eval (compile 1 testIsZero).map (·.staticTime CostModel.cycles)
 
 /- The output allocation is charged per word (`m * C.allocPerWord`) and every
 register acquisition costs a tick, so relative to the free-register era each
-program pays its acquisition count: `testXor` 11 → 19, `testSteps` 19 → 32,
+program pays its acquisition count: `testXor` 10 → 18, `testSteps` 18 → 31,
 `testBits` (idx + 2 expr temps + 4 temps per bit block, re-acquired per bit)
-52 → 87, `testMapRange` (idx + 3 temps per element, re-acquired per element)
-27 → 40. -/
-/-- info: some 19 -/
+51 → 86, `testMapRange` (idx + 3 temps per element, re-acquired per element)
+26 → 39. -/
+/-- info: some 18 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testXor
 
-/-- info: some 32 -/
+/-- info: some 31 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 1 testSteps
 
-/-- info: some 87 -/
+/-- info: some 86 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testBits
 
-/-- info: some 40 -/
+/-- info: some 39 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testMapRange
 
 /- The certified register-file requirements (live set, not acquisition count):
@@ -1196,7 +1197,7 @@ idx + the 2 expression temps + 4 per-bit temps; `testMapRange` idx + 3;
 #guard_msgs in #eval WitgenIR.regPeak (w := 64) testSteps
 
 /-- **The headline, end to end**: every execution of the compiled `IsZero` witness
-program terminates in fewer than `2^40` steps — in fact in exactly 155. -/
+program terminates in fewer than `2^40` steps — in fact in exactly 154. -/
 theorem isZero_witgen_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
     (h : Exec .unit isZeroCompiled s s' t d p) : t < 2 ^ 40 := by
   have ht := compile_time_eq compile_testIsZero h
@@ -1264,38 +1265,38 @@ theorem compile_isZeroCircuitCopyIR :
   rfl
 
 /-- The static time of the compiled copy generator under the uniform cost model:
-32 unit steps (two environment reads, the constants, and two field
-multiply/add-reduce patterns — no inverse ladder — at 19 arithmetic ticks, plus
-13 register acquisitions: 1 idx + 12 temps). -/
+31 unit steps (two environment reads, the constants, and two field
+multiply/add-reduce patterns — no inverse ladder — at 18 arithmetic/allocation
+ticks, plus 13 register acquisitions: 1 idx + 12 temps). -/
 theorem isZeroCopyCompiled_staticTime_unit :
-    isZeroCopyCompiled.staticTime .unit = 32 := by
+    isZeroCopyCompiled.staticTime .unit = 31 := by
   native_decide
 
 /-- The static time of the compiled copy generator under the calibrated
 `CostModel.cycles` table. -/
 theorem isZeroCopyCompiled_staticTime_cycles :
-    isZeroCopyCompiled.staticTime .cycles = 182 := by
+    isZeroCopyCompiled.staticTime .cycles = 132 := by
   native_decide
 
 /- The same numbers through the checked entry point and the honest partial clock
 (`staticTime?` cannot quote a number for loopy code). -/
-/-- info: some (some 32) -/
+/-- info: some (some 31) -/
 #guard_msgs in #eval (compile 2 isZeroCircuitCopyIR).map (·.staticTime? CostModel.unit)
 
-/-- info: some (some 182) -/
+/-- info: some (some 132) -/
 #guard_msgs in #eval (compile 2 isZeroCircuitCopyIR).map (·.staticTime? CostModel.cycles)
 
 /-- **Total witgen time for the complete `IsZeroField` circuit**: by
 `isZeroCircuit_witnessIRs`, `testIsZero` (= the extracted `isZeroCircuitIR`) and
 `isZeroCircuitCopyIR` are *all* the witness generators of
 `Gadgets.IsZeroField.circuit`, so executing their two compiled programs is the
-circuit's entire witness generation — and it takes exactly `155 + 32 = 187` unit
+circuit's entire witness generation — and it takes exactly `154 + 31 = 185` unit
 steps, on every input. -/
 theorem isZeroCircuit_total_witgen_time_unit {s₁ s₁' s₂ s₂' : State 64}
     {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
     (h₁ : Exec .unit isZeroCompiled s₁ s₁' t₁ d₁ p₁)
     (h₂ : Exec .unit isZeroCopyCompiled s₂ s₂' t₂ d₂ p₂) :
-    t₁ + t₂ = 155 + 32 := by
+    t₁ + t₂ = 154 + 31 := by
   rw [compile_time_eq compile_testIsZero h₁, isZeroCompiled_staticTime_unit,
     compile_time_eq compile_isZeroCircuitCopyIR h₂, isZeroCopyCompiled_staticTime_unit]
 
@@ -1324,19 +1325,19 @@ of its IR reimplementation — `isZeroCompiled`. The first step is definitional
 theorem compile_isZeroCertified : compile 1 isZeroCertified = some isZeroCompiled :=
   compile_testIsZero
 
-/- The certified program's pinned cost numerals: the same 155 unit steps / 2105
+/- The certified program's pinned cost numerals: the same 154 unit steps / 2055
 cycles as `testIsZero`, now certified *for the native closure's witness*. -/
-/-- info: some 155 -/
+/-- info: some 154 -/
 #guard_msgs in #eval (compile 1 isZeroCertified).map (·.staticTime CostModel.unit)
 
-/-- info: some 2105 -/
+/-- info: some 2055 -/
 #guard_msgs in #eval (compile 1 isZeroCertified).map (·.staticTime CostModel.cycles)
 
 /-- **Exact time for a certified native witness**: every execution of the code
 compiled from `isZeroCertified` — the program whose prover-side evaluation is the
-native closure `isZeroNative` — takes exactly 155 unit steps. -/
+native closure `isZeroNative` — takes exactly 154 unit steps. -/
 theorem isZeroCertified_witgen_time_unit {s s' : State 64} {t : ℕ} {d p : ℤ}
-    (h : Exec .unit isZeroCompiled s s' t d p) : t = 155 := by
+    (h : Exec .unit isZeroCompiled s s' t d p) : t = 154 := by
   rw [compile_time_eq compile_isZeroCertified h, isZeroCompiled_staticTime_unit]
 
 /-- The `< 2^40` form for the certified native witness. -/

@@ -29,11 +29,11 @@ built on the scalar-expression simulation of `Clean/Caliper/WitgenSimExpr.lean`.
 
 Combined with phase 2 (`WitgenCost.lean`: exact static running time, space ≤ output
 length + the certified register live set), this yields end-to-end corollaries like
-`isZero_witgen_correct_155` and its circuit-anchored form
-`isZero_witgen_correct_155_circuit`: the compiled witness program of the BabyBear
+`isZero_witgen_correct_154` and its circuit-anchored form
+`isZero_witgen_correct_154_circuit`: the compiled witness program of the BabyBear
 `Gadgets.IsZeroField.circuit` — extracted from the circuit itself, see
 `isZeroCircuitIR_eq_testIsZero` in `WitgenCompile.lean` — computes the correct
-encoded witness output in exactly 155 unit steps with peak live memory 16 words
+encoded witness output in exactly 154 unit steps with peak live memory 16 words
 (the output word plus the 15-register live set `isZero_regPeak`).
 
 Everything is at the compiler's design point: word size `w = 64`, `F = F p` for a
@@ -782,7 +782,7 @@ program `isZeroCompiled` has an execution that
 
 * terminates with buffer `1` holding the **correct encoded witness output**
   (`testIsZero.eval env`, elementwise canonical words),
-* in **exactly 155 unit-cost steps** (in particular far below `2 ^ 40`), and
+* in **exactly 154 unit-cost steps** (in particular far below `2 ^ 40`), and
 * with **peak live memory at most 16 words** — the one output word plus the
   certified 15-register live set (`isZero_regPeak`).
 
@@ -794,11 +794,11 @@ Everything goes through the checked entry point: `isZeroCompiled` is defined via
 `compile`, whose checks (`compile_testIsZero` at `N = 1`, generalized to any
 `0 < N ≤ 2 ^ 64` here) feed `compile_sim`, `compile_time_eq` and
 `compile_space_le`. -/
-theorem isZero_witgen_correct_155 {env : ProverEnvironment (F pBabybear)}
+theorem isZero_witgen_correct_154 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
     (hbuf : s.bufs 0 = envArr) :
-    ∃ s' d pp, Exec .unit isZeroCompiled s s' 155 d pp ∧
+    ∃ s' d pp, Exec .unit isZeroCompiled s s' 154 d pp ∧
       s'.bufs 1 = (Vector.map encF (testIsZero.eval env)).toArray ∧
       pp ≤ 16 := by
   have hbound : WitgenIR.envBound N testIsZero = true := by
@@ -809,7 +809,7 @@ theorem isZero_witgen_correct_155 {env : ProverEnvironment (F pBabybear)}
       (by norm_num) (by native_decide) (by native_decide)).trans compileIR_testIsZero
   obtain ⟨s', t, d, pp, hex, hout⟩ :=
     compile_sim (C := .unit) pBabybear env N envArr henv hcode hbuf
-  have ht : t = 155 := by
+  have ht : t = 154 := by
     rw [compile_time_eq hcode hex, isZeroCompiled_staticTime_unit]
   have hpp : pp ≤ 16 := by
     have := (compile_space_le hcode hex).2
@@ -818,7 +818,7 @@ theorem isZero_witgen_correct_155 {env : ProverEnvironment (F pBabybear)}
   exact ⟨s', d, pp, ht ▸ hex, hout, hpp⟩
 
 /-- The `< 2 ^ 40` phrasing of the headline: an execution computing the correct
-encoded witness output exists, and its time is below `2 ^ 40` (it is exactly 155). -/
+encoded witness output exists, and its time is below `2 ^ 40` (it is exactly 154). -/
 theorem isZero_witgen_correct_lt_2_40 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
@@ -827,8 +827,8 @@ theorem isZero_witgen_correct_lt_2_40 {env : ProverEnvironment (F pBabybear)}
       s'.bufs 1 = (Vector.map encF (testIsZero.eval env)).toArray ∧
       t < 2 ^ 40 ∧ pp < 2 ^ 40 := by
   obtain ⟨s', d, pp, hex, hout, hpp⟩ :=
-    isZero_witgen_correct_155 henv hN0 hN hbuf
-  exact ⟨s', 155, d, pp, hex, hout, by omega, by omega⟩
+    isZero_witgen_correct_154 henv hN0 hN hbuf
+  exact ⟨s', 154, d, pp, hex, hout, by omega, by omega⟩
 
 /-- **The circuit-anchored headline**: the same statement with the witness program
 *derived from the Clean circuit* rather than named as a test fixture. The full
@@ -840,45 +840,45 @@ derivation chain, every link machine-checked:
    `FlatOperation.witnessOperations`, and `isZeroCircuitIR = testIsZero` holds
    definitionally (`isZeroCircuitIR_eq_testIsZero`);
 2. **IR → code**: the checked entry point accepts it and emits `isZeroCompiled`
-   (`compile_testIsZero`, generalized over `N` inside `isZero_witgen_correct_155`);
-3. **code → 155 steps, correct output**: every execution takes exactly 155 unit
+   (`compile_testIsZero`, generalized over `N` inside `isZero_witgen_correct_154`);
+3. **code → 154 steps, correct output**: every execution takes exactly 154 unit
    steps and ends with buffer `1` holding the encoded `WitgenIR.eval` output, with
    peak memory ≤ 16 words — output word + certified register live set
    (`compile_sim` + `compile_time_eq` + `compile_space_le`).
 
 The circuit's only other witness generator is the trivial `<==` copy for its output
 `b` (`isZeroCircuit_witnessIRs` lists both, and that they are all of them). -/
-theorem isZero_witgen_correct_155_circuit {env : ProverEnvironment (F pBabybear)}
+theorem isZero_witgen_correct_154_circuit {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
     (hbuf : s.bufs 0 = envArr) :
-    ∃ s' d pp, Exec .unit isZeroCompiled s s' 155 d pp ∧
+    ∃ s' d pp, Exec .unit isZeroCompiled s s' 154 d pp ∧
       s'.bufs 1 = (Vector.map encF (isZeroCircuitIR.eval env)).toArray ∧
       pp ≤ 16 := by
   rw [isZeroCircuitIR_eq_testIsZero]
-  exact isZero_witgen_correct_155 henv hN0 hN hbuf
+  exact isZero_witgen_correct_154 henv hN0 hN hbuf
 
 /-! ## The certified-native headline, instantiated
 
 `isZeroCertified` (`WitgenCompile.lean`) is the `IsZeroField` witness written as an
 ordinary Lean closure (`isZeroNative`), certified against the `testIsZero` IR
 program. The corollary below is `compile_sim_certified` + phase 2 at that instance:
-the machine provably computes **the native closure's own output** — in exactly 155
+the machine provably computes **the native closure's own output** — in exactly 154
 unit steps, with peak memory ≤ 16 words. -/
 
 /-- **The certified-native headline**: from every start state whose buffer `0`
 encodes the environment, the code compiled from `isZeroCertified` (which is
 `isZeroCompiled`, `compile_isZeroCertified`) has an execution that terminates with
 buffer `1` holding the encoded output of the **native closure** `isZeroNative`, in
-**exactly 155 unit steps**, with **peak live memory at most 16 words**. -/
-theorem isZeroCertified_witgen_correct_155 {env : ProverEnvironment (F pBabybear)}
+**exactly 154 unit steps**, with **peak live memory at most 16 words**. -/
+theorem isZeroCertified_witgen_correct_154 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
     (hbuf : s.bufs 0 = envArr) :
-    ∃ s' d pp, Exec .unit isZeroCompiled s s' 155 d pp ∧
+    ∃ s' d pp, Exec .unit isZeroCompiled s s' 154 d pp ∧
       s'.bufs 1 = (Vector.map encF (isZeroNative env)).toArray ∧
       pp ≤ 16 := by
-  obtain ⟨s', d, pp, hex, hout, hpp⟩ := isZero_witgen_correct_155 henv hN0 hN hbuf
+  obtain ⟨s', d, pp, hex, hout, hpp⟩ := isZero_witgen_correct_154 henv hN0 hN hbuf
   refine ⟨s', d, pp, hex, ?_, hpp⟩
   rw [hout, ← isZeroNative_eq_testIsZero]
 

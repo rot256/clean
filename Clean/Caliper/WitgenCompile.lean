@@ -945,7 +945,7 @@ def testMapRange : WitgenIR Fb 4 :=
 /- The inv ladder dominates test 1's running time; the register lifecycle adds 15
 unit ticks over the free-register era (1 idx-register acquisition + 14 temporary
 acquisitions; the 15 releases are free). -/
-/-- info: some 155 -/
+/-- info: some 154 -/
 #guard_msgs in #eval timeCost testIsZero
 
 /- All test programs pass the compilability check. -/
@@ -975,7 +975,7 @@ output `b` (which mentions `z` as `var ⟨1⟩`), does.
 * the `z ← witness (.ite (x =? 0) 0 x⁻¹)` payload — this is `isZeroCircuitIR`, and
   it is **definitionally equal** to `testIsZero` (`isZeroCircuitIR_eq_testIsZero`,
   by `rfl`), so every theorem about `testIsZero` — `compile_testIsZero`,
-  `isZeroCompiled_staticTime_unit`, `isZero_witgen_correct_155` — is literally a
+  `isZeroCompiled_staticTime_unit`, `isZero_witgen_correct_154` — is literally a
   theorem about the circuit's own witness program;
 * the trivial copy generator `isZeroCircuitCopyIR` from `let b <== 1 - x * z`,
   which just evaluates the circuit expression `1 - x * z` over already-known cells.
@@ -1001,8 +1001,8 @@ def isZeroCircuitIR : WitgenIR Fb 1 :=
 /-- **The extracted IR is the test IR** — definitionally. This is the anchor that
 turns the `testIsZero` headline theorems into statements about the Clean circuit
 `Gadgets.IsZeroField.circuit`: circuit → extracted IR (this theorem) → `compile`
-(`compile_testIsZero`) → 155 unit steps, correct output
-(`isZero_witgen_correct_155_circuit` in `WitgenSimIR.lean`). -/
+(`compile_testIsZero`) → 154 unit steps, correct output
+(`isZero_witgen_correct_154_circuit` in `WitgenSimIR.lean`). -/
 theorem isZeroCircuitIR_eq_testIsZero : isZeroCircuitIR = testIsZero := rfl
 
 /-- The circuit's only other witness generator: the `<==` copy for the output
@@ -1139,8 +1139,8 @@ against the closure itself, computability, export — to the closure.
 The demo closure below is the `IsZeroField` conditional-inverse witness written in
 ordinary Lean; its IR reimplementation is `testIsZero`'s program, so the certified
 program compiles to exactly `isZeroCompiled` (see `compile_isZeroCertified` and the
-pinned 155-step cost in `WitgenCost.lean`, the machine-computes-the-closure
-simulation corollary `isZeroCertified_witgen_correct_155` in `WitgenSimIR.lean`, and
+pinned 154-step cost in `WitgenCost.lean`, the machine-computes-the-closure
+simulation corollary `isZeroCertified_witgen_correct_154` in `WitgenSimIR.lean`, and
 the `OnlyAccessedBelow` discharge for the bare closure in `WitgenComputable.lean`). -/
 
 /-- The `IsZeroField` witness as a *native closure*: the conditional inverse of
