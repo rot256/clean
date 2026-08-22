@@ -91,6 +91,14 @@ theorem Stmt.RegOnly.triple_frame {c : Stmt w} (h : c.RegOnly) {P : State w → 
     Triple C P c P (c.staticTime C) 0 0 :=
   h.triple fun s s' _ hs he => hP s s' (fun r hr => he.frame_reg (hR r hr)) hs
 
+/-- Register-only code is in particular loop-free, so `staticTime` bounds it. -/
+theorem Stmt.RegOnly.loopFree {c : Stmt w} (h : c.RegOnly) : c.LoopFree := by
+  induction c with
+  | seq _ _ ih₁ ih₂ => exact ⟨ih₁ h.1, ih₂ h.2⟩
+  | ifNZ _ _ _ iht ihe => exact ⟨iht h.1, ihe h.2⟩
+  | memAlloc | whileNZ => exact absurd h not_false
+  | _ => trivial
+
 /-! ## Writing above a watermark
 
 The one frame fact a counted loop needs: the body does not touch the counter. Every
@@ -133,5 +141,52 @@ theorem Exec.regs_of_writesAbove {c : Stmt w} {s s' : State w} {t : ℕ} {d p : 
     {lo q : Reg} (h : Exec C c s s' t d p) (hw : c.WritesAbove lo) (hq : q < lo) :
     s'.regs q = s.regs q :=
   h.frame_reg (hw q hq)
+
+/-! ## Bounding a run
+
+`TimeLe c T` says every execution of `c` takes at most `T` steps. Unlike a `Triple` it
+asserts nothing about the code running at all, so a `memLoad` costs no
+index-in-range obligation and a `memPush` no capacity obligation — the bound is over
+whatever runs. Unlike `staticTime` it survives a loop, because the loop's contribution
+comes from a `Triple` and `Exec.deterministic` carries that bound to every execution.
+
+Those are exactly the two things the witgen lowering needs to compose: the bulk of the
+compiled code is loop-free but touches memory, and inversion loops but touches
+none. -/
+
+/-- Every execution of `c` takes at most `T` steps. -/
+def TimeLe (C : CostModel) (c : Stmt w) (T : ℕ) : Prop :=
+  ∀ s s' t d p, Exec C c s s' t d p → t ≤ T
+
+theorem TimeLe.mono {c : Stmt w} {T T' : ℕ} (h : TimeLe C c T) (hT : T ≤ T') :
+    TimeLe C c T' := fun s s' t d p he => (h s s' t d p he).trans hT
+
+theorem TimeLe.seq {c₁ c₂ : Stmt w} {T₁ T₂ : ℕ}
+    (h₁ : TimeLe C c₁ T₁) (h₂ : TimeLe C c₂ T₂) : TimeLe C (c₁ ;; c₂) (T₁ + T₂) := by
+  rintro s s' t d p he
+  cases he with
+  | seq he₁ he₂ => exact Nat.add_le_add (h₁ _ _ _ _ _ he₁) (h₂ _ _ _ _ _ he₂)
+
+theorem TimeLe.ifNZ {r : Reg} {t e : Stmt w} {T : ℕ}
+    (ht : TimeLe C t T) (he : TimeLe C e T) : TimeLe C (.ifNZ r t e) (C.branch + T) := by
+  rintro s s' tt d p hex
+  cases hex with
+  | ifNZ_true _ h => exact Nat.add_le_add_left (ht _ _ _ _ _ h) _
+  | ifNZ_false _ h => exact Nat.add_le_add_left (he _ _ _ _ _ h) _
+
+/-- Loop-free code is bounded by its static time, memory instructions included. -/
+theorem TimeLe.of_loopFree {c : Stmt w} (h : c.LoopFree) :
+    TimeLe C c (c.staticTime C) :=
+  fun _ _ _ _ _ he => he.time_le_staticTime_of_loopFree h
+
+/-- A `Triple` with no precondition bounds *every* execution, the machine being
+deterministic. This is how a loop's bound reaches the surrounding straight-line
+code. -/
+theorem Triple.timeLe {Q : State w → Prop} {c : Stmt w} {T : ℕ} {D M : ℤ}
+    (h : Triple C (fun _ => True) c Q T D M) : TimeLe C c T := by
+  intro s s' t d p hex
+  obtain ⟨s₁, t₁, d₁, p₁, he, -, ht, -, -⟩ := h s trivial
+  obtain ⟨-, rfl, -, -⟩ := Exec.deterministic hex he
+  exact ht
 
 end Caliper
