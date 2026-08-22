@@ -1,4 +1,3 @@
-import Clean.Caliper.Field
 import Clean.Caliper.WitgenCompile
 import Clean.Caliper.WitgenComputable
 import Clean.Caliper.WitgenCost

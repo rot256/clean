@@ -11,7 +11,9 @@ the machine of the [Caliper](https://github.com/zksecurity/caliper) library. Gen
 over `{F : Type} [FiniteField F]` and the word width `w`: the modulus
 `p := FiniteField.size F` and every field constant are generation-time Lean values,
 baked into the emitted code as immediates. The design targets single-word fields
-(`p * p ≤ 2 ^ w`), so field reduction is the machine's `umod` after each `add`/`mul`.
+(`p * p ≤ 2 ^ w`), so field reduction is the machine's `umod` after each `add`/`mul`
+(`fieldOp`), and inversion is a Fermat ladder over the bits of `p - 2`
+(`invLadder`).
 
 ## Register and buffer layout
 
@@ -249,9 +251,12 @@ writes locals, and only `mapRange`'s per-iteration `.imm L i` writes the idx
 register, each iteration's uses completing before the next is loaded. -/
 
 /-- `d ← (a ⟨op⟩ b) % p` with `d := next + 1` and the modulus immediate in
-`t := next`, the reduction pattern of `Fp.addCode`/`Fp.mulCode`. Kept as its own
-generic-`op` definition rather than matching on `op`, so it stays `rfl`-transparent
-at a variable `op` — which `fieldOp_straightAF` and the `WitgenCost` proofs need. -/
+`t := next`. Correct because `p * p ≤ 2 ^ w` makes the unreduced sum or product
+wrap-free, so one `umod` reduces it; `compile` checks that side condition. Kept as
+its own generic-`op` definition rather than matching on `op`, so it stays
+`rfl`-transparent at a variable `op` — which `fieldOp_straightAF` and the
+`WitgenCost` proofs need. Correctness: `fieldOp_exec_add`/`_mul` in
+`WitgenSim.lean`. -/
 def fieldOp (p : ℕ) (op : BinOp) (a b : Reg) (next : Reg) : Stmt w × Reg × Reg :=
   (.imm next (BitVec.ofNat w p) ;;
      .bin op (next + 1) a b ;;
@@ -272,9 +277,7 @@ def selectCode (flag t e : Reg) (next : Reg) : Stmt w × Reg × Reg :=
 the base register, `t` holding the modulus immediate, and `acc` initialized to `1`
 by the caller. Every step reduces mod `p` via `umod`.
 
-Duplicates `Fp.inv` (`Field.lean`), which iterates `(p - 2).bits.reverse` rather than
-`(toBits (p - 2)).reverse`. This is the copy with a verified spec,
-`invLadder_exec_inv` in `WitgenSim.lean`. -/
+Correctness: `invLadder_exec_inv` in `WitgenSim.lean`. -/
 def invLadder (p : ℕ) (acc x t : Reg) : Stmt w :=
   (toBits (p - 2)).reverse.foldl (init := .skip) fun c b =>
     let sq := c ;; .bin .mul acc acc acc ;; .bin .umod acc acc t
