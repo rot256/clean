@@ -636,6 +636,28 @@ theorem macLimbs_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
   · simpa using hbuf
   · simpa using hcap
 
+/-! ### Multiply-set
+
+The first row of a schoolbook multiply accumulates into an accumulator that is still
+zero, so both its accumulator reads and the pass that zeroed it are wasted work. A
+*set* variant drops the `acc[j] +` term: five instructions a limb instead of eight,
+and the `k` zeroing immediates disappear with it. -/
+
+/-- Multiply-set limb step: `acc[j] ← x[j] * y + carry`, no accumulator read. -/
+def macSetStep (acc x y sc j : ℕ) : Stmt 64 :=
+  .bin .mul (sc + 1) (x + j) y ;;
+  .bin .mulhi (sc + 2) (x + j) y ;;
+  .bin .add (acc + j) (sc + 1) sc ;;
+  .bin .ult (sc + 3) (acc + j) (sc + 1) ;;
+  .bin .add sc (sc + 2) (sc + 3)
+
+def macSetLoop (acc x y sc : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => macSetLoop acc x y sc n ;; macSetStep acc x y sc n
+
+/-- `acc ← x * y` over `k` limbs, carry-out in `sc`. -/
+def macSetLimbs (k acc x y sc : ℕ) : Stmt 64 := .imm sc 0 ;; macSetLoop acc x y sc k
+
 /-! ## Subtraction
 
 The mirror of addition, with a borrow chain. Stated subtraction-free: the machine's
@@ -897,114 +919,6 @@ theorem selectLimbs_exec {k d a b f sc : ℕ} (hl : SelLayout k d a b f sc)
       s'.bufs = s.bufs ∧ s'.caps = s.caps :=
   selectLoop_exec (C := C) hl hflag har hbr hsf k le_rfl
 
-/-! ## CIOS Montgomery multiplication (code shape)
-
-The driver: `k` rows, each accumulating `a * b[i]` into the running total, then
-`m * p` with `m = t[0] * p'` chosen to zero the low limb, then shifting the total
-down one limb. Both accumulations are `macLimbs`, which is why that primitive was
-worth proving once.
-
-Only the code is given here — the correctness proof is the next step. It is enough to
-*measure*, which is what settles the representation question below. -/
-
-/-- Fold a carry word in `sc` into the accumulator's top two limbs. -/
-def foldCarry (acc sc k : ℕ) : Stmt 64 :=
-  .bin .add (acc + k) (acc + k) sc ;;
-  .bin .ult sc (acc + k) sc ;;
-  .bin .add (acc + k + 1) (acc + k + 1) sc
-
-/-- Shift the accumulator down by one limb. -/
-def shiftDown (acc : ℕ) : ℕ → Stmt 64
-  | 0 => .skip
-  | n + 1 => shiftDown acc n ;; .mov (acc + n) (acc + n + 1)
-
-/-- One CIOS row. -/
-def ciosRow (k acc a b p pinv sc m i : ℕ) : Stmt 64 :=
-  macLimbs k acc a (b + i) sc ;;
-  foldCarry acc sc k ;;
-  .bin .mul m acc pinv ;;
-  macLimbs k acc p m sc ;;
-  foldCarry acc sc k ;;
-  shiftDown acc (k + 1)
-
-def ciosRows (k acc a b p pinv sc m : ℕ) : ℕ → Stmt 64
-  | 0 => .skip
-  | n + 1 => ciosRows k acc a b p pinv sc m n ;; ciosRow k acc a b p pinv sc m n
-
-/-- Montgomery multiplication, CIOS. Accumulator zeroing is the caller's job. -/
-def montMulCIOS (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
-  ciosRows k acc a b p pinv sc m k
-
-/-! ### Shift-free CIOS
-
-The `shiftDown` in `ciosRow` costs `k + 1` instructions a row, `k (k + 1)` overall,
-purely to move the accumulator back to a fixed base. Since rows are unrolled at
-generation time, the base can instead advance with the row: row `i` works at
-`acc + i`, and the shift disappears. The accumulator then spans `2k + 2` register
-names rather than `k + 2`, but the limbs below the current base are dead, so the
-inferred live peak absorbs it. -/
-
-/-- One CIOS row, working at the row's own accumulator base. -/
-def ciosRowAt (k acc a b p pinv sc m i : ℕ) : Stmt 64 :=
-  macLimbs k (acc + i) a (b + i) sc ;;
-  foldCarry (acc + i) sc k ;;
-  .bin .mul m (acc + i) pinv ;;
-  macLimbs k (acc + i) p m sc ;;
-  foldCarry (acc + i) sc k
-
-def ciosRowsAt (k acc a b p pinv sc m : ℕ) : ℕ → Stmt 64
-  | 0 => .skip
-  | n + 1 => ciosRowsAt k acc a b p pinv sc m n ;; ciosRowAt k acc a b p pinv sc m n
-
-/-- Shift-free CIOS Montgomery multiplication. -/
-def montMul (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
-  ciosRowsAt k acc a b p pinv sc m k
-
-/-! ### Row zero writes rather than accumulates
-
-The first CIOS row accumulates `a * b[0]` into an accumulator that is still zero, so
-both its accumulator reads and the pass that zeroed it are wasted work. A *set*
-variant drops the `acc[j] +` term: five instructions a limb instead of eight, and the
-`k + 2` zeroing immediates disappear with it. -/
-
-/-- Multiply-set limb step: `acc[j] ← x[j] * y + carry`, no accumulator read. -/
-def macSetStep (acc x y sc j : ℕ) : Stmt 64 :=
-  .bin .mul (sc + 1) (x + j) y ;;
-  .bin .mulhi (sc + 2) (x + j) y ;;
-  .bin .add (acc + j) (sc + 1) sc ;;
-  .bin .ult (sc + 3) (acc + j) (sc + 1) ;;
-  .bin .add sc (sc + 2) (sc + 3)
-
-def macSetLoop (acc x y sc : ℕ) : ℕ → Stmt 64
-  | 0 => .skip
-  | n + 1 => macSetLoop acc x y sc n ;; macSetStep acc x y sc n
-
-/-- `acc ← x * y` over `k` limbs, carry-out in `sc`. -/
-def macSetLimbs (k acc x y sc : ℕ) : Stmt 64 := .imm sc 0 ;; macSetLoop acc x y sc k
-
-/-- CIOS row zero: multiply-set instead of multiply-accumulate, and the accumulator's
-top limb is written rather than folded into. -/
-def ciosRow0 (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
-  macSetLimbs k acc a b sc ;;
-  .mov (acc + k) sc ;;
-  .imm (acc + k + 1) 0 ;;
-  .bin .mul m acc pinv ;;
-  macLimbs k acc p m sc ;;
-  foldCarry acc sc k
-
-/-- Rows `1 .. n` of a shift-free CIOS. -/
-def ciosRowsFrom (k acc a b p pinv sc m : ℕ) : ℕ → Stmt 64
-  | 0 => .skip
-  | n + 1 => ciosRowsFrom k acc a b p pinv sc m n ;;
-      ciosRowAt k acc a b p pinv sc m (n + 1)
-
-/-- Shift-free CIOS with a specialised first row. -/
-def montMulOpt (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
-  match k with
-  | 0 => .skip
-  | k' + 1 => ciosRow0 (k' + 1) acc a b p pinv sc m ;;
-      ciosRowsFrom (k' + 1) acc a b p pinv sc m k'
-
 /-! ## Cost, as closed forms
 
 Every gadget's running time as a function of the limb count, proved for all `k` and
@@ -1027,9 +941,6 @@ def macSetStepCost (C : CostModel) : ℕ :=
 
 /-- Per-limb cost of a select step. -/
 def selStepCost (C : CostModel) : ℕ := C.bin .sub + C.bin .mul + C.bin .add
-
-/-- Cost of folding a carry into the accumulator's top limbs. -/
-def foldCarryCost (C : CostModel) : ℕ := 2 * C.bin .add + C.bin .ult
 
 theorem addLoop_staticTime (C : CostModel) (d a b sc : ℕ) :
     ∀ n, (addLoop d a b sc n).staticTime C = n * addStepCost C
@@ -1100,77 +1011,6 @@ theorem selectLoop_staticTime (C : CostModel) (d a b f sc : ℕ) :
 theorem selectLimbs_staticTime (C : CostModel) (k d a b f sc : ℕ) :
     (selectLimbs k d a b f sc).staticTime C = k * selStepCost C :=
   selectLoop_staticTime C d a b f sc k
-
-/-! ### Cost of the Montgomery multiply
-
-The quadratic ones. `ciosRowCost` is linear in `k`, and there are `k` rows. -/
-
-/-- Cost of one shift-free CIOS row: two multiply-accumulates, two carry folds and
-the multiplication choosing the reduction multiplier. -/
-def ciosRowCost (C : CostModel) (k : ℕ) : ℕ :=
-  2 * (C.imm + k * macStepCost C) + 2 * foldCarryCost C + C.bin .mul
-
-/-- Cost of the specialised first row: a multiply-*set* in place of the first
-multiply-accumulate, and a written top limb in place of a carry fold. -/
-def ciosRow0Cost (C : CostModel) (k : ℕ) : ℕ :=
-  (C.imm + k * macSetStepCost C) + C.mov + C.imm + C.bin .mul
-    + (C.imm + k * macStepCost C) + foldCarryCost C
-
-theorem foldCarry_staticTime (C : CostModel) (acc sc k : ℕ) :
-    (foldCarry acc sc k).staticTime C = foldCarryCost C := by
-  simp [foldCarry, Stmt.staticTime, foldCarryCost]; ring
-
-theorem ciosRowAt_staticTime (C : CostModel) (k acc a b p pinv sc m i : ℕ) :
-    (ciosRowAt k acc a b p pinv sc m i).staticTime C = ciosRowCost C k := by
-  show (macLimbs k (acc + i) a (b + i) sc).staticTime C
-      + ((foldCarry (acc + i) sc k).staticTime C
-        + ((Stmt.bin .mul m (acc + i) pinv).staticTime C
-          + ((macLimbs k (acc + i) p m sc).staticTime C
-            + (foldCarry (acc + i) sc k).staticTime C))) = _
-  rw [macLimbs_staticTime, macLimbs_staticTime, foldCarry_staticTime]
-  simp [Stmt.staticTime, ciosRowCost]
-  ring
-
-theorem ciosRowsFrom_staticTime (C : CostModel) (k acc a b p pinv sc m : ℕ) :
-    ∀ n, (ciosRowsFrom k acc a b p pinv sc m n).staticTime C = n * ciosRowCost C k
-  | 0 => by simp [ciosRowsFrom, Stmt.staticTime]
-  | n + 1 => by
-    show (ciosRowsFrom k acc a b p pinv sc m n).staticTime C
-      + (ciosRowAt k acc a b p pinv sc m (n + 1)).staticTime C = _
-    rw [ciosRowsFrom_staticTime C k acc a b p pinv sc m n, ciosRowAt_staticTime]
-    ring
-
-theorem ciosRow0_staticTime (C : CostModel) (k acc a b p pinv sc m : ℕ) :
-    (ciosRow0 k acc a b p pinv sc m).staticTime C = ciosRow0Cost C k := by
-  show (macSetLimbs k acc a b sc).staticTime C
-      + ((Stmt.mov (acc + k) sc).staticTime C
-        + ((Stmt.imm (acc + k + 1) 0).staticTime C
-          + ((Stmt.bin .mul m acc pinv).staticTime C
-            + ((macLimbs k acc p m sc).staticTime C
-              + (foldCarry acc sc k).staticTime C)))) = _
-  rw [macSetLimbs_staticTime, macLimbs_staticTime, foldCarry_staticTime]
-  simp [Stmt.staticTime, ciosRow0Cost]
-  ring
-
-/-- **The cost of a Montgomery multiplication, for every limb count.** One
-specialised first row plus `k'` ordinary rows. -/
-theorem montMulOpt_staticTime (C : CostModel) (k' acc a b p pinv sc m : ℕ) :
-    (montMulOpt (k' + 1) acc a b p pinv sc m).staticTime C
-      = ciosRow0Cost C (k' + 1) + k' * ciosRowCost C (k' + 1) := by
-  show (ciosRow0 (k' + 1) acc a b p pinv sc m).staticTime C
-    + (ciosRowsFrom (k' + 1) acc a b p pinv sc m k').staticTime C = _
-  rw [ciosRow0_staticTime, ciosRowsFrom_staticTime]
-
-/-- The same under the uniform model, as an explicit polynomial: a Montgomery
-multiplication over a `k`-limb modulus costs exactly `16k² + 6k - 1` steps, written
-subtraction-free at `k = k' + 1`. -/
-theorem montMulOpt_staticTime_unit (k' acc a b p pinv sc m : ℕ) :
-    (montMulOpt (k' + 1) acc a b p pinv sc m).staticTime CostModel.unit
-      = 16 * k' ^ 2 + 38 * k' + 21 := by
-  rw [montMulOpt_staticTime]
-  simp [ciosRow0Cost, ciosRowCost, macStepCost, macSetStepCost, foldCarryCost,
-    CostModel.unit]
-  ring
 
 /-! ### Loops and upper bounds
 
@@ -1264,43 +1104,6 @@ theorem selectLoop_saf (d a b f sc : ℕ) : ∀ n, SAF (selectLoop d a b f sc n)
 theorem selectLimbs_saf (k d a b f sc : ℕ) : SAF (selectLimbs k d a b f sc) :=
   selectLoop_saf d a b f sc k
 
-theorem foldCarry_saf (acc sc k : ℕ) : SAF (foldCarry acc sc k) := by
-  simp [foldCarry, SAF, Stmt.Straight, Stmt.AllocFree]
-
-theorem ciosRowAt_saf (k acc a b p pinv sc m i : ℕ) :
-    SAF (ciosRowAt k acc a b p pinv sc m i) :=
-  (macLimbs_saf _ _ _ _ _).seq ((foldCarry_saf _ _ _).seq ((saf_leaf_bin _ _ _ _).seq
-    ((macLimbs_saf _ _ _ _ _).seq (foldCarry_saf _ _ _))))
-
-theorem ciosRowsFrom_saf (k acc a b p pinv sc m : ℕ) :
-    ∀ n, SAF (ciosRowsFrom k acc a b p pinv sc m n)
-  | 0 => saf_skip
-  | n + 1 => (ciosRowsFrom_saf k acc a b p pinv sc m n).seq
-      (ciosRowAt_saf _ _ _ _ _ _ _ _ _)
-
-theorem ciosRow0_saf (k acc a b p pinv sc m : ℕ) :
-    SAF (ciosRow0 k acc a b p pinv sc m) :=
-  (macSetLimbs_saf _ _ _ _ _).seq ((saf_leaf_mov _ _).seq ((saf_leaf_imm _ _).seq
-    ((saf_leaf_bin _ _ _ _).seq ((macLimbs_saf _ _ _ _ _).seq (foldCarry_saf _ _ _)))))
-
-theorem montMulOpt_saf (k acc a b p pinv sc m : ℕ) :
-    SAF (montMulOpt k acc a b p pinv sc m) := by
-  cases k with
-  | zero => exact saf_skip
-  | succ k' =>
-    exact (ciosRow0_saf _ _ _ _ _ _ _ _).seq (ciosRowsFrom_saf _ _ _ _ _ _ _ _ _)
-
-/-- **Worst-case running time of a Montgomery multiplication, at every field.** Over a
-`k`-limb modulus — `k = ⌈bits p / 64⌉`, so any prime whatsoever — every execution
-takes exactly `16k² + 6k - 1` unit steps, written subtraction-free at `k = k' + 1`.
-Exact rather than merely bounded, because the code is straight-line. -/
-theorem montMulOpt_time {k' acc a b p pinv sc m : ℕ} {s s' : State 64} {t : ℕ}
-    {d pp : ℤ}
-    (h : Exec CostModel.unit (montMulOpt (k' + 1) acc a b p pinv sc m) s s' t d pp) :
-    t = 16 * k' ^ 2 + 38 * k' + 21 :=
-  (h.straight_time_eq (montMulOpt_saf _ _ _ _ _ _ _ _).1).trans
-    (montMulOpt_staticTime_unit _ _ _ _ _ _ _ _)
-
 /-! ## Modular arithmetic, and the cost of a field operation at any modulus
 
 `limbCount p` is how many 64-bit words a modulus needs; every operation below is
@@ -1323,127 +1126,299 @@ def addFitsWord (p : ℕ) : Prop := 2 * p ≤ 2 ^ 64
 /-- …and for multiplication only when `p² ≤ 2 ^ 64`. -/
 def mulFitsWord (p : ℕ) : Prop := p * p ≤ 2 ^ 64
 
-/-- `d ← (a + b) mod p`. Add, subtract the modulus, and select on "the sum reached the
-modulus", which is the addition's carry-out or the subtraction's no-borrow bit. -/
-def montAdd (k d a b pReg t u nb sc flag : ℕ) : Stmt 64 :=
-  addLimbs k t a b sc ;;
-  subLimbs k u t pReg nb flag ;;
-  .bin .or flag sc flag ;;
-  selectLimbs k d u t flag sc
+/-- The caller's obligation for a modular addition or subtraction: the frame starts
+above both operands and the modulus. -/
+structure FieldLayout (k a b pReg w : ℕ) : Prop where
+  opA : a + k ≤ w
+  opB : b + k ≤ w
+  modulus : pReg + k ≤ w
 
-/-- `d ← (a - b) mod p`. Subtract, add the modulus back, and select on the borrow. -/
-def montSub (k d a b pReg t u nb sc flag : ℕ) : Stmt 64 :=
-  subLimbs k t a b nb flag ;;
-  addLimbs k u t pReg sc ;;
-  selectLimbs k d t u flag sc
+/-- Registers a modular addition's frame occupies, and where it leaves its result. -/
+def montAddFrame (k : ℕ) : ℕ := 4 * k + 10
 
-/-- Montgomery multiplication followed by the conditional subtract that brings the
-result below the modulus. -/
-def montMulRed (k d acc a b pReg pinv m t nb sc : ℕ) : Stmt 64 :=
-  montMulOpt k acc a b pReg pinv sc m ;;
-  subLimbs k t (acc + k) pReg nb sc ;;
-  selectLimbs k d t (acc + k) sc nb
+def montAddOut (k w : ℕ) : ℕ := w + 10 + 3 * k
+
+/-- `(a + b) mod p`, in `montAddOut k w`. Add, subtract the modulus, select on "the
+sum reached the modulus". The frame, relative to `w`: the addition's scratch at `0`,
+the sum at `4`, the subtraction's complement buffer at `4 + k`, its scratch at
+`4 + 2k`, the difference at `8 + 2k`, the flag at `8 + 3k`, the select's scratch at
+`9 + 3k`, the result at `10 + 3k`.
+
+The flag is the *sum* of the addition's carry-out and the subtraction's no-borrow bit,
+not their disjunction: both cannot be set, because a carry forces the wrapped sum
+below `p`. -/
+def montAdd (k a b pReg w : ℕ) : Stmt 64 :=
+  addLimbs k (w + 4) a b w ;;
+  subLimbs k (w + 8 + 2 * k) (w + 4) pReg (w + 4 + k) (w + 4 + 2 * k) ;;
+  .bin .add (w + 8 + 3 * k) w (w + 4 + 2 * k) ;;
+  selectLimbs k (montAddOut k w) (w + 8 + 2 * k) (w + 4) (w + 8 + 3 * k) (w + 9 + 3 * k)
+
+def montSubFrame (k : ℕ) : ℕ := 4 * k + 9
+
+def montSubOut (k w : ℕ) : ℕ := w + 9 + 3 * k
+
+/-- `(a - b) mod p`, in `montSubOut k w`. Subtract, add the modulus back, select on
+the borrow. The frame, relative to `w`: the subtraction's complement buffer at `0`,
+its scratch at `k`, the difference at `k + 4`, the addition's scratch at `2k + 4`, the
+sum at `2k + 8`, the select's scratch at `3k + 8`, the result at `3k + 9`. -/
+def montSub (k a b pReg w : ℕ) : Stmt 64 :=
+  subLimbs k (w + k + 4) a b w (w + k) ;;
+  addLimbs k (w + 2 * k + 8) (w + k + 4) pReg (w + 2 * k + 4) ;;
+  selectLimbs k (montSubOut k w) (w + k + 4) (w + 2 * k + 8) (w + k) (w + 3 * k + 8)
 
 /-! ### Cost -/
 
 def montAddCost (C : CostModel) (k : ℕ) : ℕ :=
   (C.imm + k * addStepCost C) + (k * C.un .not + (C.imm + k * addStepCost C))
-    + C.bin .or + k * selStepCost C
+    + C.bin .add + k * selStepCost C
 
 def montSubCost (C : CostModel) (k : ℕ) : ℕ :=
   (k * C.un .not + (C.imm + k * addStepCost C)) + (C.imm + k * addStepCost C)
     + k * selStepCost C
 
-theorem montAdd_staticTime (C : CostModel) (k d a b pReg t u nb sc flag : ℕ) :
-    (montAdd k d a b pReg t u nb sc flag).staticTime C = montAddCost C k := by
-  show (addLimbs k t a b sc).staticTime C
-    + ((subLimbs k u t pReg nb flag).staticTime C
-      + ((Stmt.bin .or flag sc flag).staticTime C
-        + (selectLimbs k d u t flag sc).staticTime C)) = _
-  rw [show addLimbs k t a b sc = addLimbsC k t a b sc 0 from rfl, addLimbsC_staticTime,
-    subLimbs_staticTime, selectLimbs_staticTime]
+theorem montAdd_staticTime (C : CostModel) (k a b pReg w : ℕ) :
+    (montAdd k a b pReg w).staticTime C = montAddCost C k := by
+  show (addLimbs k (w + 4) a b w).staticTime C
+    + ((subLimbs k (w + 8 + 2 * k) (w + 4) pReg (w + 4 + k) (w + 4 + 2 * k)).staticTime C
+      + ((Stmt.bin .add (w + 8 + 3 * k) w (w + 4 + 2 * k)).staticTime C
+        + (selectLimbs k (montAddOut k w) (w + 8 + 2 * k) (w + 4) (w + 8 + 3 * k)
+            (w + 9 + 3 * k)).staticTime C)) = _
+  rw [show addLimbs k (w + 4) a b w = addLimbsC k (w + 4) a b w 0 from rfl,
+    addLimbsC_staticTime, subLimbs_staticTime, selectLimbs_staticTime]
   simp [Stmt.staticTime, montAddCost]
   ring
 
-theorem montSub_staticTime (C : CostModel) (k d a b pReg t u nb sc flag : ℕ) :
-    (montSub k d a b pReg t u nb sc flag).staticTime C = montSubCost C k := by
-  show (subLimbs k t a b nb flag).staticTime C
-    + ((addLimbs k u t pReg sc).staticTime C
-      + (selectLimbs k d t u flag sc).staticTime C) = _
-  rw [subLimbs_staticTime, show addLimbs k u t pReg sc = addLimbsC k u t pReg sc 0 from rfl,
+theorem montSub_staticTime (C : CostModel) (k a b pReg w : ℕ) :
+    (montSub k a b pReg w).staticTime C = montSubCost C k := by
+  show (subLimbs k (w + k + 4) a b w (w + k)).staticTime C
+    + ((addLimbs k (w + 2 * k + 8) (w + k + 4) pReg (w + 2 * k + 4)).staticTime C
+      + (selectLimbs k (montSubOut k w) (w + k + 4) (w + 2 * k + 8) (w + k)
+          (w + 3 * k + 8)).staticTime C) = _
+  rw [subLimbs_staticTime,
+    show addLimbs k (w + 2 * k + 8) (w + k + 4) pReg (w + 2 * k + 4)
+      = addLimbsC k (w + 2 * k + 8) (w + k + 4) pReg (w + 2 * k + 4) 0 from rfl,
     addLimbsC_staticTime, selectLimbs_staticTime]
   simp [montSubCost]
   ring
 
 /-- A modular addition over a `k`-limb modulus costs exactly `14k + 3` unit steps. -/
-theorem montAdd_staticTime_unit (k d a b pReg t u nb sc flag : ℕ) :
-    (montAdd k d a b pReg t u nb sc flag).staticTime CostModel.unit = 14 * k + 3 := by
+theorem montAdd_staticTime_unit (k a b pReg w : ℕ) :
+    (montAdd k a b pReg w).staticTime CostModel.unit = 14 * k + 3 := by
   rw [montAdd_staticTime]
   simp [montAddCost, addStepCost, selStepCost, CostModel.unit]
   ring
 
 /-- A modular subtraction costs exactly `14k + 2`. -/
-theorem montSub_staticTime_unit (k d a b pReg t u nb sc flag : ℕ) :
-    (montSub k d a b pReg t u nb sc flag).staticTime CostModel.unit = 14 * k + 2 := by
+theorem montSub_staticTime_unit (k a b pReg w : ℕ) :
+    (montSub k a b pReg w).staticTime CostModel.unit = 14 * k + 2 := by
   rw [montSub_staticTime]
   simp [montSubCost, addStepCost, selStepCost, CostModel.unit]
   ring
 
-/-- A reduced Montgomery multiplication costs exactly `16k² + 15k` unit steps,
-subtraction-free at `k = k' + 1`. -/
-theorem montMulRed_staticTime_unit (k' d acc a b pReg pinv m t nb sc : ℕ) :
-    (montMulRed (k' + 1) d acc a b pReg pinv m t nb sc).staticTime CostModel.unit
-      = 16 * k' ^ 2 + 47 * k' + 31 := by
-  show (montMulOpt (k' + 1) acc a b pReg pinv sc m).staticTime CostModel.unit
-    + ((subLimbs (k' + 1) t (acc + (k' + 1)) pReg nb sc).staticTime CostModel.unit
-      + (selectLimbs (k' + 1) d t (acc + (k' + 1)) sc nb).staticTime CostModel.unit) = _
-  rw [montMulOpt_staticTime_unit, subLimbs_staticTime, selectLimbs_staticTime]
-  simp [addStepCost, selStepCost, CostModel.unit]
-  ring
-
 /-! ### Straightness -/
 
-theorem montAdd_saf (k d a b pReg t u nb sc flag : ℕ) :
-    SAF (montAdd k d a b pReg t u nb sc flag) :=
+theorem montAdd_saf (k a b pReg w : ℕ) : SAF (montAdd k a b pReg w) :=
   (addLimbsC_saf _ _ _ _ _ _).seq ((subLimbs_saf _ _ _ _ _ _).seq
     ((saf_leaf_bin _ _ _ _).seq (selectLimbs_saf _ _ _ _ _ _)))
 
-theorem montSub_saf (k d a b pReg t u nb sc flag : ℕ) :
-    SAF (montSub k d a b pReg t u nb sc flag) :=
+theorem montSub_saf (k a b pReg w : ℕ) : SAF (montSub k a b pReg w) :=
   (subLimbs_saf _ _ _ _ _ _).seq ((addLimbsC_saf _ _ _ _ _ _).seq
-    (selectLimbs_saf _ _ _ _ _ _))
-
-theorem montMulRed_saf (k d acc a b pReg pinv m t nb sc : ℕ) :
-    SAF (montMulRed k d acc a b pReg pinv m t nb sc) :=
-  (montMulOpt_saf _ _ _ _ _ _ _ _).seq ((subLimbs_saf _ _ _ _ _ _).seq
     (selectLimbs_saf _ _ _ _ _ _))
 
 /-! ### Worst-case runtime, at every field
 
-The three theorems the goal asks for: a field operation over a modulus of *any* size
-runs in exactly the stated number of steps, on every input. -/
+Straight-line, so `staticTime` is the running time of *every* execution. -/
 
-theorem montAdd_time {k d a b pReg t u nb sc flag : ℕ} {s s' : State 64} {tm : ℕ}
-    {dd pp : ℤ}
-    (h : Exec CostModel.unit (montAdd k d a b pReg t u nb sc flag) s s' tm dd pp) :
+theorem montAdd_time {k a b pReg w : ℕ} {s s' : State 64} {tm : ℕ} {dd pp : ℤ}
+    (h : Exec CostModel.unit (montAdd k a b pReg w) s s' tm dd pp) :
     tm = 14 * k + 3 :=
-  (h.straight_time_eq (montAdd_saf _ _ _ _ _ _ _ _ _ _).1).trans
-    (montAdd_staticTime_unit _ _ _ _ _ _ _ _ _ _)
+  (h.straight_time_eq (montAdd_saf _ _ _ _ _).1).trans (montAdd_staticTime_unit _ _ _ _ _)
 
-theorem montSub_time {k d a b pReg t u nb sc flag : ℕ} {s s' : State 64} {tm : ℕ}
-    {dd pp : ℤ}
-    (h : Exec CostModel.unit (montSub k d a b pReg t u nb sc flag) s s' tm dd pp) :
+theorem montSub_time {k a b pReg w : ℕ} {s s' : State 64} {tm : ℕ} {dd pp : ℤ}
+    (h : Exec CostModel.unit (montSub k a b pReg w) s s' tm dd pp) :
     tm = 14 * k + 2 :=
-  (h.straight_time_eq (montSub_saf _ _ _ _ _ _ _ _ _ _).1).trans
-    (montSub_staticTime_unit _ _ _ _ _ _ _ _ _ _)
+  (h.straight_time_eq (montSub_saf _ _ _ _ _).1).trans (montSub_staticTime_unit _ _ _ _ _)
 
-theorem montMulRed_time {k' d acc a b pReg pinv m t nb sc : ℕ} {s s' : State 64}
-    {tm : ℕ} {dd pp : ℤ}
-    (h : Exec CostModel.unit (montMulRed (k' + 1) d acc a b pReg pinv m t nb sc)
-      s s' tm dd pp) :
-    tm = 16 * k' ^ 2 + 47 * k' + 31 :=
-  (h.straight_time_eq (montMulRed_saf _ _ _ _ _ _ _ _ _ _ _).1).trans
-    (montMulRed_staticTime_unit _ _ _ _ _ _ _ _ _ _ _)
+/-! ### Correctness -/
+
+/-- Adding two words. -/
+theorem word_add (c f : ℕ) :
+    (BitVec.ofNat 64 c + BitVec.ofNat 64 f : Word 64)
+      = BitVec.ofNat 64 ((c + f) % 2 ^ 64) := by
+  apply BitVec.eq_of_toNat_eq; simp [Nat.add_mod]
+
+/-- The addition's arithmetic: the carry-out and the no-borrow bit are never both
+set, their sum says whether the sum reached the modulus, and the selected value is
+`(a + b) mod p`. -/
+theorem montAdd_arith {p R A B : ℕ} (hp : 0 < p) (hpR : p ≤ R) (hA : A < p) (hB : B < p) :
+    (A + B) / R + ((A + B) % R + R - p) / R = (if p ≤ A + B then 1 else 0)
+      ∧ (if p ≤ A + B then (A + B) % R + R - p else (A + B) % R) % R = (A + B) % p := by
+  by_cases hlt : A + B < R
+  · have hX : (A + B) % R = A + B := Nat.mod_eq_of_lt hlt
+    have hc : (A + B) / R = 0 := Nat.div_eq_of_lt hlt
+    rw [hX, hc]
+    by_cases hle : p ≤ A + B
+    · have hf : (A + B + R - p) / R = 1 := Nat.div_eq_of_lt_le (by omega) (by omega)
+      have hmodp : (A + B) % p = A + B - p := by
+        rw [Nat.mod_eq_sub_mod hle, Nat.mod_eq_of_lt (by omega)]
+      refine ⟨by rw [hf, if_pos hle], ?_⟩
+      rw [if_pos hle, hmodp, show A + B + R - p = A + B - p + R by omega,
+        Nat.add_mod_right, Nat.mod_eq_of_lt (by omega)]
+    · have hf : (A + B + R - p) / R = 0 := Nat.div_eq_of_lt (by omega)
+      refine ⟨by rw [hf, if_neg hle], ?_⟩
+      rw [if_neg hle, Nat.mod_eq_of_lt (by omega),
+        Nat.mod_eq_of_lt (show A + B < p by omega)]
+  · have hc : (A + B) / R = 1 := Nat.div_eq_of_lt_le (by omega) (by omega)
+    have hX : (A + B) % R = A + B - R := by
+      rw [Nat.mod_eq_sub_mod (by omega), Nat.mod_eq_of_lt (by omega)]
+    have hle : p ≤ A + B := by omega
+    have hf : (A + B - R + R - p) / R = 0 := Nat.div_eq_of_lt (by omega)
+    have hmodp : (A + B) % p = A + B - p := by
+      rw [Nat.mod_eq_sub_mod hle, Nat.mod_eq_of_lt (by omega)]
+    refine ⟨by rw [hc, hX, hf, if_pos hle], ?_⟩
+    rw [if_pos hle, hX, hmodp, show A + B - R + R - p = A + B - p by omega,
+      Nat.mod_eq_of_lt (by omega)]
+
+/-- The subtraction's arithmetic: the no-borrow bit says whether the difference was
+exact, and the selected value is `(a - b) mod p`. -/
+theorem montSub_arith {p R A B : ℕ} (hp : 0 < p) (hpR : p ≤ R) (hA : A < p) (hB : B < p) :
+    (A + R - B) / R = (if B ≤ A then 1 else 0)
+      ∧ (if B ≤ A then (A + R - B) % R else (A + R - B) % R + p) % R
+          = (A + p - B) % p := by
+  by_cases hle : B ≤ A
+  · have hX : (A + R - B) % R = A - B := by
+      rw [show A + R - B = A - B + R by omega, Nat.add_mod_right,
+        Nat.mod_eq_of_lt (by omega)]
+    have hd : (A + R - B) / R = 1 := Nat.div_eq_of_lt_le (by omega) (by omega)
+    refine ⟨by rw [hd, if_pos hle], ?_⟩
+    rw [if_pos hle, hX, Nat.mod_eq_of_lt (by omega),
+      show A + p - B = A - B + p by omega, Nat.add_mod_right, Nat.mod_eq_of_lt (by omega)]
+  · have hX : (A + R - B) % R = A + R - B := Nat.mod_eq_of_lt (by omega)
+    have hd : (A + R - B) / R = 0 := Nat.div_eq_of_lt (by omega)
+    refine ⟨by rw [hd, if_neg hle], ?_⟩
+    rw [if_neg hle, hX, show A + R - B + p = A + p - B + R by omega, Nat.add_mod_right,
+      Nat.mod_eq_of_lt (show A + p - B < R by omega),
+      Nat.mod_eq_of_lt (show A + p - B < p by omega)]
+
+/-- **Modular addition is correct.** -/
+theorem montAdd_exec {k a b pReg w : ℕ} (hl : FieldLayout k a b pReg w)
+    {s : State 64} {p A B : ℕ} (hp : 0 < p) (hpR : p < 2 ^ (64 * k))
+    (hA : A < p) (hB : B < p)
+    (hpr : RegsEnc s pReg k p) (har : RegsEnc s a k A) (hbr : RegsEnc s b k B) :
+    ∃ s' tt dd pp, Exec C (montAdd k a b pReg w) s s' tt dd pp ∧
+      RegsEnc s' (montAddOut k w) k ((A + B) % p) ∧
+      (∀ q, q < w → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  obtain ⟨hopA, hopB, hmodl⟩ := hl
+  have hRpos : (0:ℕ) < 2 ^ (64 * k) := Nat.two_pow_pos _
+  obtain ⟨hflagval, hselval⟩ := montAdd_arith (R := 2 ^ (64 * k)) hp (le_of_lt hpR) hA hB
+  -- the sum
+  have haddl : AddLayout k (w + 4) a b w := ⟨by omega, by omega, by omega⟩
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hsum, hcarry, hpres₁, hbuf₁, hcap₁⟩ :=
+    addLimbs_exec (C := C) haddl (by omega) (by omega) har hbr
+  -- the conditional subtraction
+  have hsubl : SubLayout k (w + 8 + 2 * k) (w + 4) pReg (w + 4 + k) (w + 4 + 2 * k) :=
+    ⟨by omega, by omega, by omega, by omega⟩
+  have hsum' : RegsEnc s₁ (w + 4) k ((A + B) % 2 ^ (64 * k)) :=
+    hsum.congr (by simp)
+  have hpr₁ : RegsEnc s₁ pReg k p := by
+    intro j hj; rw [hpres₁ _ (by omega)]; exact hpr j hj
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hdiff, hborrow, hpres₂, hbuf₂, hcap₂⟩ :=
+    subLimbs_exec (C := C) hsubl (Nat.mod_lt _ hRpos) hpR hsum' hpr₁
+  -- the flag: the carry-out plus the no-borrow bit
+  have hbit : (A + B) / 2 ^ (64 * k) + ((A + B) % 2 ^ (64 * k) + 2 ^ (64 * k) - p)
+      / 2 ^ (64 * k) < 2 ^ 64 := by rw [hflagval]; split_ifs <;> omega
+  have hexbin : Exec C (.bin .add (w + 8 + 3 * k) w (w + 4 + 2 * k)) s₂
+      (s₂.setReg (w + 8 + 3 * k) (BitVec.ofNat 64 (if p ≤ A + B then 1 else 0)))
+      (C.bin .add) 0 0 := by
+    have hv : (BinOp.eval .add (s₂.regs w) (s₂.regs (w + 4 + 2 * k)) : Word 64)
+        = BitVec.ofNat 64 (if p ≤ A + B then 1 else 0) := by
+      rw [hpres₂ _ (by omega), hcarry, hborrow]
+      show (BitVec.ofNat 64 ((A + B) / 2 ^ (64 * k))
+        + BitVec.ofNat 64 (((A + B) % 2 ^ (64 * k) + 2 ^ (64 * k) - p) / 2 ^ (64 * k))
+        : Word 64) = _
+      rw [word_add, Nat.mod_eq_of_lt hbit, hflagval]
+    rw [← hv]; exact .bin
+  -- the select
+  have hsel : SelLayout k (montAddOut k w) (w + 8 + 2 * k) (w + 4) (w + 8 + 3 * k)
+      (w + 9 + 3 * k) := by
+    refine ⟨by omega, by omega, by omega, ?_⟩
+    show w + 9 + 3 * k + 1 ≤ w + 10 + 3 * k
+    omega
+  have hAdiff : RegsEnc (s₂.setReg (w + 8 + 3 * k)
+      (BitVec.ofNat 64 (if p ≤ A + B then 1 else 0))) (w + 8 + 2 * k) k
+      ((A + B) % 2 ^ (64 * k) + 2 ^ (64 * k) - p) := by
+    intro j hj
+    rw [regs_setReg_ne _ _ (show w + 8 + 2 * k + j ≠ w + 8 + 3 * k by omega)]
+    exact hdiff j hj
+  have hBsum : RegsEnc (s₂.setReg (w + 8 + 3 * k)
+      (BitVec.ofNat 64 (if p ≤ A + B then 1 else 0))) (w + 4) k
+      ((A + B) % 2 ^ (64 * k)) := by
+    intro j hj
+    rw [regs_setReg_ne _ _ (show w + 4 + j ≠ w + 8 + 3 * k by omega),
+      hpres₂ _ (by omega)]
+    exact hsum' j hj
+  obtain ⟨s₃, t₃, d₃, p₃, hex₃, hout, hpres₃, hbuf₃, hcap₃⟩ :=
+    selectLimbs_exec (C := C) hsel (show (if p ≤ A + B then 1 else 0) ≤ 1 by
+      split_ifs <;> omega) hAdiff hBsum (by simp)
+  refine ⟨s₃, _, _, _, .seq hex₁ (.seq hex₂ (.seq hexbin hex₃)), hout.congr ?_, ?_,
+    hbuf₃.trans (by simpa using hbuf₂.trans hbuf₁),
+    hcap₃.trans (by simpa using hcap₂.trans hcap₁)⟩
+  · rw [show (if (if p ≤ A + B then 1 else 0) = 1 then
+        (A + B) % 2 ^ (64 * k) + 2 ^ (64 * k) - p else (A + B) % 2 ^ (64 * k))
+      = (if p ≤ A + B then (A + B) % 2 ^ (64 * k) + 2 ^ (64 * k) - p
+          else (A + B) % 2 ^ (64 * k)) by split_ifs <;> simp_all,
+      hselval, Nat.mod_eq_of_lt (show (A + B) % p < 2 ^ (64 * k) by
+        have := Nat.mod_lt (A + B) hp; omega)]
+  · intro q hq
+    rw [hpres₃ q (by omega), regs_setReg_ne _ _ (show q ≠ w + 8 + 3 * k by omega),
+      hpres₂ q (by omega), hpres₁ q (by omega)]
+
+/-- **Modular subtraction is correct.** -/
+theorem montSub_exec {k a b pReg w : ℕ} (hl : FieldLayout k a b pReg w)
+    {s : State 64} {p A B : ℕ} (hp : 0 < p) (hpR : p < 2 ^ (64 * k))
+    (hA : A < p) (hB : B < p)
+    (hpr : RegsEnc s pReg k p) (har : RegsEnc s a k A) (hbr : RegsEnc s b k B) :
+    ∃ s' tt dd pp, Exec C (montSub k a b pReg w) s s' tt dd pp ∧
+      RegsEnc s' (montSubOut k w) k ((A + p - B) % p) ∧
+      (∀ q, q < w → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  obtain ⟨hopA, hopB, hmodl⟩ := hl
+  have hRpos : (0:ℕ) < 2 ^ (64 * k) := Nat.two_pow_pos _
+  obtain ⟨hflagval, hselval⟩ := montSub_arith (R := 2 ^ (64 * k)) hp (le_of_lt hpR) hA hB
+  have hsubl : SubLayout k (w + k + 4) a b w (w + k) :=
+    ⟨by omega, by omega, by omega, by omega⟩
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hdiff, hflag, hpres₁, hbuf₁, hcap₁⟩ :=
+    subLimbs_exec (C := C) hsubl (by omega) (by omega) har hbr
+  have hdiff' : RegsEnc s₁ (w + k + 4) k ((A + 2 ^ (64 * k) - B) % 2 ^ (64 * k)) :=
+    hdiff.congr (by simp)
+  have hpr₁ : RegsEnc s₁ pReg k p := by
+    intro j hj; rw [hpres₁ _ (by omega)]; exact hpr j hj
+  have haddl : AddLayout k (w + 2 * k + 8) (w + k + 4) pReg (w + 2 * k + 4) :=
+    ⟨by omega, by omega, by omega⟩
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hback, _, hpres₂, hbuf₂, hcap₂⟩ :=
+    addLimbs_exec (C := C) haddl (Nat.mod_lt _ hRpos) hpR hdiff' hpr₁
+  have hflag₂ : s₂.regs (w + k) = BitVec.ofNat 64 (if B ≤ A then 1 else 0) := by
+    rw [hpres₂ _ (by omega), hflag, hflagval]
+  have hsel : SelLayout k (montSubOut k w) (w + k + 4) (w + 2 * k + 8) (w + k)
+      (w + 3 * k + 8) := by
+    refine ⟨by omega, by omega, by omega, ?_⟩
+    show w + 3 * k + 8 + 1 ≤ w + 9 + 3 * k
+    omega
+  have hdiff₂ : RegsEnc s₂ (w + k + 4) k ((A + 2 ^ (64 * k) - B) % 2 ^ (64 * k)) := by
+    intro j hj; rw [hpres₂ _ (by omega)]; exact hdiff' j hj
+  obtain ⟨s₃, t₃, d₃, p₃, hex₃, hout, hpres₃, hbuf₃, hcap₃⟩ :=
+    selectLimbs_exec (C := C) hsel (by split_ifs <;> omega) hdiff₂ hback hflag₂
+  refine ⟨s₃, _, _, _, .seq hex₁ (.seq hex₂ hex₃), hout.congr ?_, ?_,
+    hbuf₃.trans (hbuf₂.trans hbuf₁), hcap₃.trans (hcap₂.trans hcap₁)⟩
+  · rw [show (if (if B ≤ A then 1 else 0) = 1 then (A + 2 ^ (64 * k) - B) % 2 ^ (64 * k)
+        else (A + 2 ^ (64 * k) - B) % 2 ^ (64 * k) + p)
+      = (if B ≤ A then (A + 2 ^ (64 * k) - B) % 2 ^ (64 * k)
+          else (A + 2 ^ (64 * k) - B) % 2 ^ (64 * k) + p) by split_ifs <;> simp_all,
+      hselval, Nat.mod_eq_of_lt (show (A + p - B) % p < 2 ^ (64 * k) by
+        have := Nat.mod_lt (A + p - B) hp; omega)]
+  · intro q hq
+    rw [hpres₃ q (by omega), hpres₂ q (by omega), hpres₁ q (by omega)]
 
 /-! ## Loading and materialising limbs
 
@@ -2007,10 +1982,11 @@ theorem mulLimbs_exec {k' acc a b sc : ℕ} (hl : MulLayout (k' + 1) acc a b sc)
 /-! ## Montgomery reduction
 
 `redcVal p pinv R T = (T + M * p) / R` with `M = (T mod R) * pinv mod R`. The
-constant `pinv` satisfies `p * pinv + 1 ≡ 0 (mod R)`; it is not computed here, it is
-*checked* — that congruence is decidable at generation time, so the compiler supplies
-the constant and the check certifies it. That keeps an extended-Euclid implementation
-out of the trusted path entirely.
+constant `pinv` satisfies `p * pinv + 1 ≡ 0 (mod R)`. It is a per-field constant: the
+compiler computes it in Lean at generation time (`montConst`) and emits its limbs as
+immediates, so nothing about it is computed on the machine. The computation is
+untrusted — the congruence is decidable, and `montConstOk` gates it, so only the
+check feeds the proofs.
 
 Three facts make it a reduction: the division is exact, the result is below `2p`, and
 `t * R ≡ T (mod p)` — the last stated multiplicatively so no inverse of `R` is ever
@@ -2171,222 +2147,6 @@ def pGoldilocks : ℕ := 2 ^ 64 - 2 ^ 32 + 1
 /-- info: false -/
 #guard_msgs in
 #eval montConstOk pBN254 12345 4
-
-/-! ## Low-half multiply
-
-The Montgomery multiplier `M = (T mod R) * pinv mod R` needs only the *low* `k` limbs
-of a `k × k` product. A full `mulLimbs` computes all `2k` and throws half away. Row
-`i` of the low half only reaches limb `k - 1`, so it needs `k - i` accumulate steps
-rather than `k`, and no carry is stored — the carry leaves the low half.
-
-That turns the row cost from a constant `k` into a shrinking `k - i`, so the total
-falls from `8k² - k` to `4k² + 2k`: at `k = 4`, 72 steps against 124. -/
-
-/-- Row `i` of a low-half multiply: only limbs `i .. k - 1` matter. -/
-def mulLowRow (k acc a b sc i : ℕ) : Stmt 64 :=
-  macLimbs (k - i) (acc + i) a (b + i) sc
-
-def mulLowRowsFrom (k acc a b sc : ℕ) : ℕ → Stmt 64
-  | 0 => .skip
-  | n + 1 => mulLowRowsFrom k acc a b sc n ;; mulLowRow k acc a b sc (n + 1)
-
-/-- `acc ← (a * b) mod 2 ^ (64k)`, the low half only. -/
-def mulLowLimbs (k acc a b sc : ℕ) : Stmt 64 :=
-  match k with
-  | 0 => .skip
-  | k' + 1 => macSetLimbs (k' + 1) acc a b sc ;; mulLowRowsFrom (k' + 1) acc a b sc k'
-
-theorem mulLowRow_staticTime (C : CostModel) (k acc a b sc i : ℕ) :
-    (mulLowRow k acc a b sc i).staticTime C = C.imm + (k - i) * macStepCost C :=
-  macLimbs_staticTime _ _ _ _ _ _
-
-theorem mulLowRowsFrom_staticTime (C : CostModel) (k acc a b sc : ℕ) :
-    ∀ n, (mulLowRowsFrom k acc a b sc n).staticTime C
-      = n * C.imm + (∑ i ∈ Finset.range n, (k - (i + 1))) * macStepCost C
-  | 0 => by simp [mulLowRowsFrom, Stmt.staticTime]
-  | n + 1 => by
-    show (mulLowRowsFrom k acc a b sc n).staticTime C
-      + (mulLowRow k acc a b sc (n + 1)).staticTime C = _
-    rw [mulLowRowsFrom_staticTime C k acc a b sc n, mulLowRow_staticTime,
-      Finset.sum_range_succ]
-    ring
-
-/-- Gauss's sum, in the truncated-subtraction form the row lengths take. Stated as
-twice the sum so no division appears. -/
-theorem two_mul_sum_range_sub :
-    ∀ n : ℕ, 2 * ∑ i ∈ Finset.range n, (n - i) = n * (n + 1)
-  | 0 => by simp
-  | n + 1 => by
-    have h : ∀ i ∈ Finset.range n, n + 1 - i = (n - i) + 1 := fun i hi => by
-      simp only [Finset.mem_range] at hi; omega
-    have hexp : (n + 1) * (n + 1 + 1) = n * (n + 1) + 2 * (n + 1) := by ring
-    have ih := two_mul_sum_range_sub n
-    rw [Finset.sum_range_succ, Finset.sum_congr rfl h, Finset.sum_add_distrib,
-      Finset.sum_const, Finset.card_range, smul_eq_mul, mul_one]
-    omega
-
-/-- A low-half multiply costs `4k² + 2k` unit steps, against `8k² - k` for the full
-product: 72 steps at `k = 4` where the full multiply takes 124. -/
-theorem mulLowLimbs_staticTime_unit (k' acc a b sc : ℕ) :
-    (mulLowLimbs (k' + 1) acc a b sc).staticTime CostModel.unit
-      = 4 * k' ^ 2 + 10 * k' + 6 := by
-  show (macSetLimbs (k' + 1) acc a b sc).staticTime CostModel.unit
-    + (mulLowRowsFrom (k' + 1) acc a b sc k').staticTime CostModel.unit = _
-  rw [macSetLimbs_staticTime, mulLowRowsFrom_staticTime]
-  have hgauss : 2 * ∑ i ∈ Finset.range k', (k' + 1 - (i + 1)) = k' * (k' + 1) := by
-    rw [Finset.sum_congr rfl fun i _ => show k' + 1 - (i + 1) = k' - i by omega]
-    exact two_mul_sum_range_sub k'
-  have hsq : k' * (k' + 1) = k' ^ 2 + k' := by ring
-  simp only [macStepCost, macSetStepCost, CostModel.unit]
-  omega
-
-theorem mulLowRow_saf (k acc a b sc i : ℕ) : SAF (mulLowRow k acc a b sc i) :=
-  macLimbs_saf _ _ _ _ _
-
-theorem mulLowRowsFrom_saf (k acc a b sc : ℕ) :
-    ∀ n, SAF (mulLowRowsFrom k acc a b sc n)
-  | 0 => saf_skip
-  | n + 1 => (mulLowRowsFrom_saf k acc a b sc n).seq (mulLowRow_saf _ _ _ _ _ _)
-
-theorem mulLowLimbs_saf (k acc a b sc : ℕ) : SAF (mulLowLimbs k acc a b sc) := by
-  cases k with
-  | zero => exact saf_skip
-  | succ k' => exact (macSetLimbs_saf _ _ _ _ _).seq (mulLowRowsFrom_saf _ _ _ _ _ _)
-
-/-- Worst-case runtime of a low-half multiply, at every field. -/
-theorem mulLowLimbs_time {k' acc a b sc : ℕ} {s s' : State 64} {t : ℕ} {d pp : ℤ}
-    (h : Exec CostModel.unit (mulLowLimbs (k' + 1) acc a b sc) s s' t d pp) :
-    t = 4 * k' ^ 2 + 10 * k' + 6 :=
-  (h.straight_time_eq (mulLowLimbs_saf _ _ _ _ _).1).trans
-    (mulLowLimbs_staticTime_unit _ _ _ _ _)
-
-/-! ### Correctness of the low-half multiply
-
-The invariant is the same `mulAcc` as the full product, but only `k` limbs of it are
-kept: `RegsEnc s acc k (mulAcc A B n)` constrains the value only modulo `2 ^ (64k)`,
-which is exactly what a low-half multiply computes. Row `i` reads `a`'s low `k - i`
-limbs rather than all `k` — the limbs it drops contribute only above `2 ^ (64k)`. -/
-
-/-- Row `i` of the low half extends the invariant by one limb of `B`, modulo
-`2 ^ (64k)`. -/
-theorem mulLowRow_exec {k acc a b sc i : ℕ} (hl : MulLayout k acc a b sc) (hik : i < k)
-    {s : State 64} {A B : ℕ}
-    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B)
-    (hacc : RegsEnc s acc k (mulAcc A B i)) :
-    ∃ s' t dd pp, Exec C (mulLowRow k acc a b sc i) s s' t dd pp ∧
-      RegsEnc s' acc k (mulAcc A B (i + 1)) ∧
-      (∀ q, q < sc → s'.regs q = s.regs q) ∧
-      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
-  have hA' := hl.opA
-  have hB' := hl.opB
-  have hD := hl.dest
-  set m := k - i with hm
-  have hmk : i + m = k := by omega
-  set X := A % 2 ^ (64 * m) with hX
-  set W := mulAcc A B i / 2 ^ (64 * i) with hW
-  have hXlt : X < 2 ^ (64 * m) := Nat.mod_lt _ (Nat.two_pow_pos _)
-  have haX : RegsEnc s a m X := by
-    intro j hj; rw [hX, limb_mod hj]; exact har j (by omega)
-  have hwin : RegsEnc s (acc + i) m W := by
-    intro j hj
-    rw [show acc + i + j = acc + (i + j) by ring, hacc (i + j) (by omega), hW,
-      limb_window]
-  have hbi : s.regs (b + i) = BitVec.ofNat 64 (limb 64 B i) := hbr i hik
-  have hmac : MacLayout m (acc + i) a (b + i) sc := ⟨by omega, by omega, by omega⟩
-  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, _, hpres₁, hmid₁, _, hbuf₁, hcap₁⟩ :=
-    macLimbs_exec (C := C) hmac (limb_lt 64 B i) hXlt haX hwin hbi
-  -- the accumulator, split at the row's offset
-  have hlow : mulAcc A B i % 2 ^ (64 * i) < 2 ^ (64 * i) := Nat.mod_lt _ (Nat.two_pow_pos _)
-  have hsplit : mulAcc A B (i + 1)
-      = mulAcc A B i % 2 ^ (64 * i) + (W + A * limb 64 B i) * 2 ^ (64 * i) := by
-    have hdm : 2 ^ (64 * i) * (mulAcc A B i / 2 ^ (64 * i))
-        + mulAcc A B i % 2 ^ (64 * i) = mulAcc A B i := Nat.div_add_mod _ _
-    rw [mulAcc_succ, hW]
-    calc mulAcc A B i + A * limb 64 B i * 2 ^ (64 * i)
-        = (2 ^ (64 * i) * (mulAcc A B i / 2 ^ (64 * i))
-            + mulAcc A B i % 2 ^ (64 * i)) + A * limb 64 B i * 2 ^ (64 * i) := by
-          rw [hdm]
-      _ = mulAcc A B i % 2 ^ (64 * i)
-            + (mulAcc A B i / 2 ^ (64 * i) + A * limb 64 B i) * 2 ^ (64 * i) := by ring
-  have hquot : mulAcc A B (i + 1) / 2 ^ (64 * i) = W + A * limb 64 B i := by
-    rw [hsplit]; exact div_shift_exact hlow
-  -- the row computes the window's new value modulo `2 ^ (64 m)`
-  have hcong : (W % 2 ^ (64 * m) + X * limb 64 B i) % 2 ^ (64 * m)
-      = (W + A * limb 64 B i) % 2 ^ (64 * m) := by
-    rw [hX]; simp [Nat.add_mod, Nat.mul_mod]
-  refine ⟨s₁, _, _, _, hex₁, ?_, fun q hq => hpres₁ q hq, hbuf₁, hcap₁⟩
-  intro j hj
-  rcases Nat.lt_or_ge j i with hji | hji
-  · rw [hmid₁ _ (by omega) (by omega), hacc j (by omega), mulAcc_succ,
-      limb_add_shift_lt hji]
-  · have hj' : j = i + (j - i) := by omega
-    have hjm : j - i < m := by omega
-    rw [hj', show acc + (i + (j - i)) = acc + i + (j - i) by ring, hd₁ (j - i) hjm,
-      limb_window, hquot, ← limb_mod (v := W + A * limb 64 B i) hjm, ← hcong,
-      limb_mod hjm]
-
-/-- Rows `1 .. n` of the low half. -/
-theorem mulLowRowsFrom_exec {k acc a b sc : ℕ} (hl : MulLayout k acc a b sc)
-    {s : State 64} {A B : ℕ}
-    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B)
-    (hacc : RegsEnc s acc k (mulAcc A B 1)) :
-    ∀ n, n + 1 ≤ k →
-      ∃ s' t dd pp, Exec C (mulLowRowsFrom k acc a b sc n) s s' t dd pp ∧
-        RegsEnc s' acc k (mulAcc A B (n + 1)) ∧
-        (∀ q, q < sc → s'.regs q = s.regs q) ∧
-        s'.bufs = s.bufs ∧ s'.caps = s.caps := by
-  have hA' := hl.opA
-  have hB' := hl.opB
-  have hD := hl.dest
-  intro n
-  induction n with
-  | zero => intro _; exact ⟨s, 0, 0, 0, .skip, hacc, fun _ _ => rfl, rfl, rfl⟩
-  | succ n ih =>
-    intro hn
-    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ := ih (by omega)
-    have har₁ : RegsEnc s₁ a k A := by
-      intro j hj; rw [hpres₁ _ (by omega)]; exact har j hj
-    have hbr₁ : RegsEnc s₁ b k B := by
-      intro j hj; rw [hpres₁ _ (by omega)]; exact hbr j hj
-    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hd₂, hpres₂, hbuf₂, hcap₂⟩ :=
-      mulLowRow_exec (C := C) (i := n + 1) hl (by omega) har₁ hbr₁ hd₁
-    exact ⟨s₂, _, _, _, .seq hex₁ hex₂, hd₂,
-      fun q hq => (hpres₂ q hq).trans (hpres₁ q hq),
-      hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
-
-/-- **The low-half multiply is correct.** The destination's `k` limbs hold
-`A * B mod 2 ^ (64k)` — the Montgomery multiplier, at half the partial products of a
-full product. -/
-theorem mulLowLimbs_exec {k' acc a b sc : ℕ} (hl : MulLayout (k' + 1) acc a b sc)
-    {s : State 64} {A B : ℕ} (hA : A < 2 ^ (64 * (k' + 1)))
-    (har : RegsEnc s a (k' + 1) A) (hbr : RegsEnc s b (k' + 1) B) :
-    ∃ s' t dd pp, Exec C (mulLowLimbs (k' + 1) acc a b sc) s s' t dd pp ∧
-      RegsEnc s' acc (k' + 1) (A * B) ∧
-      (∀ q, q < sc → s'.regs q = s.regs q) ∧
-      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
-  have hA' := hl.opA
-  have hB' := hl.opB
-  have hD := hl.dest
-  have hmac : MacLayout (k' + 1) acc a b sc := ⟨by omega, by omega, by omega⟩
-  have hb0 : s.regs b = BitVec.ofNat 64 (limb 64 B 0) := by
-    have := hbr 0 (by omega); simpa using this
-  have hval : mulAcc A B 1 = A * limb 64 B 0 := by
-    simp only [mulAcc, limb, Nat.mul_zero, pow_zero, Nat.div_one, Nat.mul_one]
-  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, _, hpres₁, _, hbuf₁, hcap₁⟩ :=
-    macSetLimbs_exec (C := C) hmac (limb_lt 64 B 0) hA har hb0
-  have hacc₁ : RegsEnc s₁ acc (k' + 1) (mulAcc A B 1) := by
-    intro j hj; rw [hd₁ j hj, hval]
-  have har₁ : RegsEnc s₁ a (k' + 1) A := by
-    intro j hj; rw [hpres₁ _ (by omega)]; exact har j hj
-  have hbr₁ : RegsEnc s₁ b (k' + 1) B := by
-    intro j hj; rw [hpres₁ _ (by omega)]; exact hbr j hj
-  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hd₂, hpres₂, hbuf₂, hcap₂⟩ :=
-    mulLowRowsFrom_exec (C := C) hl har₁ hbr₁ hacc₁ k' (by omega)
-  refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_,
-    fun q hq => (hpres₂ q hq).trans (hpres₁ q hq),
-    hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
-  refine hd₂.congr ?_
-  simp only [mulAcc, Nat.mul_mod, Nat.mod_mod]
 
 /-! ## Separated operand scanning: the field multiply
 
