@@ -1478,4 +1478,263 @@ theorem loadLimbs_saf (base idx sc : ℕ) : ∀ n, SAF (loadLimbs base idx sc n)
   | n + 1 => (loadLimbs_saf base idx sc n).seq
       ((saf_leaf_imm _ _).seq ⟨trivial, trivial⟩)
 
+/-! ## Schoolbook multiply (SOS)
+
+`acc ← a * b` over `2k` limbs. Row `i` accumulates `a * b[i]` at limb offset `i`, its
+carry landing in the top limb that row is the first to touch — so no zeroing pass is
+needed if row 0 *writes* rather than accumulates.
+
+This is the first phase of a Separated Operand Scanning Montgomery multiply. Two
+reasons to prefer it to the CIOS driver above: its spec is `= a * b`, with no modular
+arithmetic to reason about, and it is *cheaper* here — CIOS folds a carry twice a row,
+which SOS does not. It costs `k` more accumulator words. -/
+
+/-- Row `i`: accumulate `a * b[i]` at offset `i`, carry into the fresh top limb. -/
+def mulRow (k acc a b sc i : ℕ) : Stmt 64 :=
+  macLimbs k (acc + i) a (b + i) sc ;; .mov (acc + i + k) sc
+
+/-- Row `0` writes instead of accumulating, so the accumulator needs no zeroing. -/
+def mulRow0 (k acc a b sc : ℕ) : Stmt 64 :=
+  macSetLimbs k acc a b sc ;; .mov (acc + k) sc
+
+def mulRowsFrom (k acc a b sc : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => mulRowsFrom k acc a b sc n ;; mulRow k acc a b sc (n + 1)
+
+/-- `acc ← a * b`, a `2k`-limb product in `acc .. acc + 2k - 1`. -/
+def mulLimbs (k acc a b sc : ℕ) : Stmt 64 :=
+  match k with
+  | 0 => .skip
+  | k' + 1 => mulRow0 (k' + 1) acc a b sc ;; mulRowsFrom (k' + 1) acc a b sc k'
+
+theorem mulRow_staticTime (C : CostModel) (k acc a b sc i : ℕ) :
+    (mulRow k acc a b sc i).staticTime C = (C.imm + k * macStepCost C) + C.mov := by
+  show (macLimbs k (acc + i) a (b + i) sc).staticTime C + _ = _
+  rw [macLimbs_staticTime]; simp [Stmt.staticTime]
+
+theorem mulRow0_staticTime (C : CostModel) (k acc a b sc : ℕ) :
+    (mulRow0 k acc a b sc).staticTime C = (C.imm + k * macSetStepCost C) + C.mov := by
+  show (macSetLimbs k acc a b sc).staticTime C + _ = _
+  rw [macSetLimbs_staticTime]; simp [Stmt.staticTime]
+
+theorem mulRowsFrom_staticTime (C : CostModel) (k acc a b sc : ℕ) :
+    ∀ n, (mulRowsFrom k acc a b sc n).staticTime C
+      = n * ((C.imm + k * macStepCost C) + C.mov)
+  | 0 => by simp [mulRowsFrom, Stmt.staticTime]
+  | n + 1 => by
+    show (mulRowsFrom k acc a b sc n).staticTime C
+      + (mulRow k acc a b sc (n + 1)).staticTime C = _
+    rw [mulRowsFrom_staticTime C k acc a b sc n, mulRow_staticTime]
+    ring
+
+/-- A `k`-limb schoolbook multiply costs exactly `8k² - k` unit steps,
+subtraction-free at `k = k' + 1`. Cheaper than the CIOS driver's `16k² + 6k - 1`
+half — the reduction phase makes up the rest. -/
+theorem mulLimbs_staticTime_unit (k' acc a b sc : ℕ) :
+    (mulLimbs (k' + 1) acc a b sc).staticTime CostModel.unit
+      = 8 * k' ^ 2 + 15 * k' + 7 := by
+  show (mulRow0 (k' + 1) acc a b sc).staticTime CostModel.unit
+    + (mulRowsFrom (k' + 1) acc a b sc k').staticTime CostModel.unit = _
+  rw [mulRow0_staticTime, mulRowsFrom_staticTime]
+  simp [macStepCost, macSetStepCost, CostModel.unit]
+  ring
+
+theorem mulRow_saf (k acc a b sc i : ℕ) : SAF (mulRow k acc a b sc i) :=
+  (macLimbs_saf _ _ _ _ _).seq (saf_leaf_mov _ _)
+
+theorem mulRow0_saf (k acc a b sc : ℕ) : SAF (mulRow0 k acc a b sc) :=
+  (macSetLimbs_saf _ _ _ _ _).seq (saf_leaf_mov _ _)
+
+theorem mulRowsFrom_saf (k acc a b sc : ℕ) : ∀ n, SAF (mulRowsFrom k acc a b sc n)
+  | 0 => saf_skip
+  | n + 1 => (mulRowsFrom_saf k acc a b sc n).seq (mulRow_saf _ _ _ _ _ _)
+
+theorem mulLimbs_saf (k acc a b sc : ℕ) : SAF (mulLimbs k acc a b sc) := by
+  cases k with
+  | zero => exact saf_skip
+  | succ k' => exact (mulRow0_saf _ _ _ _ _).seq (mulRowsFrom_saf _ _ _ _ _ _)
+
+/-- Worst-case runtime of a schoolbook multiply, at every field. -/
+theorem mulLimbs_time {k' acc a b sc : ℕ} {s s' : State 64} {t : ℕ} {d pp : ℤ}
+    (h : Exec CostModel.unit (mulLimbs (k' + 1) acc a b sc) s s' t d pp) :
+    t = 8 * k' ^ 2 + 15 * k' + 7 :=
+  (h.straight_time_eq (mulLimbs_saf _ _ _ _ _).1).trans
+    (mulLimbs_staticTime_unit _ _ _ _ _)
+
+/-! ### Toward correctness of the schoolbook multiply
+
+`limb_window` relates the limbs of a value seen from an offset to the limbs of the
+shifted value — the lemma the row induction needs to connect a row's `k + 1`-limb
+window to the whole `2k`-limb accumulator. -/
+
+/-- The limbs of `V` from `i` up are the limbs of `V / 2 ^ (64 i)`. -/
+theorem limb_window (V i j : ℕ) : limb 64 V (i + j) = limb 64 (V / 2 ^ (64 * i)) j := by
+  have hpow : (2:ℕ) ^ (64 * (i + j)) = 2 ^ (64 * i) * 2 ^ (64 * j) := by
+    rw [← pow_add]; ring_nf
+  simp only [limb, hpow, ← Nat.div_div_eq_div_mul]
+
+/-- The carry identity for a multiply-*set* step: the accumulate step at accumulator
+limb `0`, where the first wrap bit is identically zero — which is exactly why the set
+variant may drop it and cost three instructions less. -/
+theorem macSet_carry {P c : ℕ} (hc : c < 2 ^ 64) :
+    (P % 2 ^ 64 + c) % 2 ^ 64 = (P + c) % 2 ^ 64 ∧
+      P / 2 ^ 64 + (if (P % 2 ^ 64 + c) % 2 ^ 64 < P % 2 ^ 64 then 1 else 0)
+        = (P + c) / 2 ^ 64 := by
+  split_ifs <;> omega
+
+theorem macSetStep_exec {acc x y sc j : ℕ}
+    (hx : x + j < sc) (hy : y < sc) (hacc : sc + 4 ≤ acc)
+    {s : State 64} {xj yv c : ℕ} (hxj : xj < 2 ^ 64) (hyv : yv < 2 ^ 64)
+    (hc : c < 2 ^ 64)
+    (hsx : s.regs (x + j) = BitVec.ofNat 64 xj)
+    (hsy : s.regs y = BitVec.ofNat 64 yv)
+    (hsc : s.regs sc = BitVec.ofNat 64 c) :
+    ∃ s' t dd pp, Exec C (macSetStep acc x y sc j) s s' t dd pp ∧
+      s'.regs (acc + j) = BitVec.ofNat 64 ((xj * yv + c) % 2 ^ 64) ∧
+      s'.regs sc = BitVec.ofNat 64 ((xj * yv + c) / 2 ^ 64) ∧
+      (∀ q, q ≠ sc → q ≠ sc + 1 → q ≠ sc + 2 → q ≠ sc + 3 → q ≠ acc + j →
+        s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  obtain ⟨hword, hcarry⟩ := macSet_carry (P := xj * yv) hc
+  refine ⟨_, _, _, _,
+    .seq .bin (.seq .bin (.seq .bin (.seq .bin .bin))), ?_, ?_, ?_, rfl, rfl⟩
+  · simp only [regs_setReg_self, BinOp.eval,
+      regs_setReg_ne _ _ (show acc + j ≠ sc by omega),
+      regs_setReg_ne _ _ (show acc + j ≠ sc + 3 by omega),
+      regs_setReg_ne _ _ (show sc ≠ sc + 1 by omega),
+      regs_setReg_ne _ _ (show sc ≠ sc + 2 by omega),
+      regs_setReg_ne _ _ (show sc + 1 ≠ sc + 2 by omega),
+      regs_setReg_ne _ _ (show x + j ≠ sc + 1 by omega),
+      regs_setReg_ne _ _ (show y ≠ sc + 1 by omega),
+      hsx, hsy, hsc]
+    apply BitVec.eq_of_toNat_eq
+    simp [Nat.add_mod, Nat.mul_mod]
+  · simp only [regs_setReg_self, BinOp.eval,
+      regs_setReg_ne _ _ (show sc ≠ sc + 1 by omega),
+      regs_setReg_ne _ _ (show sc ≠ sc + 2 by omega),
+      regs_setReg_ne _ _ (show sc + 1 ≠ sc + 2 by omega),
+      regs_setReg_ne _ _ (show sc + 1 ≠ acc + j by omega),
+      regs_setReg_ne _ _ (show sc + 2 ≠ sc + 3 by omega),
+      regs_setReg_ne _ _ (show sc + 2 ≠ acc + j by omega),
+      regs_setReg_ne _ _ (show x + j ≠ sc + 1 by omega),
+      regs_setReg_ne _ _ (show y ≠ sc + 1 by omega),
+      hsx, hsy, hsc]
+    simp only [BitVec.toNat_add, BitVec.toNat_mul, BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt hxj, Nat.mod_eq_of_lt hyv, Nat.mod_eq_of_lt hc]
+    rw [← hcarry]
+    apply BitVec.eq_of_toNat_eq
+    split_ifs <;> simp
+  · intro q h0 h1 h2 h3 h4
+    rw [regs_setReg_ne _ _ h0, regs_setReg_ne _ _ h3, regs_setReg_ne _ _ h4,
+      regs_setReg_ne _ _ h2, regs_setReg_ne _ _ h1]
+
+@[simp] theorem limb_zero (i : ℕ) : limb 64 0 i = 0 := by simp [limb]
+
+/-- The multiply-set loop is the multiply-accumulate loop at accumulator `0`, so it
+shares `macSum`'s algebra: after `n` steps the destination's low `n` limbs hold
+`(X mod 2^(64n)) * y` and `sc` its carry. -/
+theorem macSetLoop_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
+    {s : State 64} {X yv : ℕ} (hyv : yv < 2 ^ 64)
+    (hxr : RegsEnc s x k X)
+    (hsy : s.regs y = BitVec.ofNat 64 yv)
+    (hsc : s.regs sc = BitVec.ofNat 64 0) :
+    ∀ n ≤ k, ∃ s' t dd pp, Exec C (macSetLoop acc x y sc n) s s' t dd pp ∧
+      (∀ i < n, s'.regs (acc + i) = BitVec.ofNat 64 (limb 64 (macSum 0 X yv n) i)) ∧
+      s'.regs sc = BitVec.ofNat 64 (macSum 0 X yv n / 2 ^ (64 * n)) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      (∀ i, n ≤ i → s'.regs (acc + i) = s.regs (acc + i)) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hX := hl.opX
+  have hY := hl.opY
+  have hD := hl.dest
+  intro n
+  induction n with
+  | zero =>
+    intro _
+    refine ⟨s, 0, 0, 0, .skip, ?_, ?_, fun _ _ => rfl, fun _ _ => rfl, rfl, rfl⟩
+    · intro i hi; omega
+    · simpa [macSum, Nat.mod_one, Nat.div_one] using hsc
+  | succ n ih =>
+    intro hn
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hc₁, hpres₁, hhigh₁, hbuf₁, hcap₁⟩ := ih (by omega)
+    have hcfit : macSum 0 X yv n / 2 ^ (64 * n) < 2 ^ 64 := macSum_div_lt 0 X yv n hyv
+    have hxn : s₁.regs (x + n) = BitVec.ofNat 64 (limb 64 X n) := by
+      rw [hpres₁ _ (by omega)]; exact hxr n (by omega)
+    have hyn : s₁.regs y = BitVec.ofNat 64 yv := by rw [hpres₁ _ (by omega)]; exact hsy
+    have hlow : macSum 0 X yv n % 2 ^ (64 * n) < 2 ^ (64 * n) :=
+      Nat.mod_lt _ (Nat.two_pow_pos _)
+    have hsplit : macSum 0 X yv (n + 1)
+        = macSum 0 X yv n % 2 ^ (64 * n)
+          + (macSum 0 X yv n / 2 ^ (64 * n) + 0 + limb 64 X n * yv) * 2 ^ (64 * n) := by
+      rw [macSum_succ, limb_zero]; exact split_of_div_mod _ _ _ _
+    have hPsplit : macSum 0 X yv n
+        = macSum 0 X yv n % 2 ^ (64 * n)
+          + macSum 0 X yv n / 2 ^ (64 * n) * 2 ^ (64 * n) := by
+      have h1 : 2 ^ (64 * n) * (macSum 0 X yv n / 2 ^ (64 * n))
+          + macSum 0 X yv n % 2 ^ (64 * n) = macSum 0 X yv n := Nat.div_add_mod _ _
+      calc macSum 0 X yv n
+          = 2 ^ (64 * n) * (macSum 0 X yv n / 2 ^ (64 * n))
+            + macSum 0 X yv n % 2 ^ (64 * n) := h1.symm
+        _ = macSum 0 X yv n % 2 ^ (64 * n)
+            + macSum 0 X yv n / 2 ^ (64 * n) * 2 ^ (64 * n) := by ring
+    have hT : limb 64 X n * yv + macSum 0 X yv n / 2 ^ (64 * n)
+        = macSum 0 X yv n / 2 ^ (64 * n) + 0 + limb 64 X n * yv := by ring
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hdn, hsc₂, hpres₂, hbuf₂, hcap₂⟩ :=
+      macSetStep_exec (C := C) (acc := acc) (by omega) (by omega) (by omega)
+        (limb_lt 64 X n) hyv hcfit hxn hyn hc₁
+    refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_, ?_, ?_, ?_,
+      hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+    · intro i hi
+      rcases Nat.lt_or_ge i n with hlt | hge
+      · have hL : limb 64 (macSum 0 X yv n) i
+            = limb 64 (macSum 0 X yv n % 2 ^ (64 * n)) i := by
+          conv_lhs => rw [hPsplit]
+          exact limb_add_shift_lt hlt
+        have hR : limb 64 (macSum 0 X yv (n + 1)) i
+            = limb 64 (macSum 0 X yv n % 2 ^ (64 * n)) i := by
+          rw [hsplit]; exact limb_add_shift_lt hlt
+        rw [hpres₂ _ (by omega) (by omega) (by omega) (by omega) (by omega),
+          hd₁ i hlt, hL, hR]
+      · have hin : i = n := by omega
+        rw [hin, hdn, hsplit, limb_add_shift_eq hlow, hT]
+    · rw [hsc₂, hsplit, div_add_shift hlow, hT]
+    · intro q hq
+      rw [hpres₂ _ (by omega) (by omega) (by omega) (by omega) (by omega), hpres₁ q hq]
+    · intro i hi
+      rw [hpres₂ _ (by omega) (by omega) (by omega) (by omega) (by omega),
+        hhigh₁ i (by omega)]
+
+/-- `macSetLimbs`: the destination's `k` limbs and the carry in `sc` are the exact
+`k + 1`-word value of `X * y`. -/
+theorem macSetLimbs_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
+    {s : State 64} {X yv : ℕ} (hyv : yv < 2 ^ 64) (hXlt : X < 2 ^ (64 * k))
+    (hxr : RegsEnc s x k X) (hsy : s.regs y = BitVec.ofNat 64 yv) :
+    ∃ s' t dd pp, Exec C (macSetLimbs k acc x y sc) s s' t dd pp ∧
+      (∀ i < k, s'.regs (acc + i) = BitVec.ofNat 64 (limb 64 (X * yv) i)) ∧
+      s'.regs sc = BitVec.ofNat 64 (X * yv / 2 ^ (64 * k)) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      (∀ i, k ≤ i → s'.regs (acc + i) = s.regs (acc + i)) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hX := hl.opX
+  have hY := hl.opY
+  have hD := hl.dest
+  have hsum : macSum 0 X yv k = X * yv := by
+    simp only [macSum, Nat.mod_eq_of_lt hXlt, Nat.zero_mod, Nat.zero_add]
+  have hxr' : RegsEnc (s.setReg sc 0) x k X := by
+    intro i hi; rw [regs_setReg_ne _ _ (show x + i ≠ sc by omega)]; exact hxr i hi
+  have hsy' : (s.setReg sc (0 : Word 64)).regs y = BitVec.ofNat 64 yv := by
+    rw [regs_setReg_ne _ _ (show y ≠ sc by omega)]; exact hsy
+  have hsc' : (s.setReg sc (0 : Word 64)).regs sc = BitVec.ofNat 64 0 := by simp
+  obtain ⟨s', t', d', p', hex, hd, hc, hpres, hhigh, hbuf, hcap⟩ :=
+    macSetLoop_exec (C := C) hl hyv hxr' hsy' hsc' k le_rfl
+  refine ⟨s', _, _, _, .seq .imm hex, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · intro i hi; rw [hd i hi, hsum]
+  · rw [hc, hsum]
+  · intro q hq
+    rw [hpres q hq, regs_setReg_ne _ _ (show q ≠ sc by omega)]
+  · intro i hi
+    rw [hhigh i hi, regs_setReg_ne _ _ (show acc + i ≠ sc by omega)]
+  · simpa using hbuf
+  · simpa using hcap
+
 end Caliper.MultiLimb
