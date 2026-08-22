@@ -514,13 +514,14 @@ structure MacLayout (k acc x y sc : ℕ) : Prop where
 `n` up are untouched, which is what lets the next step read `A`'s limb `n`. -/
 theorem macLoop_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
     {s : State 64} {A X yv : ℕ} (hyv : yv < 2 ^ 64)
-    (hxr : RegsEnc s x k X) (haccr : RegsEnc s acc (k + 1) A)
+    (hxr : RegsEnc s x k X) (haccr : RegsEnc s acc k A)
     (hsy : s.regs y = BitVec.ofNat 64 yv)
     (hsc : s.regs sc = BitVec.ofNat 64 0) :
     ∀ n ≤ k, ∃ s' t dd pp, Exec C (macLoop acc x y sc n) s s' t dd pp ∧
       (∀ i < n, s'.regs (acc + i) = BitVec.ofNat 64 (limb 64 (macSum A X yv n) i)) ∧
       s'.regs sc = BitVec.ofNat 64 (macSum A X yv n / 2 ^ (64 * n)) ∧
       (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      (∀ q, sc + 6 ≤ q → q < acc → s'.regs q = s.regs q) ∧
       (∀ i, n ≤ i → s'.regs (acc + i) = s.regs (acc + i)) ∧
       s'.bufs = s.bufs ∧ s'.caps = s.caps := by
   have hX := hl.opX
@@ -530,12 +531,14 @@ theorem macLoop_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
   induction n with
   | zero =>
     intro _
-    refine ⟨s, 0, 0, 0, .skip, ?_, ?_, fun _ _ => rfl, fun _ _ => rfl, rfl, rfl⟩
+    refine ⟨s, 0, 0, 0, .skip, ?_, ?_, fun _ _ => rfl, fun _ _ _ => rfl,
+      fun _ _ => rfl, rfl, rfl⟩
     · intro i hi; omega
     · simpa [macSum, Nat.mod_one, Nat.div_one] using hsc
   | succ n ih =>
     intro hn
-    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hc₁, hpres₁, hhigh₁, hbuf₁, hcap₁⟩ := ih (by omega)
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hc₁, hpres₁, hmid₁, hhigh₁, hbuf₁, hcap₁⟩ :=
+      ih (by omega)
     have hcfit : macSum A X yv n / 2 ^ (64 * n) < 2 ^ 64 := macSum_div_lt A X yv n hyv
     have hxn : s₁.regs (x + n) = BitVec.ofNat 64 (limb 64 X n) := by
       rw [hpres₁ _ (by omega)]; exact hxr n (by omega)
@@ -564,7 +567,7 @@ theorem macLoop_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
     obtain ⟨s₂, t₂, d₂, p₂, hex₂, hdn, hsc₂, hpres₂, hbuf₂, hcap₂⟩ :=
       macStep_exec (C := C) (by omega) (by omega) (by omega)
         (limb_lt 64 A n) (limb_lt 64 X n) hyv hcfit hxn hyn han hc₁
-    refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_, ?_, ?_, ?_,
+    refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_, ?_, ?_, ?_, ?_,
       hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
     · intro i hi
       rcases Nat.lt_or_ge i n with hlt | hge
@@ -584,6 +587,9 @@ theorem macLoop_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
     · intro q hq
       rw [hpres₂ _ (by omega) (by omega) (by omega) (by omega) (by omega) (by omega)
         (by omega), hpres₁ q hq]
+    · intro q hq1 hq2
+      rw [hpres₂ _ (by omega) (by omega) (by omega) (by omega) (by omega) (by omega)
+        (by omega), hmid₁ q hq1 hq2]
     · intro i hi
       rw [hpres₂ _ (by omega) (by omega) (by omega) (by omega) (by omega) (by omega)
         (by omega), hhigh₁ i (by omega)]
@@ -593,13 +599,14 @@ theorem macLoop_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
 untouched, so a CIOS driver can fold the carry into it. -/
 theorem macLimbs_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
     {s : State 64} {A X yv : ℕ} (hyv : yv < 2 ^ 64) (hXlt : X < 2 ^ (64 * k))
-    (hxr : RegsEnc s x k X) (haccr : RegsEnc s acc (k + 1) A)
+    (hxr : RegsEnc s x k X) (haccr : RegsEnc s acc k A)
     (hsy : s.regs y = BitVec.ofNat 64 yv) :
     ∃ s' t dd pp, Exec C (macLimbs k acc x y sc) s s' t dd pp ∧
       (∀ i < k, s'.regs (acc + i)
         = BitVec.ofNat 64 (limb 64 (A % 2 ^ (64 * k) + X * yv) i)) ∧
       s'.regs sc = BitVec.ofNat 64 ((A % 2 ^ (64 * k) + X * yv) / 2 ^ (64 * k)) ∧
       (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      (∀ q, sc + 6 ≤ q → q < acc → s'.regs q = s.regs q) ∧
       (∀ i, k ≤ i → s'.regs (acc + i) = s.regs (acc + i)) ∧
       s'.bufs = s.bufs ∧ s'.caps = s.caps := by
   have hX := hl.opX
@@ -609,18 +616,20 @@ theorem macLimbs_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
     simp only [macSum, Nat.mod_eq_of_lt hXlt]
   have hxr' : RegsEnc (s.setReg sc 0) x k X := by
     intro i hi; rw [regs_setReg_ne _ _ (show x + i ≠ sc by omega)]; exact hxr i hi
-  have haccr' : RegsEnc (s.setReg sc 0) acc (k + 1) A := by
+  have haccr' : RegsEnc (s.setReg sc 0) acc k A := by
     intro i hi; rw [regs_setReg_ne _ _ (show acc + i ≠ sc by omega)]; exact haccr i hi
   have hsy' : (s.setReg sc (0 : Word 64)).regs y = BitVec.ofNat 64 yv := by
     rw [regs_setReg_ne _ _ (show y ≠ sc by omega)]; exact hsy
   have hsc' : (s.setReg sc (0 : Word 64)).regs sc = BitVec.ofNat 64 0 := by simp
-  obtain ⟨s', t', d', p', hex, hd, hc, hpres, hhigh, hbuf, hcap⟩ :=
+  obtain ⟨s', t', d', p', hex, hd, hc, hpres, hmid, hhigh, hbuf, hcap⟩ :=
     macLoop_exec (C := C) hl hyv hxr' haccr' hsy' hsc' k le_rfl
-  refine ⟨s', _, _, _, .seq .imm hex, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨s', _, _, _, .seq .imm hex, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro i hi; rw [hd i hi, hsum]
   · rw [hc, hsum]
   · intro q hq
     rw [hpres q hq, regs_setReg_ne _ _ (show q ≠ sc by omega)]
+  · intro q hq1 hq2
+    rw [hmid q hq1 hq2, regs_setReg_ne _ _ (show q ≠ sc by omega)]
   · intro i hi
     rw [hhigh i hi, regs_setReg_ne _ _ (show acc + i ≠ sc by omega)]
   · simpa using hbuf
@@ -1736,5 +1745,262 @@ theorem macSetLimbs_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
     rw [hhigh i hi, regs_setReg_ne _ _ (show acc + i ≠ sc by omega)]
   · simpa using hbuf
   · simpa using hcap
+
+/-! ### The row invariant
+
+After `n` schoolbook rows the accumulator holds `A` times the low `n` limbs of `B`.
+The step needs three arithmetic facts: how that value grows, that it stays inside the
+`n + k` limbs the rows have written, and that a value's top limb is just its high
+quotient. -/
+
+/-- The accumulator after `n` schoolbook rows. -/
+def mulAcc (A B n : ℕ) : ℕ := A * (B % 2 ^ (64 * n))
+
+theorem mulAcc_succ (A B n : ℕ) :
+    mulAcc A B (n + 1) = mulAcc A B n + A * limb 64 B n * 2 ^ (64 * n) := by
+  have hpow : (2:ℕ) ^ (64 * (n + 1)) = 2 ^ (64 * n) * 2 ^ 64 := by
+    rw [← pow_add]; ring_nf
+  have hsplit : B % 2 ^ (64 * (n + 1))
+      = B % 2 ^ (64 * n) + limb 64 B n * 2 ^ (64 * n) := by
+    rw [hpow, mod_mul_split, limb]; ring
+  simp only [mulAcc, hsplit]
+  ring
+
+theorem mulAcc_lt {A : ℕ} {k : ℕ} (hA : A < 2 ^ (64 * k)) (B n : ℕ) :
+    mulAcc A B n < 2 ^ (64 * (n + k)) := by
+  have hB : B % 2 ^ (64 * n) < 2 ^ (64 * n) := Nat.mod_lt _ (Nat.two_pow_pos _)
+  have hpow : (2:ℕ) ^ (64 * (n + k)) = 2 ^ (64 * n) * 2 ^ (64 * k) := by
+    rw [← pow_add]; ring_nf
+  calc mulAcc A B n = A * (B % 2 ^ (64 * n)) := rfl
+    _ < 2 ^ (64 * k) * 2 ^ (64 * n) := by
+        apply Nat.mul_lt_mul_of_lt_of_le hA (le_of_lt hB)
+        exact Nat.two_pow_pos _
+    _ = 2 ^ (64 * (n + k)) := by rw [hpow]; ring
+
+/-- A value below `2 ^ (64 (m+1))` has its high quotient as its top limb. -/
+theorem limb_top {V m : ℕ} (h : V < 2 ^ (64 * (m + 1))) :
+    limb 64 V m = V / 2 ^ (64 * m) := by
+  have hpow : (2:ℕ) ^ (64 * (m + 1)) = 2 ^ (64 * m) * 2 ^ 64 := by
+    rw [← pow_add]; ring_nf
+  rw [limb, Nat.mod_eq_of_lt]
+  exact Nat.div_lt_of_lt_mul (by rw [← hpow] at *; omega)
+
+/-- The register layout of a schoolbook multiply: both operands below the scratch
+register, the `2k`-limb accumulator above it. -/
+structure MulLayout (k acc a b sc : ℕ) : Prop where
+  opA : a + k ≤ sc
+  opB : b + k ≤ sc
+  dest : sc + 6 ≤ acc
+
+/-- Row `0` establishes the invariant: the accumulator's low `k + 1` limbs hold `A`
+times `B`'s first limb. -/
+theorem mulRow0_exec {k acc a b sc : ℕ} (hl : MulLayout k acc a b sc) (hk : 0 < k)
+    {s : State 64} {A B : ℕ} (hA : A < 2 ^ (64 * k))
+    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B) :
+    ∃ s' t dd pp, Exec C (mulRow0 k acc a b sc) s s' t dd pp ∧
+      (∀ j < k + 1, s'.regs (acc + j) = BitVec.ofNat 64 (limb 64 (mulAcc A B 1) j)) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      (∀ i, k + 1 ≤ i → s'.regs (acc + i) = s.regs (acc + i)) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hA' := hl.opA
+  have hB' := hl.opB
+  have hD := hl.dest
+  have hmac : MacLayout k acc a b sc := ⟨by omega, by omega, by omega⟩
+  have hb0 : s.regs b = BitVec.ofNat 64 (limb 64 B 0) := by
+    have := hbr 0 hk; simpa using this
+  have hval : mulAcc A B 1 = A * limb 64 B 0 := by
+    simp only [mulAcc, limb, Nat.mul_zero, pow_zero, Nat.div_one, Nat.mul_one]
+  have hlt : A * limb 64 B 0 < 2 ^ (64 * (k + 1)) := by
+    have hb := limb_lt 64 B 0
+    have hpow : (2:ℕ) ^ (64 * (k + 1)) = 2 ^ (64 * k) * 2 ^ 64 := by
+      rw [← pow_add]; ring_nf
+    rw [hpow]
+    exact Nat.mul_lt_mul_of_lt_of_le hA (le_of_lt hb) (Nat.two_pow_pos _)
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hsc₁, hpres₁, hhigh₁, hbuf₁, hcap₁⟩ :=
+    macSetLimbs_exec (C := C) hmac (limb_lt 64 B 0) hA har hb0
+  refine ⟨_, _, _, _, .seq hex₁ .mov, ?_, ?_, ?_, ?_, ?_⟩
+  · intro j hj
+    rcases Nat.lt_or_ge j k with hlt' | hge
+    · rw [regs_setReg_ne _ _ (show acc + j ≠ acc + k by omega), hd₁ j hlt', hval]
+    · have hjk : j = k := by omega
+      rw [hjk, regs_setReg_self, hsc₁, hval, limb_top hlt]
+  · intro q hq
+    rw [regs_setReg_ne _ _ (show q ≠ acc + k by omega), hpres₁ q hq]
+  · intro i hi
+    rw [regs_setReg_ne _ _ (show acc + i ≠ acc + k by omega), hhigh₁ i (by omega)]
+  · simpa using hbuf₁
+  · simpa using hcap₁
+
+theorem div_shift_exact {low U n : ℕ} (hlow : low < 2 ^ (64 * n)) :
+    (low + U * 2 ^ (64 * n)) / 2 ^ (64 * n) = U := by
+  rw [Nat.add_mul_div_right _ _ (Nat.two_pow_pos _), Nat.div_eq_of_lt hlow, Nat.zero_add]
+
+/-- Row `i` extends the invariant by one limb of `B`: the accumulator grows from `A`
+times `B`'s low `i` limbs to `A` times its low `i + 1`. -/
+theorem mulRow_exec {k acc a b sc i : ℕ} (hl : MulLayout k acc a b sc) (hik : i < k)
+    {s : State 64} {A B : ℕ} (hA : A < 2 ^ (64 * k))
+    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B)
+    (hacc : ∀ j < i + k, s.regs (acc + j)
+      = BitVec.ofNat 64 (limb 64 (mulAcc A B i) j)) :
+    ∃ s' t dd pp, Exec C (mulRow k acc a b sc i) s s' t dd pp ∧
+      (∀ j < i + 1 + k, s'.regs (acc + j)
+        = BitVec.ofNat 64 (limb 64 (mulAcc A B (i + 1)) j)) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      (∀ j, i + 1 + k ≤ j → s'.regs (acc + j) = s.regs (acc + j)) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hA' := hl.opA
+  have hB' := hl.opB
+  have hD := hl.dest
+  have hVlt : mulAcc A B i < 2 ^ (64 * (i + k)) := mulAcc_lt hA B i
+  have hlow : mulAcc A B i % 2 ^ (64 * i) < 2 ^ (64 * i) :=
+    Nat.mod_lt _ (Nat.two_pow_pos _)
+  -- the window the row works on
+  have hWlt : mulAcc A B i / 2 ^ (64 * i) < 2 ^ (64 * k) := by
+    have hpow : (2:ℕ) ^ (64 * (i + k)) = 2 ^ (64 * i) * 2 ^ (64 * k) := by
+      rw [← pow_add]; ring_nf
+    rw [hpow] at hVlt
+    exact Nat.div_lt_of_lt_mul hVlt
+  have hwin : RegsEnc s (acc + i) k (mulAcc A B i / 2 ^ (64 * i)) := by
+    intro j hj
+    rw [show acc + i + j = acc + (i + j) by ring, hacc (i + j) (by omega),
+      limb_window]
+  have hVsplit : mulAcc A B i
+      = mulAcc A B i % 2 ^ (64 * i) + mulAcc A B i / 2 ^ (64 * i) * 2 ^ (64 * i) := by
+    have h1 : 2 ^ (64 * i) * (mulAcc A B i / 2 ^ (64 * i))
+        + mulAcc A B i % 2 ^ (64 * i) = mulAcc A B i := Nat.div_add_mod _ _
+    calc mulAcc A B i
+        = 2 ^ (64 * i) * (mulAcc A B i / 2 ^ (64 * i))
+          + mulAcc A B i % 2 ^ (64 * i) := h1.symm
+      _ = mulAcc A B i % 2 ^ (64 * i)
+          + mulAcc A B i / 2 ^ (64 * i) * 2 ^ (64 * i) := by ring
+  have hbi : s.regs (b + i) = BitVec.ofNat 64 (limb 64 B i) := hbr i hik
+  have hmac : MacLayout k (acc + i) a (b + i) sc := ⟨by omega, by omega, by omega⟩
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hsc₁, hpres₁, hmid₁, hhigh₁, hbuf₁, hcap₁⟩ :=
+    macLimbs_exec (C := C) hmac (limb_lt 64 B i) hA har hwin hbi
+  -- the row's new window value
+  set U := mulAcc A B i / 2 ^ (64 * i) + A * limb 64 B i with hU
+  have hmodW : mulAcc A B i / 2 ^ (64 * i) % 2 ^ (64 * k)
+      = mulAcc A B i / 2 ^ (64 * i) := Nat.mod_eq_of_lt hWlt
+  have hUlt : U < 2 ^ (64 * (k + 1)) := by
+    have hb := limb_lt 64 B i
+    have hpow : (2:ℕ) ^ (64 * (k + 1)) = 2 ^ (64 * k) * 2 ^ 64 := by
+      rw [← pow_add]; ring_nf
+    have : A * limb 64 B i ≤ (2 ^ (64 * k) - 1) * (2 ^ 64 - 1) :=
+      Nat.mul_le_mul (by omega) (by omega)
+    have h1 : (0:ℕ) < 2 ^ (64 * k) := Nat.two_pow_pos _
+    have h2 : (0:ℕ) < 2 ^ 64 := Nat.two_pow_pos _
+    rw [hpow, hU]
+    nlinarith [this, hWlt, h1, h2]
+  -- the accumulator's new value, split at the row's offset
+  have hsplit : mulAcc A B (i + 1) = mulAcc A B i % 2 ^ (64 * i) + U * 2 ^ (64 * i) := by
+    have hdm : 2 ^ (64 * i) * (mulAcc A B i / 2 ^ (64 * i))
+        + mulAcc A B i % 2 ^ (64 * i) = mulAcc A B i := Nat.div_add_mod _ _
+    rw [mulAcc_succ, hU]
+    calc mulAcc A B i + A * limb 64 B i * 2 ^ (64 * i)
+        = (2 ^ (64 * i) * (mulAcc A B i / 2 ^ (64 * i))
+            + mulAcc A B i % 2 ^ (64 * i)) + A * limb 64 B i * 2 ^ (64 * i) := by
+          rw [hdm]
+      _ = mulAcc A B i % 2 ^ (64 * i)
+            + (mulAcc A B i / 2 ^ (64 * i) + A * limb 64 B i) * 2 ^ (64 * i) := by ring
+  have hquot : mulAcc A B (i + 1) / 2 ^ (64 * i) = U := by
+    rw [hsplit]; exact div_shift_exact hlow
+  refine ⟨_, _, _, _, .seq hex₁ .mov, ?_, ?_, ?_, ?_, ?_⟩
+  · intro j hj
+    rcases Nat.lt_or_ge j i with hji | hji
+    · -- below the row's offset: untouched, and the value's low limbs are unchanged
+      have hL : limb 64 (mulAcc A B i) j
+          = limb 64 (mulAcc A B i % 2 ^ (64 * i)) j := by
+        conv_lhs => rw [hVsplit]
+        exact limb_add_shift_lt hji
+      have hR : limb 64 (mulAcc A B (i + 1)) j
+          = limb 64 (mulAcc A B i % 2 ^ (64 * i)) j := by
+        rw [hsplit]; exact limb_add_shift_lt hji
+      rw [regs_setReg_ne _ _ (show acc + j ≠ acc + i + k by omega),
+        hmid₁ _ (by omega) (by omega), hacc j (by omega), hL, hR]
+    · rcases Nat.lt_or_ge j (i + k) with hjk | hjk
+      · -- inside the row's window
+        have hj' : j = i + (j - i) := by omega
+        rw [regs_setReg_ne _ _ (show acc + j ≠ acc + i + k by omega), hj',
+          show acc + (i + (j - i)) = acc + i + (j - i) by ring,
+          hd₁ (j - i) (by omega), hmodW, ← hU, ← hquot, ← limb_window]
+      · -- the row's carry becomes the new top limb
+        have hjt : j = i + k := by omega
+        rw [hjt, show acc + (i + k) = acc + i + k by ring, regs_setReg_self, hsc₁,
+          hmodW, ← hU]
+        have : limb 64 (mulAcc A B (i + 1)) (i + k) = U / 2 ^ (64 * k) := by
+          rw [show i + k = i + k from rfl, limb_window, hquot, limb_top hUlt]
+        rw [this]
+  · intro q hq
+    rw [regs_setReg_ne _ _ (show q ≠ acc + i + k by omega), hpres₁ q hq]
+  · intro j hj
+    rw [regs_setReg_ne _ _ (show acc + j ≠ acc + i + k by omega),
+      show acc + j = acc + i + (j - i) by omega, hhigh₁ (j - i) (by omega),
+      show acc + i + (j - i) = acc + j by omega]
+  · simpa using hbuf₁
+  · simpa using hcap₁
+
+/-- Rows `1 .. n`, chaining the step. -/
+theorem mulRowsFrom_exec {k acc a b sc : ℕ} (hl : MulLayout k acc a b sc)
+    {s : State 64} {A B : ℕ} (hA : A < 2 ^ (64 * k))
+    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B)
+    (hacc : ∀ j < 1 + k, s.regs (acc + j) = BitVec.ofNat 64 (limb 64 (mulAcc A B 1) j)) :
+    ∀ n, n + 1 ≤ k → ∃ s' t dd pp, Exec C (mulRowsFrom k acc a b sc n) s s' t dd pp ∧
+      (∀ j < n + 1 + k, s'.regs (acc + j)
+        = BitVec.ofNat 64 (limb 64 (mulAcc A B (n + 1)) j)) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hA' := hl.opA
+  have hB' := hl.opB
+  have hD := hl.dest
+  intro n
+  induction n with
+  | zero =>
+    intro _
+    exact ⟨s, 0, 0, 0, .skip, hacc, fun _ _ => rfl, rfl, rfl⟩
+  | succ n ih =>
+    intro hn
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ := ih (by omega)
+    have har₁ : RegsEnc s₁ a k A := by
+      intro j hj; rw [hpres₁ _ (by omega)]; exact har j hj
+    have hbr₁ : RegsEnc s₁ b k B := by
+      intro j hj; rw [hpres₁ _ (by omega)]; exact hbr j hj
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hd₂, hpres₂, _, hbuf₂, hcap₂⟩ :=
+      mulRow_exec (C := C) (i := n + 1) hl (by omega) hA har₁ hbr₁ hd₁
+    exact ⟨s₂, _, _, _, .seq hex₁ hex₂, hd₂,
+      fun q hq => (hpres₂ q hq).trans (hpres₁ q hq),
+      hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+
+/-- **The schoolbook multiply is correct.** From `k`-limb operands, the accumulator's
+`2k` limbs hold exactly `A * B`. No condition on the modulus appears anywhere: this
+is the phase that makes multiplication work at every field. -/
+theorem mulLimbs_exec {k' acc a b sc : ℕ} (hl : MulLayout (k' + 1) acc a b sc)
+    {s : State 64} {A B : ℕ}
+    (hA : A < 2 ^ (64 * (k' + 1))) (hB : B < 2 ^ (64 * (k' + 1)))
+    (har : RegsEnc s a (k' + 1) A) (hbr : RegsEnc s b (k' + 1) B) :
+    ∃ s' t dd pp, Exec C (mulLimbs (k' + 1) acc a b sc) s s' t dd pp ∧
+      RegsEnc s' acc (2 * (k' + 1)) (A * B) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hA' := hl.opA
+  have hB' := hl.opB
+  have hD := hl.dest
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, _, hbuf₁, hcap₁⟩ :=
+    mulRow0_exec (C := C) hl (by omega) hA har hbr
+  have har₁ : RegsEnc s₁ a (k' + 1) A := by
+    intro j hj; rw [hpres₁ _ (by omega)]; exact har j hj
+  have hbr₁ : RegsEnc s₁ b (k' + 1) B := by
+    intro j hj; rw [hpres₁ _ (by omega)]; exact hbr j hj
+  have hacc₁ : ∀ j < 1 + (k' + 1), s₁.regs (acc + j)
+      = BitVec.ofNat 64 (limb 64 (mulAcc A B 1) j) := by
+    intro j hj; exact hd₁ j (by omega)
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hd₂, hpres₂, hbuf₂, hcap₂⟩ :=
+    mulRowsFrom_exec (C := C) hl hA har₁ hbr₁ hacc₁ k' le_rfl
+  have hfull : mulAcc A B (k' + 1) = A * B := by
+    simp only [mulAcc, Nat.mod_eq_of_lt hB]
+  refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_,
+    fun q hq => (hpres₂ q hq).trans (hpres₁ q hq),
+    hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+  intro j hj
+  rw [hd₂ j (by omega), hfull]
 
 end Caliper.MultiLimb
