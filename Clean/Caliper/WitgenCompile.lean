@@ -7,7 +7,8 @@ import Clean.Utils.Primes
 # Compiling the witness-generation IR to the unit-cost machine
 
 This is the (unverified, for now) lowering from Clean's witness-generation IR
-(`Clean/Circuit/WitnessIR.lean`) to the unit-cost machine (the [Caliper](https://github.com/zksecurity/caliper) library, `Caliper/Core.lean`).
+(`Clean/Circuit/WitnessIR.lean`) to the unit-cost machine of the
+[Caliper](https://github.com/zksecurity/caliper) library (`Caliper/Core.lean`).
 The compiler is generic over `{F : Type} [FiniteField F]` and the word width `w`: the
 modulus `p := FiniteField.size F` and every field constant are *generation-time* Lean
 values, baked into the emitted code as immediates — exactly the `Fp` discipline of

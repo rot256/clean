@@ -139,7 +139,7 @@ The exponent bits are computed *by Lean at generation time* — the emitted code
 straight-line (`~2·log p` multiply/reduce steps, a per-field constant), so it is
 constant-time by `straight_time_eq` and allocation-free by `allocFree_space`.
 Correctness spec (the exponentiation-ladder argument, requiring `p` prime) is
-deferred; `Examples.lean` checks it executably.
+deferred; the `FieldDemo` at the bottom of this file checks it executably.
 
 The witgen compiler has its own copy of this ladder, `WitgenCompile.invLadder`
 (built over `WitgenCompile.toBits` rather than `Nat.bits`): that one carries the

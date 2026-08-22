@@ -554,8 +554,9 @@ theorem isZero_witgen_cycles_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
   rw [isZeroCompiled_staticTime_cycles] at ht
   omega
 
-/-- Memory, same shape: the compiled `IsZero` witness never grows live memory by
-more than its single output word — in particular far below `2^40`. -/
+/-- Memory, same shape: the compiled `IsZero` witness never grows live *buffer*
+memory by more than its single output word — in particular far below `2^40`. This is
+one summand; `isZero_witgen_total_footprint_le_six` adds the register peak. -/
 theorem isZero_witgen_peak_le_one {s s' : State 64} {t : ℕ} {d p : ℤ}
     (h : Exec .unit isZeroCompiled s s' t d p) : p ≤ 1 := by
   have := (compile_space_le compile_testIsZero h).2
@@ -583,10 +584,8 @@ input from the environment buffer rather than from an incoming register. -/
 /-- info: [] -/
 #guard_msgs in #eval (isZeroCompiled.liveBefore ∅).sort (· ≤ ·)
 
+/-- The register summand as a theorem, for use in space claims. -/
 theorem isZeroCompiled_regPeak₀ : isZeroCompiled.regPeak₀ = 5 := by native_decide
-
-theorem isZeroCompiled_liveBefore_card : (isZeroCompiled.liveBefore ∅).card = 0 := by
-  native_decide
 
 /-- **Total memory for the `IsZero` witness program**: buffer peak plus register peak
 is at most 6 words — the single output word plus five live registers — on every
@@ -597,20 +596,6 @@ theorem isZero_witgen_total_footprint_le_six {s s' : State 64} {t : ℕ} {d p : 
     p + (isZeroCompiled.regPeak₀ : ℤ) ≤ 6 := by
   have hb := isZero_witgen_peak_le_one h
   rw [isZeroCompiled_regPeak₀]
-  omega
-
-/-- The same figure through the *general* theorem, which needs no evaluation of the
-register metric: total footprint ≤ live-ins plus the single running time, here
-`0 + 139`. Weaker than the pinned 6 above, and that is the point — this is the shape
-that holds for every compiled witness program, so a `t < 2^40` certificate is a
-total-memory certificate. -/
-theorem isZero_witgen_total_footprint_le_time {s s' : State 64} {t : ℕ} {d p : ℤ}
-    (h : Exec .unit isZeroCompiled s s' t d p) :
-    p + (isZeroCompiled.regPeak₀ : ℤ) ≤ 139 := by
-  have hfoot := compile_total_footprint_le compile_testIsZero h
-  have ht := compile_time_eq (C := .unit) compile_testIsZero h
-  rw [isZeroCompiled_staticTime_unit] at ht
-  rw [isZeroCompiled_liveBefore_card] at hfoot
   omega
 
 /-! ### The complete witness list: pricing the copy generator, and the circuit total
