@@ -2096,4 +2096,80 @@ theorem le_two_pow_limbCount (p : ℕ) : p ≤ 2 ^ (64 * limbCount p) := by
     simp only [limbCount]; omega
   exact le_of_lt (Nat.size_le.mp hle)
 
+/-! ### Computing the Montgomery constant
+
+`redc_exact` needs a `pinv` with `p * pinv + 1 ≡ 0 (mod R)`. The compiler is a Lean
+function that emits `pinv`'s limbs as immediates, so it has to *compute* the value —
+there is no external supplier. What it does not have to do is *prove* the computation
+right: `montConstOk` is decidable, so a wrong `invIter` makes `compile` return `none`
+rather than emit unsound code. Only the check feeds the proofs, which is why Hensel
+lifting can be used without a word of correctness reasoning about it.
+
+`invIter` is Newton's iteration for an inverse mod a power of two: from `x` correct
+to `m` bits, `x * (2 - p * x)` is correct to `2m`. It is written `2 + M - p * x % M`
+so that no `ℕ` subtraction truncates. -/
+
+/-- Newton/Hensel iteration for `p⁻¹ mod M`, `M` a power of two and `p` odd. Each
+step doubles the number of correct bits, starting from `1` (correct mod 2). -/
+def invIter (p M : ℕ) : ℕ → ℕ
+  | 0 => 1
+  | n + 1 => let x := invIter p M n
+      x * ((2 + M - p * x % M) % M) % M
+
+/-- `-p⁻¹ mod 2 ^ (64k)`, the Montgomery constant. Untrusted: gated by
+`montConstOk`. -/
+def montConst (p k : ℕ) : ℕ :=
+  let M := 2 ^ (64 * k)
+  (M - invIter p M (Nat.size (64 * k)) % M) % M
+
+/-- The decidable gate. `compile` accepts a field only when this holds, so the
+correctness of `invIter` never enters the trusted path. -/
+def montConstOk (p pinv k : ℕ) : Bool := (p * pinv + 1) % 2 ^ (64 * k) == 0
+
+theorem montConstOk_spec {p pinv k : ℕ} (h : montConstOk p pinv k = true) :
+    (p * pinv + 1) % 2 ^ (64 * k) = 0 := by
+  simpa [montConstOk] using h
+
+/-- What the gate buys: a checked constant satisfies exactly the hypothesis the
+reduction theorems take, so `redc_exact`, `redc_lt` and `redc_modEq` all apply. -/
+theorem redc_exact_of_check {p pinv k T : ℕ} (h : montConstOk p pinv k = true) :
+    (T + redcM pinv (2 ^ (64 * k)) T * p) % 2 ^ (64 * k) = 0 :=
+  redc_exact (montConstOk_spec h)
+
+/-! ### The gate, exercised
+
+The constant is computed and accepted at every field of interest — including BN254
+and BLS12-381, which the single-word path rejects outright — and a wrong constant is
+refused. These run the actual generation-time path, so they are what stands behind
+the claim that the arithmetic is available at these moduli. -/
+
+def pBN254 : ℕ :=
+  21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+def pBLS12381Scalar : ℕ :=
+  52435875175126190479447740508185965837690552500527637822603658699938581184513
+
+def pGoldilocks : ℕ := 2 ^ 64 - 2 ^ 32 + 1
+
+/- The limb counts: one word for the small fields, four for the pairing curves. -/
+/-- info: [1, 1, 4, 4] -/
+#guard_msgs in
+#eval [2 ^ 31 - 2 ^ 27 + 1, pGoldilocks, pBN254, pBLS12381Scalar].map limbCount
+
+/- The computed constant passes its own gate at each. -/
+/-- info: [true, true, true, true] -/
+#guard_msgs in
+#eval [2 ^ 31 - 2 ^ 27 + 1, pGoldilocks, pBN254, pBLS12381Scalar].map fun p =>
+  montConstOk p (montConst p (limbCount p)) (limbCount p)
+
+/- And `p * pinv + 1` really is divisible by `R` at BN254. -/
+/-- info: 0 -/
+#guard_msgs in
+#eval (pBN254 * montConst pBN254 4 + 1) % 2 ^ 256
+
+/- A wrong constant is refused, so a broken `invIter` cannot emit unsound code. -/
+/-- info: false -/
+#guard_msgs in
+#eval montConstOk pBN254 12345 4
+
 end Caliper.MultiLimb
