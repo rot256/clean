@@ -2962,6 +2962,124 @@ theorem redcLimbs_exec {k acc pReg pinv m cb u sc : ℕ}
   · simpa [hs₀] using hbuf₁
   · simpa [hs₀] using hcap₁
 
+/-! ### The field multiply
+
+Product, reduction, conditional subtraction. The spec is the Montgomery relation
+itself — the result is the unique value below `p` whose product with `R` is `a * b`
+modulo `p` — with no condition on the field beyond `p < R`, which `limbCount` gives by
+construction. -/
+
+/-- **Montgomery multiplication is correct, at every field.** From `a, b < p` in
+Montgomery form, `montOut k w` holds the `k`-limb value `v < p` with
+`v * R ≡ a * b (mod p)`. -/
+theorem montMulSOS_exec {k' a b pReg pinv w : ℕ}
+    (hl : SOSLayout (k' + 1) a b pReg pinv w)
+    {s : State 64} {p pv A B : ℕ}
+    (hp : 0 < p) (hpR : p < 2 ^ (64 * (k' + 1)))
+    (hpinv : (p * pv + 1) % 2 ^ 64 = 0)
+    (hA : A < p) (hB : B < p)
+    (hpr : RegsEnc s pReg (k' + 2) p) (hcr : s.regs pinv = BitVec.ofNat 64 pv)
+    (har : RegsEnc s a (k' + 1) A) (hbr : RegsEnc s b (k' + 1) B) :
+    ∃ s' tt dd pp, Exec C (montMulSOS (k' + 1) a b pReg pinv w) s s' tt dd pp ∧
+      (∃ V, RegsEnc s' (montOut (k' + 1) w) (k' + 1) V ∧ V < p ∧
+        V * 2 ^ (64 * (k' + 1)) ≡ A * B [MOD p]) ∧
+      (∀ q, q < w → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  obtain ⟨hopA, hopB, hmodl, hconst⟩ := hl
+  have hpow2 : (2:ℕ) ^ (64 * (2 * (k' + 1))) = 2 ^ (64 * (k' + 1)) * 2 ^ (64 * (k' + 1)) := by
+    rw [← pow_add]; ring_nf
+  have hpowM : (2:ℕ) ^ (64 * (k' + 1 + 1)) = 2 ^ (64 * (k' + 1)) * 2 ^ 64 := by
+    rw [← pow_add]; ring_nf
+  -- the exact product
+  have hmul : MulLayout (k' + 1) (w + 9) a b (w + 3) := ⟨by omega, by omega, by omega⟩
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hprod₁, hpres₁, hbuf₁, hcap₁⟩ :=
+    mulLimbs_exec (C := C) hmul (by omega) (by omega) har hbr
+  have hABlt : A * B < 2 ^ (64 * (2 * (k' + 1))) := by
+    rw [hpow2]
+    calc A * B < p * p := Nat.mul_lt_mul_of_lt_of_le hA (le_of_lt hB) hp
+      _ < 2 ^ (64 * (k' + 1)) * 2 ^ (64 * (k' + 1)) :=
+          Nat.mul_lt_mul_of_lt_of_le hpR (le_of_lt hpR) (Nat.two_pow_pos _)
+  -- the reduction
+  have hredc : RedcLayout (k' + 1) (w + 9) pReg pinv w (w + 1) (w + 2) (w + 3) :=
+    ⟨by omega, by omega, by omega, by omega, by omega, by omega⟩
+  have hpr₁ : RegsEnc s₁ pReg (k' + 1) p := by
+    intro j hj; rw [hpres₁ _ (by omega)]; exact hpr j (by omega)
+  have hcr₁ : s₁.regs pinv = BitVec.ofNat 64 pv := by
+    rw [hpres₁ _ (by omega)]; exact hcr
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hV₂, hpres₂, hbuf₂, hcap₂⟩ :=
+    redcLimbs_exec (C := C) hredc hpR hpr₁ hcr₁ hABlt hprod₁
+  obtain ⟨V, hVdef⟩ :
+      ∃ x, x = redcAcc p pv (A * B) (k' + 1) / 2 ^ (64 * (k' + 1)) := ⟨_, rfl⟩
+  rw [← hVdef] at hV₂
+  obtain ⟨hVlt, hVmod⟩ : V < 2 * p ∧ V * 2 ^ (64 * (k' + 1)) ≡ A * B [MOD p] := by
+    rw [hVdef]
+    refine redcAcc_spec hp hpinv ?_
+    calc A * B < p * p := Nat.mul_lt_mul_of_lt_of_le hA (le_of_lt hB) hp
+      _ ≤ p * 2 ^ (64 * (k' + 1)) := Nat.mul_le_mul_left _ (le_of_lt hpR)
+  have hVM : V < 2 ^ (64 * (k' + 1 + 1)) := by
+    rw [hpowM]
+    calc V < 2 * p := hVlt
+      _ ≤ 2 * 2 ^ (64 * (k' + 1)) := by omega
+      _ ≤ 2 ^ (64 * (k' + 1)) * 2 ^ 64 := by
+          have : (1:ℕ) ≤ 2 ^ (64 * (k' + 1)) := Nat.one_le_two_pow
+          nlinarith [Nat.two_pow_pos (64 * (k' + 1))]
+  have hpM : p < 2 ^ (64 * (k' + 1 + 1)) := by
+    rw [hpowM]
+    have : (1:ℕ) ≤ 2 ^ 64 := Nat.one_le_two_pow
+    nlinarith [Nat.two_pow_pos (64 * (k' + 1))]
+  -- the conditional subtraction
+  have hsub : SubLayout (k' + 1 + 1) (w + 15 + 3 * (k' + 1)) (w + 9 + (k' + 1)) pReg
+      (w + 10 + 2 * (k' + 1)) (w + 11 + 3 * (k' + 1)) :=
+    ⟨by omega, by omega, by omega, by omega⟩
+  have hpr₂ : RegsEnc s₂ pReg (k' + 1 + 1) p := by
+    intro j hj; rw [hpres₂ _ (by omega)]
+    rw [hpres₁ _ (by omega)]; exact hpr j (by omega)
+  obtain ⟨s₃, t₃, d₃, p₃, hex₃, hdiff, hflag, hpres₃, hbuf₃, hcap₃⟩ :=
+    subLimbs_exec (C := C) hsub hVM hpM hV₂ hpr₂
+  have hsel : SelLayout (k' + 1) (montOut (k' + 1) w) (w + 15 + 3 * (k' + 1))
+      (w + 9 + (k' + 1)) (w + 11 + 3 * (k' + 1)) (w + 15 + 4 * (k' + 1)) := by
+    refine ⟨by omega, by omega, by omega, ?_⟩
+    show w + 15 + 4 * (k' + 1) + 1 ≤ w + 16 + 4 * (k' + 1)
+    omega
+  have hV₃ : RegsEnc s₃ (w + 9 + (k' + 1)) (k' + 1) V := by
+    intro j hj; rw [hpres₃ _ (by omega)]; exact hV₂ j (by omega)
+  have hdiff₃ : RegsEnc s₃ (w + 15 + 3 * (k' + 1)) (k' + 1)
+      (V + 2 ^ (64 * (k' + 1 + 1)) - p) := fun j hj => hdiff j (by omega)
+  -- the flag is exactly `p ≤ V`
+  have hfval : (V + 2 ^ (64 * (k' + 1 + 1)) - p) / 2 ^ (64 * (k' + 1 + 1))
+      = if p ≤ V then 1 else 0 := by
+    split_ifs with hle
+    · exact Nat.div_eq_of_lt_le (by omega) (by omega)
+    · exact Nat.div_eq_of_lt (by omega)
+  obtain ⟨s₄, t₄, d₄, p₄, hex₄, hout, hpres₄, hbuf₄, hcap₄⟩ :=
+    selectLimbs_exec (C := C) hsel
+      (show (if p ≤ V then 1 else 0) ≤ 1 by split_ifs <;> omega)
+      hdiff₃ hV₃ (by rw [hflag, hfval])
+  refine ⟨s₄, _, _, _, .seq hex₁ (.seq hex₂ (.seq hex₃ hex₄)),
+    ⟨if p ≤ V then V - p else V, hout.congr ?_, ?_, ?_⟩, ?_,
+    hbuf₄.trans (hbuf₃.trans (hbuf₂.trans hbuf₁)),
+    hcap₄.trans (hcap₃.trans (hcap₂.trans hcap₁))⟩
+  · by_cases hle : p ≤ V
+    · rw [if_pos (show (if p ≤ V then 1 else 0) = 1 by simp [hle]), if_pos hle,
+        show V + 2 ^ (64 * (k' + 1 + 1)) - p = V - p + 2 ^ (64 * (k' + 1)) * 2 ^ 64 by
+          rw [← hpowM]; omega,
+        Nat.add_mul_mod_self_left]
+    · rw [if_neg (show ¬((if p ≤ V then 1 else 0) = 1) by simp [hle]), if_neg hle]
+  · split_ifs with hle <;> omega
+  · split_ifs with hle
+    · have hmul' : (V - p) * 2 ^ (64 * (k' + 1)) + p * 2 ^ (64 * (k' + 1))
+          = V * 2 ^ (64 * (k' + 1)) := by
+        rw [← Nat.add_mul, show V - p + p = V by omega]
+      calc (V - p) * 2 ^ (64 * (k' + 1))
+          ≡ (V - p) * 2 ^ (64 * (k' + 1)) + p * 2 ^ (64 * (k' + 1)) [MOD p] := by
+            simp [Nat.ModEq, Nat.add_mul_mod_self_left]
+        _ = V * 2 ^ (64 * (k' + 1)) := hmul'
+        _ ≡ A * B [MOD p] := hVmod
+    · exact hVmod
+  · intro q hq
+    rw [hpres₄ q (by omega), hpres₃ q (by omega), hpres₂ q (by omega),
+      hpres₁ q (by omega)]
+
 /-! ### Straightness -/
 
 theorem foldHeld_saf (t sc cb u : ℕ) : SAF (foldHeld t sc cb u) :=
