@@ -1,4 +1,5 @@
 import Clean.Caliper.Limbs
+import Std.Tactic.BVDecide
 
 /-!
 # Multi-limb machine arithmetic, at the 64-bit surface
@@ -784,5 +785,209 @@ theorem subLimbs_exec {k d a b nb sc : ℕ} (hl : SubLayout k d a b nb sc)
   · rw [hsc₂, hval]
   · intro q hq
     rw [hpres₂ q (by omega), hpres₁ q hq]
+
+/-! ## Branch-free select
+
+`d ← if f then a else b`, limb by limb, with `f` a `{0, 1}` word. Not a mask: in
+wrapping arithmetic `b + f * (a - b)` already selects, which is three instructions per
+limb with a *single* scratch register, where the mask formulation needs a two-
+instruction preamble and four. No `ifNZ`, so the code stays straight-line. -/
+
+theorem select_word {flag : ℕ} (hf : flag ≤ 1) (x y : Word 64) :
+    y + BitVec.ofNat 64 flag * (x - y) = if flag = 1 then x else y := by
+  have h : flag = 0 ∨ flag = 1 := by omega
+  have hcancel : ∀ u v : Word 64, v + (u - v) = u := by
+    intro u v
+    apply BitVec.eq_of_toNat_eq
+    have hu := u.isLt
+    have hv := v.isLt
+    simp only [BitVec.toNat_add, BitVec.toNat_sub]
+    omega
+  rcases h with h | h <;> subst h <;> simp [hcancel]
+
+/-- The select step at limb `i`. -/
+def selectStep (d a b f sc i : ℕ) : Stmt 64 :=
+  .bin .sub sc (a + i) (b + i) ;;
+  .bin .mul sc f sc ;;
+  .bin .add (d + i) (b + i) sc
+
+def selectLoop (d a b f sc : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => selectLoop d a b f sc n ;; selectStep d a b f sc n
+
+/-- `d ← if f then a else b` over `k` limbs. -/
+def selectLimbs (k d a b f sc : ℕ) : Stmt 64 := selectLoop d a b f sc k
+
+/-- The register layout of a select: operands and flag below the scratch register,
+destination above it. -/
+structure SelLayout (k d a b f sc : ℕ) : Prop where
+  opA : a + k ≤ sc
+  opB : b + k ≤ sc
+  flag : f < sc
+  dest : sc + 1 ≤ d
+
+theorem selectLoop_exec {k d a b f sc : ℕ} (hl : SelLayout k d a b f sc)
+    {s : State 64} {A B flag : ℕ} (hflag : flag ≤ 1)
+    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B)
+    (hsf : s.regs f = BitVec.ofNat 64 flag) :
+    ∀ n ≤ k, ∃ s' t dd pp, Exec C (selectLoop d a b f sc n) s s' t dd pp ∧
+      (∀ i < n, s'.regs (d + i)
+        = BitVec.ofNat 64 (limb 64 (if flag = 1 then A else B) i)) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hA' := hl.opA
+  have hB' := hl.opB
+  have hF := hl.flag
+  have hD := hl.dest
+  intro n
+  induction n with
+  | zero =>
+    intro _
+    exact ⟨s, 0, 0, 0, .skip, fun i hi => absurd hi (Nat.not_lt_zero _),
+      fun _ _ => rfl, rfl, rfl⟩
+  | succ n ih =>
+    intro hn
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ := ih (by omega)
+    have han : s₁.regs (a + n) = BitVec.ofNat 64 (limb 64 A n) := by
+      rw [hpres₁ _ (by omega)]; exact har n (by omega)
+    have hbn : s₁.regs (b + n) = BitVec.ofNat 64 (limb 64 B n) := by
+      rw [hpres₁ _ (by omega)]; exact hbr n (by omega)
+    have hfn : s₁.regs f = BitVec.ofNat 64 flag := by
+      rw [hpres₁ _ (by omega)]; exact hsf
+    refine ⟨_, _, _, _, .seq hex₁ (.seq .bin (.seq .bin .bin)), ?_, ?_, ?_, ?_⟩
+    · intro i hi
+      rcases Nat.lt_or_ge i n with hlt | hge
+      · rw [regs_setReg_ne _ _ (show d + i ≠ d + n by omega),
+          regs_setReg_ne _ _ (show d + i ≠ sc by omega),
+          regs_setReg_ne _ _ (show d + i ≠ sc by omega)]
+        exact hd₁ i hlt
+      · have hin : i = n := by omega
+        rw [hin, regs_setReg_self]
+        simp only [BinOp.eval, regs_setReg_self,
+          regs_setReg_ne _ _ (show b + n ≠ sc by omega),
+          regs_setReg_ne _ _ (show f ≠ sc by omega),
+          han, hbn, hfn]
+        rw [select_word hflag]
+        by_cases hf1 : flag = 1 <;> simp [hf1]
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ d + n by omega),
+        regs_setReg_ne _ _ (show q ≠ sc by omega),
+        regs_setReg_ne _ _ (show q ≠ sc by omega), hpres₁ q hq]
+    · simpa using hbuf₁
+    · simpa using hcap₁
+
+/-- `selectLimbs`: the destination holds `A` or `B` according to the flag. -/
+theorem selectLimbs_exec {k d a b f sc : ℕ} (hl : SelLayout k d a b f sc)
+    {s : State 64} {A B flag : ℕ} (hflag : flag ≤ 1)
+    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B)
+    (hsf : s.regs f = BitVec.ofNat 64 flag) :
+    ∃ s' t dd pp, Exec C (selectLimbs k d a b f sc) s s' t dd pp ∧
+      RegsEnc s' d k (if flag = 1 then A else B) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps :=
+  selectLoop_exec (C := C) hl hflag har hbr hsf k le_rfl
+
+/-! ## CIOS Montgomery multiplication (code shape)
+
+The driver: `k` rows, each accumulating `a * b[i]` into the running total, then
+`m * p` with `m = t[0] * p'` chosen to zero the low limb, then shifting the total
+down one limb. Both accumulations are `macLimbs`, which is why that primitive was
+worth proving once.
+
+Only the code is given here — the correctness proof is the next step. It is enough to
+*measure*, which is what settles the representation question below. -/
+
+/-- Fold a carry word in `sc` into the accumulator's top two limbs. -/
+def foldCarry (acc sc k : ℕ) : Stmt 64 :=
+  .bin .add (acc + k) (acc + k) sc ;;
+  .bin .ult sc (acc + k) sc ;;
+  .bin .add (acc + k + 1) (acc + k + 1) sc
+
+/-- Shift the accumulator down by one limb. -/
+def shiftDown (acc : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => shiftDown acc n ;; .mov (acc + n) (acc + n + 1)
+
+/-- One CIOS row. -/
+def ciosRow (k acc a b p pinv sc m i : ℕ) : Stmt 64 :=
+  macLimbs k acc a (b + i) sc ;;
+  foldCarry acc sc k ;;
+  .bin .mul m acc pinv ;;
+  macLimbs k acc p m sc ;;
+  foldCarry acc sc k ;;
+  shiftDown acc (k + 1)
+
+def ciosRows (k acc a b p pinv sc m : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => ciosRows k acc a b p pinv sc m n ;; ciosRow k acc a b p pinv sc m n
+
+/-- Montgomery multiplication, CIOS. Accumulator zeroing is the caller's job. -/
+def montMulCIOS (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
+  ciosRows k acc a b p pinv sc m k
+
+/-! ### Shift-free CIOS
+
+The `shiftDown` in `ciosRow` costs `k + 1` instructions a row, `k (k + 1)` overall,
+purely to move the accumulator back to a fixed base. Since rows are unrolled at
+generation time, the base can instead advance with the row: row `i` works at
+`acc + i`, and the shift disappears. The accumulator then spans `2k + 2` register
+names rather than `k + 2`, but the limbs below the current base are dead, so the
+inferred live peak absorbs it. -/
+
+/-- One CIOS row, working at the row's own accumulator base. -/
+def ciosRowAt (k acc a b p pinv sc m i : ℕ) : Stmt 64 :=
+  macLimbs k (acc + i) a (b + i) sc ;;
+  foldCarry (acc + i) sc k ;;
+  .bin .mul m (acc + i) pinv ;;
+  macLimbs k (acc + i) p m sc ;;
+  foldCarry (acc + i) sc k
+
+def ciosRowsAt (k acc a b p pinv sc m : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => ciosRowsAt k acc a b p pinv sc m n ;; ciosRowAt k acc a b p pinv sc m n
+
+/-- Shift-free CIOS Montgomery multiplication. -/
+def montMul (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
+  ciosRowsAt k acc a b p pinv sc m k
+
+/-! ### Row zero writes rather than accumulates
+
+The first CIOS row accumulates `a * b[0]` into an accumulator that is still zero, so
+both its accumulator reads and the pass that zeroed it are wasted work. A *set*
+variant drops the `acc[j] +` term: five instructions a limb instead of eight, and the
+`k + 2` zeroing immediates disappear with it. -/
+
+/-- Multiply-set limb step: `acc[j] ← x[j] * y + carry`, no accumulator read. -/
+def macSetStep (acc x y sc j : ℕ) : Stmt 64 :=
+  .bin .mul (sc + 1) (x + j) y ;;
+  .bin .mulhi (sc + 2) (x + j) y ;;
+  .bin .add (acc + j) (sc + 1) sc ;;
+  .bin .ult (sc + 3) (acc + j) (sc + 1) ;;
+  .bin .add sc (sc + 2) (sc + 3)
+
+def macSetLoop (acc x y sc : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => macSetLoop acc x y sc n ;; macSetStep acc x y sc n
+
+/-- `acc ← x * y` over `k` limbs, carry-out in `sc`. -/
+def macSetLimbs (k acc x y sc : ℕ) : Stmt 64 := .imm sc 0 ;; macSetLoop acc x y sc k
+
+/-- CIOS row zero: multiply-set instead of multiply-accumulate, and the accumulator's
+top limb is written rather than folded into. -/
+def ciosRow0 (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
+  macSetLimbs k acc a b sc ;;
+  .mov (acc + k) sc ;;
+  .imm (acc + k + 1) 0 ;;
+  .bin .mul m acc pinv ;;
+  macLimbs k acc p m sc ;;
+  foldCarry acc sc k
+
+/-- Shift-free CIOS with a specialised first row. -/
+def montMulOpt (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
+  match k with
+  | 0 => .skip
+  | k' + 1 => ciosRow0 (k' + 1) acc a b p pinv sc m ;;
+      ((List.range k').foldl
+        (fun c i => c ;; ciosRowAt (k' + 1) acc a b p pinv sc m (i + 1)) .skip)
 
 end Caliper.MultiLimb
