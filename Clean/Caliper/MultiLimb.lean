@@ -77,12 +77,18 @@ def addLoop (d a b sc : ℕ) : ℕ → Stmt 64
   | 0 => .skip
   | n + 1 => addLoop d a b sc n ;; addStep d a b sc n
 
-/-- `d ← a + b` over `k` limbs, leaving the carry-out in `sc`. -/
-def addLimbs (k d a b sc : ℕ) : Stmt 64 := .imm sc 0 ;; addLoop d a b sc k
+/-- `d ← a + b + c0` over `k` limbs, carry-out in `sc`. `c0` is an immediate: `0` for
+plain addition, `1` for the `A + ~B + 1` form of subtraction. -/
+def addLimbsC (k d a b sc c0 : ℕ) : Stmt 64 :=
+  .imm sc (BitVec.ofNat 64 c0) ;; addLoop d a b sc k
 
-/-- The low `n` limbs of both operands, the quantity the first `n` limb steps have
-consumed. -/
-def partialSum (X Y n : ℕ) : ℕ := X % 2 ^ (64 * n) + Y % 2 ^ (64 * n)
+/-- `d ← a + b` over `k` limbs, leaving the carry-out in `sc`. -/
+def addLimbs (k d a b sc : ℕ) : Stmt 64 := addLimbsC k d a b sc 0
+
+/-- The low `n` limbs of both operands plus the initial carry: the quantity the first
+`n` limb steps have consumed. `c0` is `0` for a plain addition and `1` for the
+`A + ~B + 1` form of subtraction. -/
+def partialSum (X Y c0 n : ℕ) : ℕ := X % 2 ^ (64 * n) + Y % 2 ^ (64 * n) + c0
 
 /-- The arithmetic of one carry step, in `ℕ`: the wrapped sum plus the incoming carry
 is the low word, and the two wrap bits sum to the carry-out. -/
@@ -96,8 +102,8 @@ theorem carry_step {x y c : ℕ} (hx : x < 2 ^ 64) (hy : y < 2 ^ 64) (hc : c ≤
 /-! ### Arithmetic of one limb position -/
 
 /-- One more limb of each operand joins the running sum. -/
-theorem partialSum_succ (X Y n : ℕ) :
-    partialSum X Y (n + 1) = partialSum X Y n + (limb 64 X n + limb 64 Y n) * 2 ^ (64 * n) := by
+theorem partialSum_succ (X Y c0 n : ℕ) :
+    partialSum X Y c0 (n + 1) = partialSum X Y c0 n + (limb 64 X n + limb 64 Y n) * 2 ^ (64 * n) := by
   have hsplit : ∀ v : ℕ, v % 2 ^ (64 * (n + 1))
       = v % 2 ^ (64 * n) + limb 64 v n * 2 ^ (64 * n) := by
     intro v
@@ -109,9 +115,10 @@ theorem partialSum_succ (X Y n : ℕ) :
   ring
 
 /-- The running carry is a single bit. -/
-theorem partialSum_div_le_one (X Y n : ℕ) : partialSum X Y n / 2 ^ (64 * n) ≤ 1 := by
+theorem partialSum_div_le_one (X Y c0 n : ℕ) (hc0 : c0 ≤ 1) :
+    partialSum X Y c0 n / 2 ^ (64 * n) ≤ 1 := by
   have hM : 0 < 2 ^ (64 * n) := Nat.two_pow_pos _
-  have hlt : partialSum X Y n < 2 * 2 ^ (64 * n) := by
+  have hlt : partialSum X Y c0 n < 2 * 2 ^ (64 * n) := by
     have hX := Nat.mod_lt X hM
     have hY := Nat.mod_lt Y hM
     simp only [partialSum]
@@ -218,12 +225,12 @@ structure AddLayout (k d a b sc : ℕ) : Prop where
 /-- After `n` limb steps the destination holds the low `n` limbs of `X + Y` and the
 scratch register holds the carry out of limb `n - 1`. Induction on `n`, with the
 start state fixed and its carry register cleared. -/
-theorem addLoop_exec {k d a b sc : ℕ} (hl : AddLayout k d a b sc)
+theorem addLoop_exec {k d a b sc c0 : ℕ} (hl : AddLayout k d a b sc) (hc0 : c0 ≤ 1)
     {s : State 64} {X Y : ℕ} (ha : RegsEnc s a k X) (hb : RegsEnc s b k Y)
-    (hsc : s.regs sc = BitVec.ofNat 64 0) :
+    (hsc : s.regs sc = BitVec.ofNat 64 c0) :
     ∀ n ≤ k, ∃ s' t dd pp, Exec C (addLoop d a b sc n) s s' t dd pp ∧
-      RegsEnc s' d n (partialSum X Y n) ∧
-      s'.regs sc = BitVec.ofNat 64 (partialSum X Y n / 2 ^ (64 * n)) ∧
+      RegsEnc s' d n (partialSum X Y c0 n) ∧
+      s'.regs sc = BitVec.ofNat 64 (partialSum X Y c0 n / 2 ^ (64 * n)) ∧
       (∀ q, q < sc → s'.regs q = s.regs q) ∧
       s'.bufs = s.bufs ∧ s'.caps = s.caps := by
   intro n
@@ -238,7 +245,7 @@ theorem addLoop_exec {k d a b sc : ℕ} (hl : AddLayout k d a b sc)
     obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hc₁, hpres₁, hbuf₁, hcap₁⟩ := ih (by omega)
     have hxlt : limb 64 X n < 2 ^ 64 := limb_lt _ _ _
     have hylt : limb 64 Y n < 2 ^ 64 := limb_lt _ _ _
-    have hclt : partialSum X Y n / 2 ^ (64 * n) ≤ 1 := partialSum_div_le_one X Y n
+    have hclt : partialSum X Y c0 n / 2 ^ (64 * n) ≤ 1 := partialSum_div_le_one X Y c0 n hc0
     -- the operands are below the scratch base, so `n` steps have not touched them
     have hA := hl.opA
     have hB := hl.opB
@@ -248,37 +255,37 @@ theorem addLoop_exec {k d a b sc : ℕ} (hl : AddLayout k d a b sc)
     have hby : s₁.regs (b + n) = BitVec.ofNat 64 (limb 64 Y n) := by
       rw [hpres₁ _ (by omega)]; exact hb n (by omega)
     -- the running sum, split at the limb boundary
-    have hlow : partialSum X Y n % 2 ^ (64 * n) < 2 ^ (64 * n) :=
+    have hlow : partialSum X Y c0 n % 2 ^ (64 * n) < 2 ^ (64 * n) :=
       Nat.mod_lt _ (Nat.two_pow_pos _)
-    have hsplit : partialSum X Y (n + 1)
-        = partialSum X Y n % 2 ^ (64 * n)
-          + (partialSum X Y n / 2 ^ (64 * n) + limb 64 X n + limb 64 Y n) * 2 ^ (64 * n) := by
+    have hsplit : partialSum X Y c0 (n + 1)
+        = partialSum X Y c0 n % 2 ^ (64 * n)
+          + (partialSum X Y c0 n / 2 ^ (64 * n) + limb 64 X n + limb 64 Y n) * 2 ^ (64 * n) := by
       rw [partialSum_succ]; exact split_of_div_mod _ _ _ _
-    have hPsplit : partialSum X Y n
-        = partialSum X Y n % 2 ^ (64 * n)
-          + partialSum X Y n / 2 ^ (64 * n) * 2 ^ (64 * n) := by
-      have h1 : 2 ^ (64 * n) * (partialSum X Y n / 2 ^ (64 * n))
-          + partialSum X Y n % 2 ^ (64 * n) = partialSum X Y n := Nat.div_add_mod _ _
-      calc partialSum X Y n
-          = 2 ^ (64 * n) * (partialSum X Y n / 2 ^ (64 * n))
-            + partialSum X Y n % 2 ^ (64 * n) := h1.symm
-        _ = partialSum X Y n % 2 ^ (64 * n)
-            + partialSum X Y n / 2 ^ (64 * n) * 2 ^ (64 * n) := by ring
+    have hPsplit : partialSum X Y c0 n
+        = partialSum X Y c0 n % 2 ^ (64 * n)
+          + partialSum X Y c0 n / 2 ^ (64 * n) * 2 ^ (64 * n) := by
+      have h1 : 2 ^ (64 * n) * (partialSum X Y c0 n / 2 ^ (64 * n))
+          + partialSum X Y c0 n % 2 ^ (64 * n) = partialSum X Y c0 n := Nat.div_add_mod _ _
+      calc partialSum X Y c0 n
+          = 2 ^ (64 * n) * (partialSum X Y c0 n / 2 ^ (64 * n))
+            + partialSum X Y c0 n % 2 ^ (64 * n) := h1.symm
+        _ = partialSum X Y c0 n % 2 ^ (64 * n)
+            + partialSum X Y c0 n / 2 ^ (64 * n) * 2 ^ (64 * n) := by ring
     obtain ⟨hword, hcarry⟩ := carry_step (x := limb 64 X n) (y := limb 64 Y n)
-      (c := partialSum X Y n / 2 ^ (64 * n)) hxlt hylt hclt
-    have hT : limb 64 X n + limb 64 Y n + partialSum X Y n / 2 ^ (64 * n)
-        = partialSum X Y n / 2 ^ (64 * n) + limb 64 X n + limb 64 Y n := by ring
+      (c := partialSum X Y c0 n / 2 ^ (64 * n)) hxlt hylt hclt
+    have hT : limb 64 X n + limb 64 Y n + partialSum X Y c0 n / 2 ^ (64 * n)
+        = partialSum X Y c0 n / 2 ^ (64 * n) + limb 64 X n + limb 64 Y n := by ring
     obtain ⟨s₂, t₂, d₂, p₂, hex₂, hdn, hsc₂, hpres₂, hbuf₂, hcap₂⟩ :=
       addStep_exec (C := C) (n := n) (by omega) (by omega) hxlt hylt hclt hax hby hc₁
     refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_, ?_, ?_, hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
     · intro i hi
       rcases Nat.lt_or_ge i n with hlt | hge
-      · have hL : limb 64 (partialSum X Y n) i
-            = limb 64 (partialSum X Y n % 2 ^ (64 * n)) i := by
+      · have hL : limb 64 (partialSum X Y c0 n) i
+            = limb 64 (partialSum X Y c0 n % 2 ^ (64 * n)) i := by
           conv_lhs => rw [hPsplit]
           exact limb_add_shift_lt hlt
-        have hR : limb 64 (partialSum X Y (n + 1)) i
-            = limb 64 (partialSum X Y n % 2 ^ (64 * n)) i := by
+        have hR : limb 64 (partialSum X Y c0 (n + 1)) i
+            = limb 64 (partialSum X Y c0 n % 2 ^ (64 * n)) i := by
           rw [hsplit]; exact limb_add_shift_lt hlt
         rw [hpres₂ _ (by omega) (by omega) (by omega) (by omega) (by omega), hd₁ i hlt,
           hL, hR]
@@ -289,9 +296,37 @@ theorem addLoop_exec {k d a b sc : ℕ} (hl : AddLayout k d a b sc)
     · intro q hq
       rw [hpres₂ _ (by omega) (by omega) (by omega) (by omega) (by omega), hpres₁ q hq]
 
-/-- `addLimbs`: from `k`-limb operands, the destination holds the `k`-limb sum and
-the scratch register the carry out of the top limb, so `sc` together with `d` is the
-exact `k + 1`-limb value of `X + Y`. -/
+/-- `addLimbsC`: from `k`-limb operands and an initial carry, the destination holds
+the `k`-limb sum and the scratch register the carry out of the top limb, so `sc`
+together with `d` is the exact `k + 1`-limb value of `X + Y + c0`. -/
+theorem addLimbsC_exec {k d a b sc c0 : ℕ} (hl : AddLayout k d a b sc) (hc0 : c0 ≤ 1)
+    {s : State 64} {X Y : ℕ} (hX : X < 2 ^ (64 * k)) (hY : Y < 2 ^ (64 * k))
+    (ha : RegsEnc s a k X) (hb : RegsEnc s b k Y) :
+    ∃ s' t dd pp, Exec C (addLimbsC k d a b sc c0) s s' t dd pp ∧
+      RegsEnc s' d k (X + Y + c0) ∧
+      s'.regs sc = BitVec.ofNat 64 ((X + Y + c0) / 2 ^ (64 * k)) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hA := hl.opA
+  have hB := hl.opB
+  have hsum : partialSum X Y c0 k = X + Y + c0 := by
+    simp only [partialSum, Nat.mod_eq_of_lt hX, Nat.mod_eq_of_lt hY]
+  have ha' : RegsEnc (s.setReg sc (BitVec.ofNat 64 c0)) a k X := by
+    intro i hi; rw [regs_setReg_ne _ _ (show a + i ≠ sc by omega)]; exact ha i hi
+  have hb' : RegsEnc (s.setReg sc (BitVec.ofNat 64 c0)) b k Y := by
+    intro i hi; rw [regs_setReg_ne _ _ (show b + i ≠ sc by omega)]; exact hb i hi
+  have hsc' : (s.setReg sc (BitVec.ofNat 64 c0)).regs sc = BitVec.ofNat 64 c0 := by simp
+  obtain ⟨s', t', d', p', hex, hd, hc, hpres, hbuf, hcap⟩ :=
+    addLoop_exec (C := C) hl hc0 ha' hb' hsc' k le_rfl
+  refine ⟨s', _, _, _, .seq .imm hex, ?_, ?_, ?_, ?_, ?_⟩
+  · rw [← hsum]; exact hd
+  · rw [hc, hsum]
+  · intro q hq
+    rw [hpres q hq, regs_setReg_ne _ _ (show q ≠ sc by omega)]
+  · simpa using hbuf
+  · simpa using hcap
+
+/-- Plain addition: `addLimbsC` at initial carry `0`. -/
 theorem addLimbs_exec {k d a b sc : ℕ} (hl : AddLayout k d a b sc)
     {s : State 64} {X Y : ℕ} (hX : X < 2 ^ (64 * k)) (hY : Y < 2 ^ (64 * k))
     (ha : RegsEnc s a k X) (hb : RegsEnc s b k Y) :
@@ -300,24 +335,11 @@ theorem addLimbs_exec {k d a b sc : ℕ} (hl : AddLayout k d a b sc)
       s'.regs sc = BitVec.ofNat 64 ((X + Y) / 2 ^ (64 * k)) ∧
       (∀ q, q < sc → s'.regs q = s.regs q) ∧
       s'.bufs = s.bufs ∧ s'.caps = s.caps := by
-  have hA := hl.opA
-  have hB := hl.opB
-  have hsum : partialSum X Y k = X + Y := by
-    simp only [partialSum, Nat.mod_eq_of_lt hX, Nat.mod_eq_of_lt hY]
-  have ha' : RegsEnc (s.setReg sc 0) a k X := by
-    intro i hi; rw [regs_setReg_ne _ _ (show a + i ≠ sc by omega)]; exact ha i hi
-  have hb' : RegsEnc (s.setReg sc 0) b k Y := by
-    intro i hi; rw [regs_setReg_ne _ _ (show b + i ≠ sc by omega)]; exact hb i hi
-  have hsc' : (s.setReg sc (0 : Word 64)).regs sc = BitVec.ofNat 64 0 := by simp
   obtain ⟨s', t', d', p', hex, hd, hc, hpres, hbuf, hcap⟩ :=
-    addLoop_exec (C := C) hl ha' hb' hsc' k le_rfl
-  refine ⟨s', _, _, _, .seq .imm hex, ?_, ?_, ?_, ?_, ?_⟩
-  · rw [← hsum]; exact hd
-  · rw [hc, hsum]
-  · intro q hq
-    rw [hpres q hq, regs_setReg_ne _ _ (show q ≠ sc by omega)]
-  · simpa using hbuf
-  · simpa using hcap
+    addLimbsC_exec (C := C) (c0 := 0) hl (by omega) hX hY ha hb
+  refine ⟨s', t', d', p', hex, ?_, ?_, hpres, hbuf, hcap⟩
+  · simpa using hd
+  · simpa using hc
 
 /-! ## Multiply-accumulate
 
@@ -602,5 +624,165 @@ theorem macLimbs_exec {k acc x y sc : ℕ} (hl : MacLayout k acc x y sc)
     rw [hhigh i hi, regs_setReg_ne _ _ (show acc + i ≠ sc by omega)]
   · simpa using hbuf
   · simpa using hcap
+
+/-! ## Subtraction
+
+The mirror of addition, with a borrow chain. Stated subtraction-free: the machine's
+wrapping difference `t = (x + 2^64 - y) % 2^64` and the two borrow bits satisfy
+`x + 2^64 * borrowOut = result + y + borrowIn`, an identity in `ℕ` with no truncating
+subtraction anywhere, which is what makes `omega` able to close it. -/
+
+theorem borrow_step {x y bw : ℕ} (hx : x < 2 ^ 64) (hy : y < 2 ^ 64) (hbw : bw ≤ 1) :
+    x + 2 ^ 64 * ((if x < y then 1 else 0)
+        + (if (x + 2 ^ 64 - y) % 2 ^ 64 < bw then 1 else 0))
+      = ((x + 2 ^ 64 - y) % 2 ^ 64 + 2 ^ 64 - bw) % 2 ^ 64 + y + bw := by
+  split_ifs <;> omega
+
+/-! ### Complement, and subtraction as `A + ~B + 1`
+
+Rather than a second carry chain, subtraction complements `b` limb-wise and reuses
+the adder at initial carry `1`: `A + ~B + 1 = A + 2 ^ (64k) - B`. The carry-out is
+then the complement of the borrow — `1` means no borrow, i.e. `A ≥ B` — which is
+exactly the bit a conditional subtract wants. Six instructions per limb. -/
+
+/-- Limbs are unique below `k`: a limb function bounded by `2 ^ 64` that reconstructs
+a value *is* that value's limb function. -/
+theorem limb_ofLimbs {f : ℕ → ℕ} (hf : ∀ j, f j < 2 ^ 64) :
+    ∀ k, ∀ i < k, limb 64 (ofLimbs 64 f k) i = f i
+  | 0, _, hi => absurd hi (Nat.not_lt_zero _)
+  | k + 1, i, hi => by
+    have hlt : ofLimbs 64 f k < 2 ^ (64 * k) := ofLimbs_lt hf k
+    rw [ofLimbs_succ]
+    rcases Nat.lt_or_ge i k with h | h
+    · rw [limb_add_shift_lt h]; exact limb_ofLimbs hf k i h
+    · have : i = k := by omega
+      subst this
+      rw [limb_add_shift_eq hlt, Nat.mod_eq_of_lt (hf i)]
+
+/-- Limb-wise complement of a value. -/
+def complLimb (B i : ℕ) : ℕ := 2 ^ 64 - 1 - limb 64 B i
+
+theorem complLimb_lt (B j : ℕ) : complLimb B j < 2 ^ 64 := by
+  have := limb_lt 64 B j; simp only [complLimb]; omega
+
+/-- The recursion step of `ofLimbs_compl`, with the modulus abstract so that `omega`
+sees only linear atoms. -/
+private theorem compl_step {L r b M : ℕ} (hM : 1 ≤ M) (hb : b < 2 ^ 64)
+    (ih : L + r = M - 1) : L + (2 ^ 64 - 1 - b) * M + (r + b * M) = M * 2 ^ 64 - 1 := by
+  have hcomb : (2 ^ 64 - 1 - b) * M + b * M = (2 ^ 64 - 1) * M := by
+    rw [← Nat.add_mul]; congr 1; omega
+  have hmul : (2 ^ 64 - 1) * M = M * 2 ^ 64 - M := by
+    rw [Nat.sub_one_mul]; ring_nf
+  omega
+
+/-- The complement's limbs and the value's limbs sum to all-ones. -/
+theorem ofLimbs_compl (B : ℕ) : ∀ n,
+    ofLimbs 64 (complLimb B) n + B % 2 ^ (64 * n) = 2 ^ (64 * n) - 1
+  | 0 => by simp [ofLimbs, Nat.mod_one]
+  | n + 1 => by
+    have ih := ofLimbs_compl B n
+    have hpow : (2:ℕ) ^ (64 * (n + 1)) = 2 ^ (64 * n) * 2 ^ 64 := by
+      rw [← pow_add]; ring_nf
+    have hsplit : B % 2 ^ (64 * (n + 1))
+        = B % 2 ^ (64 * n) + limb 64 B n * 2 ^ (64 * n) := by
+      rw [hpow, mod_mul_split, limb]; ring
+    rw [ofLimbs_succ, hsplit, hpow, complLimb]
+    exact compl_step Nat.one_le_two_pow (limb_lt 64 B n) ih
+
+/-- The complement of a `k`-limb value has the complemented limbs. -/
+theorem limb_compl {k B : ℕ} (hB : B < 2 ^ (64 * k)) {i : ℕ} (hi : i < k) :
+    limb 64 (2 ^ (64 * k) - 1 - B) i = complLimb B i := by
+  have hval : ofLimbs 64 (complLimb B) k = 2 ^ (64 * k) - 1 - B := by
+    have h := ofLimbs_compl B k
+    rw [Nat.mod_eq_of_lt hB] at h
+    omega
+  rw [← hval]
+  exact limb_ofLimbs (complLimb_lt B) k i hi
+
+/-- Limb-wise complement of `b` into `nb`, first `n` limbs. -/
+def notLoop (nb b : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => notLoop nb b n ;; .un .not (nb + n) (b + n)
+
+/-- The register layout of a subtraction: the operands below the complement buffer,
+the complement below the scratch block, the destination above it. -/
+structure SubLayout (k d a b nb sc : ℕ) : Prop where
+  opB : b + k ≤ nb
+  opA : a + k ≤ nb
+  cmpl : nb + k ≤ sc
+  dest : sc + 4 ≤ d
+
+/-- `d ← a - b` over `k` limbs, as `a + ~b + 1`. The carry-out in `sc` is `1` exactly
+when `a ≥ b`, i.e. it is the complement of the borrow. -/
+def subLimbs (k d a b nb sc : ℕ) : Stmt 64 :=
+  notLoop nb b k ;; addLimbsC k d a nb sc 1
+
+theorem notLoop_exec {k nb b : ℕ} (hlay : b + k ≤ nb)
+    {s : State 64} {B : ℕ} (hbr : RegsEnc s b k B) :
+    ∀ n ≤ k, ∃ s' t dd pp, Exec C (notLoop nb b n) s s' t dd pp ∧
+      (∀ i < n, s'.regs (nb + i) = BitVec.ofNat 64 (complLimb B i)) ∧
+      (∀ q, q < nb → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  intro n
+  induction n with
+  | zero =>
+    intro _
+    exact ⟨s, 0, 0, 0, .skip, fun i hi => absurd hi (Nat.not_lt_zero _),
+      fun _ _ => rfl, rfl, rfl⟩
+  | succ n ih =>
+    intro hn
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ := ih (by omega)
+    have hbn : s₁.regs (b + n) = BitVec.ofNat 64 (limb 64 B n) := by
+      rw [hpres₁ _ (by omega)]; exact hbr n (by omega)
+    refine ⟨_, _, _, _, .seq hex₁ .un, ?_, ?_, ?_, ?_⟩
+    · intro i hi
+      rcases Nat.lt_or_ge i n with hlt | hge
+      · rw [regs_setReg_ne _ _ (show nb + i ≠ nb + n by omega)]; exact hd₁ i hlt
+      · have hin : i = n := by omega
+        rw [hin, regs_setReg_self, UnOp.eval, hbn]
+        apply BitVec.eq_of_toNat_eq
+        rw [BitVec.toNat_not, BitVec.toNat_ofNat, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt (limb_lt 64 B n), Nat.mod_eq_of_lt (complLimb_lt B n)]
+        rfl
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ nb + n by omega), hpres₁ q hq]
+    · simpa using hbuf₁
+    · simpa using hcap₁
+
+/-- `subLimbs`: the destination holds the low `k` limbs of `a + 2 ^ (64k) - b`, and
+`sc` holds `1` exactly when `a ≥ b`. -/
+theorem subLimbs_exec {k d a b nb sc : ℕ} (hl : SubLayout k d a b nb sc)
+    {s : State 64} {A B : ℕ} (hA : A < 2 ^ (64 * k)) (hB : B < 2 ^ (64 * k))
+    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B) :
+    ∃ s' t dd pp, Exec C (subLimbs k d a b nb sc) s s' t dd pp ∧
+      RegsEnc s' d k (A + 2 ^ (64 * k) - B) ∧
+      s'.regs sc = BitVec.ofNat 64 ((A + 2 ^ (64 * k) - B) / 2 ^ (64 * k)) ∧
+      (∀ q, q < nb → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hB' := hl.opB
+  have hA' := hl.opA
+  have hC := hl.cmpl
+  have hD := hl.dest
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hnb, hpres₁, hbuf₁, hcap₁⟩ :=
+    notLoop_exec (C := C) hB' hbr k le_rfl
+  have hClt : 2 ^ (64 * k) - 1 - B < 2 ^ (64 * k) := by
+    have : (1:ℕ) ≤ 2 ^ (64 * k) := Nat.one_le_two_pow
+    omega
+  have hnbr : RegsEnc s₁ nb k (2 ^ (64 * k) - 1 - B) := by
+    intro i hi; rw [hnb i hi, limb_compl hB hi]
+  have har₁ : RegsEnc s₁ a k A := by
+    intro i hi; rw [hpres₁ _ (by omega)]; exact har i hi
+  have hlay : AddLayout k d a nb sc := ⟨by omega, by omega, by omega⟩
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hd₂, hsc₂, hpres₂, hbuf₂, hcap₂⟩ :=
+    addLimbsC_exec (C := C) (c0 := 1) hlay (by omega) hA hClt har₁ hnbr
+  have hval : A + (2 ^ (64 * k) - 1 - B) + 1 = A + 2 ^ (64 * k) - B := by
+    have : (1:ℕ) ≤ 2 ^ (64 * k) := Nat.one_le_two_pow
+    omega
+  refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_, ?_, ?_,
+    hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+  · rw [← hval]; exact hd₂
+  · rw [hsc₂, hval]
+  · intro q hq
+    rw [hpres₂ q (by omega), hpres₁ q hq]
 
 end Caliper.MultiLimb
