@@ -222,8 +222,6 @@ parent proof.
 
 - `doc/proving-guide.md` — tips for user-facing circuit formalization proofs
 - `doc/witgen-authoring.md` — how to write circuit witnesses in the witness IR
-- `doc/caliper-witgen.md` — compiling the witness IR to the Caliper machine, and the
-  concrete running-time / memory bounds that buys (`Clean/Caliper/`)
 - `doc/witgen-emit-only.md` — design note on emit-only witness generation
 
 ## Key Files to Understand

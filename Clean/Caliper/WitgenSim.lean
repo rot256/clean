@@ -4,19 +4,16 @@ import Mathlib.FieldTheory.Finite.Basic
 /-!
 # Encodings and leaf lemmas for witgen compiler correctness
 
-Phase 3a of the witgen compiler correctness proof: the **trusted encoding layer**.
-This file contains no compiler induction — only
+Phase 3a: the encoding layer. No compiler induction here, only
 
-* the encodings relating IR-level values (`F p`, `UInt64`, `Bool`) to machine words,
-* the state-encoding relations that phases 3b/3c thread through the compiler induction,
-* the pure specification of the generation-time bit decomposition `toBits`,
-* Fermat's little theorem in the `x ^ (p - 2) = x⁻¹` form and the square-and-multiply
-  ladder algebra, and
-* `Exec`-level correctness lemmas for the three leaf gadget generators of
-  `WitgenCompile.lean`: `fieldOp`, `selectCode` and `invLadder`.
+* the encodings relating IR values (`F p`, `UInt64`, `Bool`) to machine words,
+* the state-encoding relations phases 3b/3c thread through the induction,
+* the specification of the generation-time bit decomposition `toBits`,
+* Fermat's little theorem as `x ^ (p - 2) = x⁻¹`, and the ladder algebra,
+* `Exec`-level correctness for the leaf gadgets `fieldOp`, `selectCode`, `invLadder`.
 
-Everything is at word size `w = 64` and `F = F p` for a prime `p` with
-`p * p ≤ 2 ^ 64` (single-word moduli), matching the compiler's design point.
+Everything is at the compiler's design point: `w = 64`, `F = F p` for a prime `p`
+with `p * p ≤ 2 ^ 64`.
 -/
 
 namespace Caliper.WitgenCompile

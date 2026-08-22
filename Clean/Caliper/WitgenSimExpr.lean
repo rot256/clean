@@ -3,28 +3,22 @@ import Clean.Caliper.WitgenSim
 /-!
 # Scalar-expression simulation for the witgen compiler
 
-Phase 3b of the witgen compiler correctness proof: the **scalar compiler induction**.
-For every compilable, environment-bounded scalar expression of the witness IR
-(`Expression`, `FExpr`, `U64Expr`, `BExpr`), the code emitted by
-`Clean/Caliper/WitgenCompile.lean` executes from any state satisfying the
-state-encoding invariant (`StateEnc`, resp. an environment buffer for `Expression`),
-terminates, leaves the encoded value of the reference evaluation
-(`Clean/Circuit/WitnessIR.lean`) in the compiler's result register, and preserves all
-registers below the free-register counter `next` as well as all buffers and
-capacities.
+Phase 3b: the scalar compiler induction. For every compilable, environment-bounded
+scalar expression of the witness IR (`Expression`, `FExpr`, `U64Expr`, `BExpr`), the
+emitted code executes from any state satisfying the state-encoding invariant
+`StateEnc`, terminates, leaves the encoded value of the reference evaluation in the
+result register, and preserves all registers below the free-register counter `next`
+along with all buffers and capacities.
 
-The theorems are `compileExpr_sim` (standalone — circuit expressions are a separate
-AST) and the mutual `compileF_sim` / `compileU_sim` / `compileB_sim`, by structural
-induction mirroring the mutual compilers `compileF` / `compileU` / `compileB`. The
-field-arithmetic leaf gadgets (`fieldOp`, `selectCode`, `invLadder`) are handled by
-the `Exec`-level leaf lemmas of `Clean/Caliper/WitgenSim.lean`; this file contains
-the induction glue and the word-level facts for the remaining instructions.
+The theorems are `compileExpr_sim` (standalone, circuit expressions being a separate
+AST) and the mutual `compileF_sim` / `compileU_sim` / `compileB_sim`, mirroring the
+mutual compilers. The field leaf gadgets are handled by `WitgenSim.lean`; this file
+is the induction glue and the word-level facts for the remaining instructions.
 
-Everything is at the compiler's design point: word size `w = 64`, `F = F p` for a
-prime `p` with `2 < p` and `p * p ≤ 2 ^ 64`. The environment is encoded in buffer `0`
-(`EnvEnc`); its length `N` must satisfy `N ≤ 2 ^ 64` so that the static `memLoad`
-indices baked as 64-bit immediates read back exactly (`Expression.envBound` bounds
-every environment read by `N`, and the immediate wraps mod `2 ^ 64`).
+At the compiler's design point: `w = 64`, `F = F p` for a prime `p` with `2 < p` and
+`p * p ≤ 2 ^ 64`. The environment is encoded in buffer `0` (`EnvEnc`) and its length
+`N` must satisfy `N ≤ 2 ^ 64`, so that static `memLoad` indices baked as 64-bit
+immediates read back exactly.
 -/
 
 namespace Caliper.WitgenCompile
@@ -187,20 +181,15 @@ end FieldWord
 
 /-! ## Register bounds of the scalar compilers
 
-The scalar compilers thread `next` monotonically and return the result register
-below the returned counter: `next ≤ next'` and `resultReg < next'`. Since the
-copy-eliding arms (`localVar`, `idx`, and the wrapper `U64Expr.val`) return a
-local register (`< Γ.length`) or the idx register `L` directly instead of a fresh
-temporary, the result bound is no longer purely syntactic: it needs the expression
-to be *compilable* against `Γ` (so `localVar` indices are `< Γ.length`), the
-step-sort context bounded by the local-register count (`Γ.length ≤ L`), and
-temporaries above the idx register (`L < next`) — exactly the facts `LocalsMatch`
-and `StateEnc` provide in the simulation proofs. These bounds justify the
+The scalar compilers thread `next` monotonically and return `next ≤ next'` with
+`resultReg < next'`. Because the copy-eliding arms return a local register or the idx
+register directly rather than a fresh temporary, the result bound is not purely
+syntactic: it needs the expression compilable against `Γ`, `Γ.length ≤ L`, and
+`L < next` — the facts `LocalsMatch` and `StateEnc` provide. These bounds justify the
 operand-survival steps of the simulation proofs.
 
-All register inequalities here (and in the simulation theorems below) are stated
-over bare `ℕ`, not the `Reg` abbrev: `omega` does not unfold `Reg`, so a hypothesis
-whose relation is elaborated at type `Reg` is invisible to it. -/
+Register inequalities here and below are stated over bare `ℕ`, not the `Reg` abbrev:
+`omega` does not unfold `Reg`, so a hypothesis at type `Reg` is invisible to it. -/
 
 /-- `compileExpr` register bounds: `next ≤ next'` and `resultReg < next'`. -/
 theorem compileExpr_bounds {F : Type} [FiniteField F] :
@@ -518,14 +507,11 @@ private theorem shift_glue {C : CostModel} {op : BinOp} {c₁ c₂ : Stmt 64}
   · rw [caps_setReg, caps_setReg, caps_setReg, hc₂, hc₁]
 
 omit [Fact p.Prime] in
-/-- Whole-case glue for the two-operand `bin` nodes of the mutual simulation
-theorems below. Takes the child compilations through their component equations
-(`hE₁`/`hE₂`, produced by `rcases`), register bounds (in `compile*_bounds` shape),
-the first child's simulation result, the second child's simulation statement (as a
-function of the intermediate state — `StateEnc` is threaded through the first child
-by `StateEnc_mono` internally), and the word-level fact `hword` about the operation
-on the encoded values. Each `bin` case of `compileF_sim`/`compileU_sim`/
-`compileB_sim` is one application of this lemma plus its `encU_*`/`encB_*` fact. -/
+/-- Glue for the two-operand `bin` nodes of the mutual simulation theorems. Takes the
+child compilations through their component equations, register bounds, the first
+child's simulation result, the second child's simulation statement as a function of
+the intermediate state, and the word-level fact `hword`. Each `bin` case is one
+application of this lemma plus its `encU_*`/`encB_*` fact. -/
 private theorem binop_sim {C : CostModel} {op : BinOp} {Γ : List VSort}
     {locals : Array (F p ⊕ UInt64)} {idx L next : ℕ} {s : State 64}
     {P₁ P₂ : Stmt 64 × ℕ × ℕ} {cx cy : Stmt 64} {rx ry n₁ n₂ : ℕ} {v₁ v₂ v : Word 64}
@@ -594,7 +580,7 @@ private theorem shiftop_sim {C : CostModel} {op : BinOp} {Γ : List VSort}
 
 include hpw henv hN
 
-/-- **Simulation for circuit expressions**: the code `compileExpr` emits for an
+/-- Simulation for circuit expressions: the code `compileExpr` emits for an
 environment-bounded `Expression` runs from any state whose buffer `0` encodes the
 environment (`EnvEnc`, via `hbuf`), leaves the canonical word of the reference
 evaluation in the result register, and preserves registers `< next`, all buffers and
@@ -682,21 +668,18 @@ include hp2
 
 /-! ### The mutual scalar-compiler induction
 
-`compileF_sim` / `compileU_sim` / `compileB_sim`, by structural induction mirroring
-the mutual compilers. The context is fixed throughout: step-sort context `Γ` matching
-the reference locals (`LocalsMatch`), reference environment `env` encoded in buffer
-`0`, locals in registers `0 .. locals.size - 1`, the `mapRange` index `idx` in
-register `L`, and temporaries free from `next` (`StateEnc`).
+The context is fixed throughout: step-sort context `Γ` matching the reference locals,
+environment `env` encoded in buffer `0`, locals in registers `0 .. locals.size - 1`,
+the `mapRange` index in register `L`, temporaries free from `next`.
 
 The `unusedSectionVars` linter is disabled for the block: `compileU_sim` uses the
-included section hypotheses only through the mutual recursion (which the linter does
-not count as a use), and `omit` cannot be applied to a single member of a `mutual`
-command. -/
+included hypotheses only through the mutual recursion, which the linter does not
+count, and `omit` cannot be applied to one member of a `mutual`. -/
 
 set_option linter.unusedSectionVars false in
 mutual
 
-/-- **Simulation for field-sorted expressions**: the code `compileF` emits for a
+/-- Simulation for field-sorted expressions: the code `compileF` emits for a
 compilable, environment-bounded `FExpr` runs from any state encoding the context,
 leaves the canonical word of the reference evaluation in the result register, and
 preserves registers `< next`, all buffers and all capacities. -/
@@ -877,7 +860,7 @@ theorem compileF_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
   | .dataGet .., _, _, hc, _, _ => by simp [FExpr.compilable] at hc
   | .hintGet .., _, _, hc, _, _ => by simp [FExpr.compilable] at hc
 
-/-- **Simulation for u64-sorted expressions**: as `compileF_sim`, with the result
+/-- Simulation for u64-sorted expressions: as `compileF_sim`, with the result
 register holding the bit pattern of the reference `UInt64` evaluation. -/
 theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L : ℕ)
     (hL : LocalsMatch Γ locals) :
@@ -1075,7 +1058,7 @@ theorem compileU_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L 
     refine ⟨_, _, _, _, hex', ?_, hp', hbf', hcp'⟩
     rw [hr', apply_ite encU]
 
-/-- **Simulation for conditions**: as `compileF_sim`, with the result register
+/-- Simulation for conditions: as `compileF_sim`, with the result register
 holding the `{0, 1}` word of the reference `Bool` evaluation. -/
 theorem compileB_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (idx L : ℕ)
     (hL : LocalsMatch Γ locals) :

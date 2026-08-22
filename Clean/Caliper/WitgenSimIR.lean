@@ -4,8 +4,8 @@ import Clean.Caliper.WitgenCost
 /-!
 # End-to-end simulation for the witgen compiler
 
-Phase 3c of the witgen compiler correctness proof: the **program-level simulation**,
-built on the scalar-expression simulation of `Clean/Caliper/WitgenSimExpr.lean`.
+Phase 3c: the program-level simulation, built on the scalar-expression simulation of
+`WitgenSimExpr.lean`.
 
 * `compileStep_sim` — executing one compiled `let`-step extends the state encoding:
   the step's value lands in its local register, and `LocalsMatch`/`StateEnc` extend
@@ -20,25 +20,18 @@ built on the scalar-expression simulation of `Clean/Caliper/WitgenSimExpr.lean`.
   the compiled code *has an execution* that ends with buffer `1` holding exactly the
   encoded `WitgenIR.eval` output. Since out-of-range buffer accesses have no `Exec`
   derivation, this existence theorem doubles as a memory-safety proof.
-* `compile_sim` — **the headline**: the same statement about the checked entry point
-  `compile`, with fewer hypotheses — `compile N ir = some code` already carries
-  compilability, the environment bound, `N ≤ 2 ^ 64`, `m < 2 ^ 64`, *and* the
-  field-size side conditions `2 < p` / `p * p ≤ 2 ^ 64` (via
-  `compile_size_checks`), so only primality (`[Fact p.Prime]`) and the
-  environment encoding remain.
+* `compile_sim` — the same statement about `compile`, with fewer hypotheses:
+  `compile N ir = some code` already carries compilability, the environment bound,
+  `N ≤ 2 ^ 64`, `m < 2 ^ 64` and the field-size conditions, so only primality and
+  the environment encoding remain.
 
-Combined with phase 2 (`WitgenCost.lean`: exact static running time, space ≤ output
-length), this yields end-to-end corollaries like `isZero_witgen_correct_139` and its
-circuit-anchored form `isZero_witgen_correct_139_circuit`: the compiled witness
-program of the BabyBear `Gadgets.IsZeroField.circuit` — extracted from the circuit
-itself, see `isZeroCircuitIR_eq_testIsZero` in `WitgenCompile.lean` — computes the
-correct encoded witness output in exactly 139 unit steps with peak buffer memory
-1 word (6 words total, once the register peak is added).
+Combined with phase 2 this yields `isZero_witgen_correct_139` and its
+circuit-anchored form: the compiled witness program of `Gadgets.IsZeroField.circuit`
+computes the correct encoded output in exactly 139 unit steps, with peak buffer
+memory 1 word and 6 words total.
 
-Everything is at the compiler's design point: word size `w = 64`, `F = F p` for a
-prime `p` with `2 < p` and `p * p ≤ 2 ^ 64` (facts the internal lemmas take as
-hypotheses and the checked-entry theorems derive from `compile … = some code`),
-environment length `N ≤ 2 ^ 64`, and output length `m < 2 ^ 64`.
+At the compiler's design point: `w = 64`, `F = F p` for a prime `p` with `2 < p` and
+`p * p ≤ 2 ^ 64`, `N ≤ 2 ^ 64`, `m < 2 ^ 64`.
 -/
 
 namespace Caliper.WitgenCompile
@@ -148,7 +141,7 @@ variable (henv : EnvEnc env N envArr) (hN : N ≤ 2 ^ 64)
 
 include hp2 hpw henv hN
 
-/-- **Simulation for one `let`-step**: the code `compileStep` emits for step number
+/-- Simulation for one `let`-step: the code `compileStep` emits for step number
 `locals.size` runs from any state encoding the context (with temporaries free from
 `L + 1`), and the resulting state encodes the context extended by the step's
 reference value — the new local in its register, `LocalsMatch` and `StateEnc`
@@ -218,7 +211,7 @@ theorem compileStep_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L :
     · rw [bufs_setReg, hbf₁]
     · rw [caps_setReg, hcp₁]
 
-/-- **Simulation for the `let`-step list**: the compiled steps run left to right,
+/-- Simulation for the `let`-step list: the compiled steps run left to right,
 extending the encoded context step by step, and the final state encodes the fully
 evaluated locals (`evalSteps`). Buffers and capacities are untouched. -/
 theorem compileSteps_sim :
@@ -515,7 +508,7 @@ private theorem compileV_bitsOf_fold (Γ : List VSort) (locals : Array (F p ⊕ 
       rw [hbo' b hb1, bufs_setBuf_ne _ _ hb1, hb4]
     · rw [hcp', caps_setBuf, hc4]
 
-/-- **Simulation for vector outputs**: the code `compileV` emits for a compilable,
+/-- Simulation for vector outputs: the code `compileV` emits for a compilable,
 environment-bounded `VExpr` runs from any state encoding the context (idx `0`,
 temporaries from `L + 1`) with enough reserved output capacity, and appends exactly
 the encoded reference output (`VExpr.eval`, elementwise `encF`) to buffer `1`. The
@@ -617,17 +610,12 @@ theorem compileV_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L : �
       rw [hbo₂ bb hb1, hbo₁ bb hb1]
     · rw [hcp₂, hcp₁]
 
-/-- **End-to-end simulation and memory safety for compiled witness programs.**
-
-For every compilable, environment-bounded witness program, from *any* start state
+/-- For every compilable, environment-bounded witness program, from any start state
 whose buffer `0` encodes the reference environment, the compiled code has an
-execution that terminates with the output buffer `1` holding exactly the encoded
-reference output `WitgenIR.eval` (elementwise canonical words `encF`).
+execution terminating with buffer `1` holding the encoded `WitgenIR.eval` output.
 
-Since out-of-range buffer accesses have no `Exec` derivation, exhibiting this
-execution also proves the compiled code memory-safe. Together with phase 2, the
-execution's time is exactly the syntactic constant `code.staticTime C`
-(`compileIR_time_eq`) and its memory peak is at most `m` (`compileIR_space_le`). -/
+Out-of-range buffer accesses have no `Exec` derivation, so exhibiting the execution
+also proves memory safety. -/
 theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m}
     {code : Stmt 64}
     (hcode : compileIR (w := 64) steps.length (WitgenIR.ir steps out) = some code)
@@ -668,23 +656,16 @@ theorem compileIR_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m
   rw [Array.empty_append]
 
 omit hp2 hpw hN in
-/-- **The checked-entry end-to-end theorem.** For every witness program the checked
-entry point accepts — `compile N ir = some code`, which already carries
-compilability, the environment bound, `N ≤ 2 ^ 64`, `m < 2 ^ 64` *and* the
-field-size side conditions `2 < p`, `p * p ≤ 2 ^ 64` (`compile_size_checks`) —
-from *any* start state whose buffer `0` encodes the reference environment, the
-compiled code has an execution that terminates with the output buffer `1` holding
-exactly the encoded IR reference output `WitgenIR.irEval` (elementwise canonical
-words `encF`). On `.ir` programs `irEval` is `eval` definitionally, so this is the
-familiar statement; on `.certified` programs the packed equivalence proof
-transports it to the native closure itself — stated explicitly as
-`compile_sim_certified` below.
+/-- The checked-entry end-to-end theorem. For every witness program `compile`
+accepts, from any start state whose buffer `0` encodes the reference environment, the
+compiled code has an execution terminating with buffer `1` holding the encoded IR
+reference output `WitgenIR.irEval`. On `.ir` programs `irEval` is `eval`
+definitionally; on `.certified` programs the packed equivalence transports it to the
+native closure, stated as `compile_sim_certified` below.
 
-Exhibiting the execution also proves memory safety; by phase 2 its time is exactly
-`code.staticTime C` (`compile_time_eq`) and its memory peak at most `m`
-(`compile_space_le`). The only remaining field hypothesis is primality
-(`[Fact p.Prime]`) — the one side condition that cannot be checked at generation
-time; callers no longer supply `2 < p` or `p * p ≤ 2 ^ 64`. -/
+`compile N ir = some code` carries compilability, the environment bound, the size
+conditions and the field-size conditions, so primality is the only field hypothesis
+left. -/
 theorem compile_sim {m : ℕ} {ir : WitgenIR (F p) m} {code : Stmt 64}
     (hcode : compile N ir = some code) {s : State 64} (hbuf : s.bufs 0 = envArr) :
     ∃ s' t d pp, Exec C code s s' t d pp ∧
@@ -696,13 +677,10 @@ theorem compile_sim {m : ℕ} {ir : WitgenIR (F p) m} {code : Stmt 64}
   exact compileIR_sim p hp2 hpw env N envArr henv hN' hIR hcomp hbound hm hbuf
 
 omit hp2 hpw hN in
-/-- **The certified-native corollary: the machine provably computes the native
-closure's output.** For a certified witness program — a native closure `f` bundled
-with an IR reimplementation and an equivalence proof — every `compile`-accepted code
-has an execution ending with the output buffer holding exactly the encoded output
-**of `f` itself**: `compile_sim` gives the IR reference output, and the packed
-equivalence rewrites it to `f env`. This is the guarantee a bare `.native f` can
-never have; the certified form buys it at the price of one equivalence proof. -/
+/-- For a certified witness program, the compiled code's execution ends with the
+output buffer holding the encoded output of the closure `f` itself: `compile_sim`
+gives the IR reference output and the packed equivalence rewrites it to `f env`. A
+bare `.native f` can carry no such guarantee. -/
 theorem compile_sim_certified {m : ℕ} {f : ProverEnvironment (F p) → Vector (F p) m}
     {steps : List (Step (F p))} {out : VExpr (F p) m}
     {h : ∀ e, f e = (WitgenIR.ir steps out).eval e} {code : Stmt 64}
@@ -716,14 +694,13 @@ theorem compile_sim_certified {m : ℕ} {f : ProverEnvironment (F p) → Vector 
 
 /-! ### The total-memory statement
 
-`compile_space_le` bounds the buffer side and `Stmt.regPeak₀` the register side;
-Caliper packages the sum as `SpaceBound`, which is the figure a space claim should
-quote. The simulation theorem is what makes the packaging available at all: a
-`SpaceTriple` is a *total*-correctness judgment, so it needs the execution
-`compile_sim` exhibits, not just a bound on one that might exist. -/
+`compile_space_le` bounds the buffer side and `Stmt.regPeak₀` the register side,
+summed by `Caliper.SpaceBound`. The packaging needs the simulation theorem: a
+`SpaceTriple` is a total-correctness judgment, so it needs the execution
+`compile_sim` exhibits. -/
 
 omit hp2 hpw hN in
-/-- **Total memory for a compiled witness program**: from any start state whose
+/-- Total memory for a compiled witness program: from any start state whose
 buffer `0` encodes the environment, the code terminates with the correct encoded
 output and a total footprint of at most `m + code.regPeak₀` words — `m` output words
 of buffer capacity plus the statically inferred peak register pressure. Registers are
@@ -742,7 +719,7 @@ theorem compile_spaceBound {m : ℕ} {ir : WitgenIR (F p) m} {code : Stmt 64}
 
 end Sim
 
-/-! ## The headline corollary: BabyBear `IsZeroField`, end to end -/
+/-! ## BabyBear `IsZeroField`, end to end -/
 
 /-- The checked entry point accepts `testIsZero` at *any* usable environment size,
 not just the `N = 1` of `compile_testIsZero`: the program reads only cell 0, so the
@@ -756,24 +733,14 @@ theorem compile_testIsZero_of_pos {N : ℕ} (hN0 : 0 < N) (hN : N ≤ 2 ^ 64) :
   exact (compile_eq_compileIR_of_checks (by native_decide) hbound hN
     (by norm_num) (by native_decide) (by native_decide)).trans compileIR_testIsZero
 
-/-- **The end-to-end headline for the BabyBear `IsZeroField` witness program**:
-from every start state whose buffer `0` encodes the environment, the compiled
-program `isZeroCompiled` has an execution that
+/-- End to end for the BabyBear `IsZeroField` witness program: from every start state
+whose buffer `0` encodes the environment, `isZeroCompiled` has an execution
+terminating with buffer `1` holding `testIsZero.eval env` encoded, in exactly 139
+unit steps, with peak buffer memory 1 word (`isZero_witgen_spaceBound` quotes the
+6-word total).
 
-* terminates with buffer `1` holding the **correct encoded witness output**
-  (`testIsZero.eval env`, elementwise canonical words),
-* in **exactly 139 unit-cost steps** (in particular far below `2 ^ 40`), and
-* with **peak live buffer memory at most 1 word** (`isZero_witgen_spaceBound`
-  quotes the total, 6 words, register peak included).
-
-Exhibiting the execution also proves memory safety (out-of-range accesses have no
-`Exec` derivation). Determinism (`Exec.deterministic`) makes these the costs and the
-output of *every* execution of `isZeroCompiled` from such a state.
-
-Everything goes through the checked entry point: `isZeroCompiled` is defined via
-`compile`, whose checks (`compile_testIsZero` at `N = 1`, generalized to any
-`0 < N ≤ 2 ^ 64` here) feed `compile_sim`, `compile_time_eq` and
-`compile_space_le`. -/
+Determinism makes these the costs and output of every execution from such a
+state. -/
 theorem isZero_witgen_correct_139 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
@@ -791,7 +758,7 @@ theorem isZero_witgen_correct_139 {env : ProverEnvironment (F pBabybear)}
     simpa using this
   exact ⟨s', d, pp, ht ▸ hex, hout, hpp⟩
 
-/-- The `< 2 ^ 40` phrasing of the headline: an execution computing the correct
+/-- The `< 2 ^ 40` phrasing: an execution computing the correct
 encoded witness output exists, and its time is below `2 ^ 40` (it is exactly 139). -/
 theorem isZero_witgen_correct_lt_2_40 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
@@ -804,24 +771,16 @@ theorem isZero_witgen_correct_lt_2_40 {env : ProverEnvironment (F pBabybear)}
     isZero_witgen_correct_139 henv hN0 hN hbuf
   exact ⟨s', 139, d, pp, hex, hout, by omega, by omega⟩
 
-/-- **The circuit-anchored headline**: the same statement with the witness program
-*derived from the Clean circuit* rather than named as a test fixture. The full
-derivation chain, every link machine-checked:
+/-- The same statement with the witness program derived from the Clean circuit rather
+than named as a test fixture. The chain:
 
-1. **circuit → IR**: Clean circuits embed their witness generators structurally;
-   `isZeroCircuitIR` (`WitgenCompile.lean`) is the payload of the first witness
-   operation of `Gadgets.IsZeroField.circuit` at input `var ⟨0⟩`, extracted by
-   `FlatOperation.witnessOperations`, and `isZeroCircuitIR = testIsZero` holds
+1. circuit → IR: `isZeroCircuitIR` is the payload of the first witness operation of
+   `Gadgets.IsZeroField.circuit` at input `var ⟨0⟩`, and equals `testIsZero`
    definitionally (`isZeroCircuitIR_eq_testIsZero`);
-2. **IR → code**: the checked entry point accepts it and emits `isZeroCompiled`
-   (`compile_testIsZero`, generalized over `N` inside `isZero_witgen_correct_139`);
-3. **code → 139 steps, correct output**: every execution takes exactly 139 unit
-   steps and ends with buffer `1` holding the encoded `WitgenIR.eval` output, with
-   peak buffer memory ≤ 1 word (`compile_sim` + `compile_time_eq` +
-   `compile_space_le`).
+2. IR → code: `compile` accepts it and emits `isZeroCompiled`;
+3. code → 139 steps and the correct output, by `isZero_witgen_correct_139`.
 
-The circuit's only other witness generator is the trivial `<==` copy for its output
-`b` (`isZeroCircuit_witnessIRs` lists both, and that they are all of them). -/
+The circuit's only other witness generator is the `<==` copy for its output `b`. -/
 theorem isZero_witgen_correct_139_circuit {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
@@ -832,19 +791,17 @@ theorem isZero_witgen_correct_139_circuit {env : ProverEnvironment (F pBabybear)
   rw [isZeroCircuitIR_eq_testIsZero]
   exact isZero_witgen_correct_139 henv hN0 hN hbuf
 
-/-! ## The certified-native headline, instantiated
+/-! ## The certified-native corollary, instantiated
 
-`isZeroCertified` (`WitgenCompile.lean`) is the `IsZeroField` witness written as an
-ordinary Lean closure (`isZeroNative`), certified against the `testIsZero` IR
-program. The corollary below is `compile_sim_certified` + phase 2 at that instance:
-the machine provably computes **the native closure's own output** — in exactly 139
-unit steps, with peak memory ≤ 1 word. -/
+`isZeroCertified` is the `IsZeroField` witness written as an ordinary Lean closure,
+certified against the `testIsZero` IR program. Below is `compile_sim_certified` plus
+phase 2 at that instance. -/
 
-/-- **The certified-native headline**: from every start state whose buffer `0`
+/-- From every start state whose buffer `0`
 encodes the environment, the code compiled from `isZeroCertified` (which is
 `isZeroCompiled`, `compile_isZeroCertified`) has an execution that terminates with
-buffer `1` holding the encoded output of the **native closure** `isZeroNative`, in
-**exactly 139 unit steps**, with **peak live buffer memory at most 1 word**. -/
+buffer `1` holding the encoded output of the native closure `isZeroNative`, in
+exactly 139 unit steps, with peak live buffer memory at most 1 word. -/
 theorem isZeroCertified_witgen_correct_139 {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)} {s : State 64}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64)
@@ -856,16 +813,15 @@ theorem isZeroCertified_witgen_correct_139 {env : ProverEnvironment (F pBabybear
   refine ⟨s', d, pp, hex, ?_, hpp⟩
   rw [hout, ← isZeroNative_eq_testIsZero]
 
-/-! ## The total-memory headline
+/-! ## Total memory
 
-The corollaries above quote a *buffer* peak of 1 word. The other summand is the
-compiled code's inferred register peak, 5 (`isZeroCompiled_regPeak₀`), so the honest
-total is 6 words — the number below, packaged as Caliper's `SpaceBound`. -/
+The corollaries above quote a buffer peak of 1 word. The other summand is the
+inferred register peak, 5 (`isZeroCompiled_regPeak₀`), so the total is 6 words. -/
 
-/-- **The `IsZeroField` witness program in 6 words of memory, total**: from every
+/-- The `IsZeroField` witness program in 6 words of memory, total: from every
 start state whose buffer `0` encodes the environment, `isZeroCompiled` terminates
 with buffer `1` holding the correct encoded witness output, having held at most
-**6 words** at any point — 1 word of output buffer plus 5 live registers. -/
+6 words at any point — 1 word of output buffer plus 5 live registers. -/
 theorem isZero_witgen_spaceBound {env : ProverEnvironment (F pBabybear)}
     {N : ℕ} {envArr : Array (Word 64)}
     (henv : EnvEnc env N envArr) (hN0 : 0 < N) (hN : N ≤ 2 ^ 64) :

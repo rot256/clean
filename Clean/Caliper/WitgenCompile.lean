@@ -6,83 +6,63 @@ import Clean.Utils.Primes
 /-!
 # Compiling the witness-generation IR to the unit-cost machine
 
-This is the (unverified, for now) lowering from Clean's witness-generation IR
-(`Clean/Circuit/WitnessIR.lean`) to the unit-cost machine of the
-[Caliper](https://github.com/zksecurity/caliper) library (`Caliper/Core.lean`).
-The compiler is generic over `{F : Type} [FiniteField F]` and the word width `w`: the
-modulus `p := FiniteField.size F` and every field constant are *generation-time* Lean
-values, baked into the emitted code as immediates — exactly the `Fp` discipline of
-`Clean/Caliper/Field.lean`. The design targets single-word fields (`p * p ≤ 2 ^ w`),
-so field reduction is the machine's native `umod` after each `add`/`mul`.
+The lowering from Clean's witness-generation IR (`Clean/Circuit/WitnessIR.lean`) to
+the machine of the [Caliper](https://github.com/zksecurity/caliper) library. Generic
+over `{F : Type} [FiniteField F]` and the word width `w`: the modulus
+`p := FiniteField.size F` and every field constant are generation-time Lean values,
+baked into the emitted code as immediates. The design targets single-word fields
+(`p * p ≤ 2 ^ w`), so field reduction is the machine's `umod` after each `add`/`mul`.
 
 ## Register and buffer layout
 
 Given `L` = the number of `let`-steps of the program:
 
 * registers `0 .. L-1` hold the values of steps `0 .. L-1` (the IR's `localVar`s),
-* register `L` is the `mapRange` index register (`U64Expr.idx` reads it; it is `0`
-  outside any `mapRange`),
+* register `L` is the `mapRange` index register (`U64Expr.idx` reads it; `0` outside
+  any `mapRange`),
 * temporaries are allocated from `L+1` upward by explicit `next`-register threading,
-* buffer `0` is the environment (input, pre-existing: cell `j` holds the canonical
-  word of `env.get j`), buffer `1` is the output, allocated by the compiled program.
+* buffer `0` is the environment (cell `j` holds the canonical word of `env.get j`),
+  buffer `1` the output, allocated by the compiled program.
 
-Values are represented as follows: field elements as their canonical word
-`BitVec.ofNat w (FiniteField.val x)`, u64 values as the `UInt64` bit pattern
-(truncation-free for `w ≥ 64`; the design value is `w = 64`), conditions as `{0, 1}`
-words.
+Field elements are represented by their canonical word `BitVec.ofNat w
+(FiniteField.val x)`, u64 values by the `UInt64` bit pattern, conditions as `{0, 1}`.
 
 ## Everything is straight-line
 
-The emitted code contains no `ifNZ` and no `whileNZ`, anywhere:
+The emitted code contains no `ifNZ` and no `whileNZ`:
 
-* `ite` compiles *strictly* — condition, both branches, then a branch-free mask
-  select (`mask ← -flag`; `r ← t &&& mask ||| e &&& ~~~mask`). This is sound because
-  every IR operation is total.
-* `VExpr.mapRange`, `VExpr.envRange` and `VExpr.bitsOf` are *unrolled*: their length
-  is a static type index, so the compiler emits one copy of the body/read per
-  element, setting the idx register `L` before each `mapRange` body instance and
-  resetting it to `0` afterwards.
-* `FExpr.inv` is Fermat's little theorem, `x ^ (p - 2)`, as a square-and-multiply
-  ladder over the bits of `p - 2` — computed by Lean at generation time (`toBits`),
-  so the ladder too is straight-line.
+* `ite` compiles strictly — condition, both branches, then a branch-free mask select.
+  Sound because every IR operation is total.
+* `VExpr.mapRange`, `VExpr.envRange` and `VExpr.bitsOf` are unrolled: their length is
+  a static type index, so the compiler emits one copy of the body per element.
+* `FExpr.inv` is `x ^ (p - 2)` as a square-and-multiply ladder over the bits of
+  `p - 2`, computed by Lean at generation time (`toBits`).
 
-Consequently every compiled program is constant-time (`Exec.straight_time_eq`) and,
-apart from the single output-buffer `memAllocI` (whose capacity is the *static*
-output length `m`, so it is statically priced and keeps the code straight-line),
-allocation-free.
+So every compiled program is constant-time (`Exec.straight_time_eq`) and, apart from
+the output-buffer `memAllocI` at the static length `m`, allocation-free.
 
 ## Compilability
 
-Not all of the IR is compilable: `FExpr.listGet`, `FExpr.dataGet`, `FExpr.hintGet`
-(computed-index reads into expression lists / prover data, which have no
-finite-buffer representation here yet) and `WitgenIR.native` (an arbitrary Lean
-closure) are excluded. The compiler stays *total* on the syntax — excluded scalar
-constructors compile to a dead `.imm r 0` — and a decidable `compilable` check
-(against a context `Γ : List VSort` of step sorts, which also enforces that
-`localVar` references are well-sorted) rules them out for the correctness theorem of
-phase 3. `WitgenIR.native` makes `compileIR` return `none`; `WitgenIR.certified`
-compiles as its carried IR reimplementation (the packed equivalence proof transports
-the guarantees to the native closure — see "Certified native witnesses" in the test
-section and `doc/caliper-witgen.md`).
+`FExpr.listGet`, `FExpr.dataGet`, `FExpr.hintGet` (computed-index reads with no
+finite-buffer representation here yet) and `WitgenIR.native` are excluded. The
+compiler stays total on the syntax — excluded scalar constructors compile to a dead
+`.imm r 0` — and the decidable `compilable` check, against a context `Γ : List VSort`
+of step sorts that also enforces well-sorted `localVar` references, rules them out
+for phase 3. `WitgenIR.native` makes `compileIR` return `none`; `WitgenIR.certified`
+compiles as its carried IR reimplementation.
 
 ## The trust boundary
 
-The raw compiler `compileIR` is *internal and unchecked*: it never consults
-`compilable`, trusts its caller to pass `L = steps.length`, and truncates every
-index to a 64-bit immediate. The public entry point is
-`compile`, which returns `some` only after all generation-time checks pass
-(structured program, `compilable`, `envBound N`, `N ≤ 2 ^ 64`, `m < 2 ^ 64`,
-and the field-size side conditions `2 < p` and `p * p ≤ 2 ^ 64` — the modulus
-`p = FiniteField.size F` is a generation-time value, so these are decidable here)
-and computes `L` itself. The user-facing cost and correctness theorems
-(`compile_time_eq`, `compile_space_le` in `WitgenCost.lean`; `compile_sim` in
-`WitgenSimIR.lean`) are stated about `compile`; of the field side conditions only
-**primality** (`[Fact p.Prime]`) remains a hypothesis of those theorems — it is
-not generation-time decidable at cryptographic sizes. A field that fails the
-single-word design point is rejected outright: a ~40-bit modulus, Goldilocks, or
-the BN254 scalar field all compile to `none` (see the field-size rejection
-tests), so `compile` can no longer emit code whose `umod` reduction would
-silently overflow.
+`compileIR` is internal and unchecked: it never consults `compilable`, trusts its
+caller to pass `L = steps.length`, and truncates every index to a 64-bit immediate.
+The public entry point is `compile`, which returns `some` only after every
+generation-time check passes (structured program, `compilable`, `envBound N`,
+`N ≤ 2 ^ 64`, `m < 2 ^ 64`, `2 < p`, `p * p ≤ 2 ^ 64`) and computes `L` itself. The
+user-facing theorems are stated about `compile`; of the field conditions only
+primality (`[Fact p.Prime]`) remains a hypothesis, not being decidable at
+cryptographic sizes. A ~40-bit modulus, Goldilocks and the BN254 scalar field all
+compile to `none`, so `compile` cannot emit code whose `umod` would silently
+overflow.
 -/
 
 namespace Caliper.WitgenCompile
@@ -175,11 +155,9 @@ def WitgenIR.compilable : {m : ℕ} → WitgenIR F m → Bool
 
 /-! ## Environment-bound checks
 
-Syntactic, `Bool`-valued checks that every environment read (`Expression.var`,
-`VExpr.envRange`) stays below `N`, mirroring the structure of `compilable`. The
-constructors excluded by `compilable` (`listGet`/`dataGet`/`hintGet`, `native`)
-return `false`. Kept separate from `compilable` (which stays purely structural);
-the checked entry point `compile` conjoins the two. -/
+`Bool`-valued checks that every environment read stays below `N`, mirroring the
+structure of `compilable`. Constructors excluded by `compilable` return `false`.
+Kept separate so `compilable` stays purely structural; `compile` conjoins the two. -/
 
 /-- Environment-boundedness of a circuit expression: every `var` index is `< N`. -/
 def Expression.envBound (N : ℕ) : Expression F → Bool
@@ -259,24 +237,21 @@ decreasing_by omega
 /-! ## Scalar compilation
 
 All scalar compilers thread an explicit `next` free-register counter and return
-`(code, resultReg, next')` with `next ≤ next'` and the emitted code writing only
-registers in `[next, next')`. Operation nodes allocate their result register fresh
-(so `resultReg < next'` with `next ≤ resultReg`); pure register references —
-`localVar`, `idx`, and the representation-identical wrapper `U64Expr.val` — emit
-**no code at all** and return the source register directly (`resultReg < next'`
-still holds for compilable expressions, since locals live below `L < next`). This
-copy elision is sound because expression code only ever writes registers `≥ next`:
-locals `0 .. L-1` and the idx register `L` are stable while any enclosing
-expression is still being evaluated (only `compileStep`'s binding `.mov` writes
-locals, and only `mapRange`'s per-iteration `.imm L i` writes the idx register —
-each iteration's uses of the index complete before the next one is loaded). -/
+`(code, resultReg, next')` with `next ≤ next'`, the emitted code writing only
+registers in `[next, next')`. Operation nodes allocate their result register fresh;
+pure register references (`localVar`, `idx`, and the representation-identical
+`U64Expr.val`) emit no code and return the source register directly.
+
+That copy elision is sound because expression code only ever writes registers
+`≥ next`, so locals `0 .. L-1` and the idx register `L` are stable while an
+enclosing expression is still being evaluated: only `compileStep`'s binding `.mov`
+writes locals, and only `mapRange`'s per-iteration `.imm L i` writes the idx
+register, each iteration's uses completing before the next is loaded. -/
 
 /-- `d ← (a ⟨op⟩ b) % p` with `d := next + 1` and the modulus immediate in
-`t := next`: the single-word field reduction pattern of `Fp.addCode`/`Fp.mulCode`
-(`Field.lean`) — at `.add`/`.mul` the emitted instructions are identical to those
-gadgets at `d := next + 1`, `t := next`. Kept as its own generic-`op` definition
-(rather than delegating via a match on `op`) so that it stays `rfl`-transparent at a
-*variable* `op`, which `fieldOp_straightAF` and the `WitgenCost` proofs rely on. -/
+`t := next`, the reduction pattern of `Fp.addCode`/`Fp.mulCode`. Kept as its own
+generic-`op` definition rather than matching on `op`, so it stays `rfl`-transparent
+at a variable `op` — which `fieldOp_straightAF` and the `WitgenCost` proofs need. -/
 def fieldOp (p : ℕ) (op : BinOp) (a b : Reg) (next : Reg) : Stmt w × Reg × Reg :=
   (.imm next (BitVec.ofNat w p) ;;
      .bin op (next + 1) a b ;;
@@ -293,16 +268,13 @@ def selectCode (flag t e : Reg) (next : Reg) : Stmt w × Reg × Reg :=
      .bin .or (next + 4) (next + 2) (next + 3),
    next + 4, next + 5)
 
-/-- Straight-line Fermat ladder: `acc ← acc ^ (p - 2) * ...` — precisely, MSB-first
-square-and-multiply over the generation-time bits of `p - 2`, with `x` the base
-register, `t` holding the modulus immediate, and `acc` initialized to `1` by the
-caller. Every step reduces mod `p` via `umod`.
+/-- MSB-first square-and-multiply over the generation-time bits of `p - 2`, with `x`
+the base register, `t` holding the modulus immediate, and `acc` initialized to `1`
+by the caller. Every step reduces mod `p` via `umod`.
 
-Duplicates the builder-level ladder `Fp.inv` (`Field.lean`), which iterates
-`(p - 2).bits.reverse` instead of `(toBits (p - 2)).reverse` and has no correctness
-proof (executable checks only). This copy is the one with a verified spec —
-`invLadder_exec_inv` in `WitgenSim.lean` — so the two are kept separate: different
-bit representations and different proof stacks. -/
+Duplicates `Fp.inv` (`Field.lean`), which iterates `(p - 2).bits.reverse` rather than
+`(toBits (p - 2)).reverse`. This is the copy with a verified spec,
+`invLadder_exec_inv` in `WitgenSim.lean`. -/
 def invLadder (p : ℕ) (acc x t : Reg) : Stmt w :=
   (toBits (p - 2)).reverse.foldl (init := .skip) fun c b =>
     let sq := c ;; .bin .mul acc acc acc ;; .bin .umod acc acc t
@@ -511,32 +483,27 @@ def compileV (L : ℕ) : {n : ℕ} → VExpr F n → Stmt w
         .memPush 1 (n₁ + 3)
   | _, .append a b => compileV L a ;; compileV L b
 
-/-- The code emitted for a structured program (`steps`, `out`) — the shared codegen
-body of `compileIR`'s `.ir` and `.certified` arms. It allocates the output buffer
-`1` with the *immediate* capacity `m` (`memAllocI` — the output length is a static
-type index, so the allocation is statically priced at
-`C.memAlloc + m * C.allocPerWord` and the emitted code stays straight-line), zeroes
-the idx register `L`, computes the `let`-steps into registers `0 .. L-1`, then
-pushes the `m` output elements. -/
+/-- The code emitted for a structured program, shared by `compileIR`'s `.ir` and
+`.certified` arms: allocate the output buffer `1` at the immediate capacity `m`
+(statically priced, since the output length is a static type index), zero the idx
+register `L`, compute the `let`-steps into registers `0 .. L-1`, push the `m`
+output elements. -/
 def compileIRCode (L : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m) : Stmt w :=
   .memAllocI 1 m ;;
   .imm L 0 ;;
   compileSteps L steps 0 ;;
   compileV L out
 
-/-- **Internal, unchecked** — use the checked entry point `compile` instead.
+/-- Internal and unchecked; use `compile` instead. Must be called with
+`L := steps.length` — a wrong `L` silently corrupts the local-register layout — and
+performs no compilability, environment-bound or size checks, unsupported scalar
+constructors lowering to a dead `.imm _ 0`. Kept as the object the phase-2/3 proofs
+do induction over.
 
-Compile a whole witness program. Must be called with `L := steps.length` (a wrong
-`L` silently corrupts the local-register layout) and performs *no* compilability,
-environment-bound, or size checks — unsupported scalar constructors lower to a dead
-`.imm _ 0`. `compile` performs all checks and computes `L` itself; this raw compiler
-is kept as the object the phase-2/3 proofs do induction over.
-
-Both structured arms emit the shared `compileIRCode`; for `.certified` the call is
-deliberately pinned to the *ambient* `FiniteField` instance `instF` (not the one
-packed in the constructor), so a certified program compiles to literally the code
-of its IR reimplementation in every context. `native` closures are not
-compilable. -/
+For `.certified` the shared `compileIRCode` call is pinned to the ambient
+`FiniteField` instance rather than the one packed in the constructor, so a certified
+program compiles to exactly the code of its IR reimplementation in every
+context. -/
 def compileIR (L : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt w)
   | .native _ => none
   | .ir steps out
@@ -566,9 +533,9 @@ def compileChecked (N : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m)
   else
     none
 
-/-- **The checked public entry point** of the witgen compiler, at the design point
-`w = 64`. `compile N ir` (with `N` the environment size) returns `some code` iff
-*all* generation-time checks pass:
+/-- The checked public entry point, at the design point `w = 64`. `compile N ir`,
+with `N` the environment size, returns `some code` iff every generation-time check
+passes:
 
 * `ir` carries structured IR — a `.ir` program, or a `.certified` program whose
   checks and code are those of its IR reimplementation (`native` closures →
@@ -583,24 +550,18 @@ def compileChecked (N : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m)
   capacity itself is a `memAllocI` immediate, a bare `ℕ`: the capacity
   *accounting* never wraps, but `memLen` on the output buffer is exact only for
   fill levels `< 2 ^ 64` — which this same `m < 2 ^ 64` check guarantees),
-* `2 < FiniteField.size F` and
-  `FiniteField.size F * FiniteField.size F ≤ 2 ^ 64` — the single-word-reduction
-  design point. The modulus is a generation-time value carried by the
-  `FiniteField` instance, so both are decidable here; without them the emitted
-  `umod`-after-`add`/`mul` reduction overflows for large moduli (e.g. a ~40-bit
-  field) and the code returns wrong answers while the cost theorems still apply,
+* `2 < FiniteField.size F` and `FiniteField.size F ^ 2 ≤ 2 ^ 64` — the
+  single-word-reduction design point, decidable because the modulus is a
+  generation-time value. Without them the emitted `umod`-after-`add`/`mul`
+  overflows for large moduli and returns wrong answers while the cost theorems
+  still apply,
 
-and delegates to the internal `compileIR` with the local-register count computed
-from the program itself (`L := steps.length`) — there is no `L` parameter, so a
-wrong-`L` register corruption is impossible by construction.
+It then delegates to `compileIR` with `L := steps.length` computed from the program
+itself; there is no `L` parameter, so wrong-`L` register corruption is impossible.
 
-Of the field side conditions only **primality** cannot be decided here (not at
-cryptographic sizes); it remains the `[Fact p.Prime]` hypothesis of the
-correctness theorems: `compile`'s output is verified (`compile_sim` for output
-correctness, `compile_time_eq` / `compile_time_data_independent` /
-`compile_space_le` for costs) for `F = F p` with `p` prime — the `2 < p` and
-`p * p ≤ 2 ^ 64` facts those proofs need are certified by the checks themselves
-(`compile_size_checks`). -/
+Only primality cannot be decided here, and remains the `[Fact p.Prime]` hypothesis
+of the correctness theorems. The `2 < p` and `p * p ≤ 2 ^ 64` facts those proofs
+need are certified by the checks themselves (`compile_size_checks`). -/
 def compile (N : ℕ) {m : ℕ} : WitgenIR F m → Option (Stmt 64)
   | .native _ => none
   | .ir steps out
@@ -651,7 +612,7 @@ theorem compile_checks {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     obtain ⟨hc, hb, hN, hm, hp2, hpw, -⟩ := compileChecked_checks (instF := instF) h
     exact ⟨hc, hb, hN, hm, hp2, hpw⟩
 
-/-- **Destructuring the field-size checks**: a successful `compile` certifies the
+/-- Destructuring the field-size checks: a successful `compile` certifies the
 single-word field side conditions. Together with `size_F` this is what lets the
 `F p` correctness theorems (`compile_sim` and its corollaries) *derive* `2 < p`
 and `p * p ≤ 2 ^ 64` from `compile … = some code` instead of asking callers to
@@ -758,10 +719,7 @@ theorem compile_eq_none_of_sq_gt {N m : ℕ}
 /-! ## Differential tests
 
 Concrete runs at `w = 64`, `F = F pBabybear`, comparing the machine's output buffer
-against the reference `WitgenIR.eval` elementwise (machine `toNat` vs
-`FiniteField.val`). The environment is a small array, encoded for the machine as
-buffer `0` of the start state. All tests go through the checked entry point
-`compile` (with `N := testRow.size`), exercising the public path. -/
+against `WitgenIR.eval` elementwise. All tests go through `compile`. -/
 
 section Tests
 
@@ -807,12 +765,8 @@ private def timeCost {m : ℕ} (prog : WitgenIR Fb m) : Option ℕ := do
   return t
 
 /-- Test 1 — the `IsZeroField` witness program: exercises `expr`, `const`, `feq`,
-`ite` (mask select) and `inv` (Fermat ladder). `var ⟨0⟩ = 3`, so the output is
-`3⁻¹ mod pBabybear = 1342177281`.
-
-This is not merely an imitation of the circuit's witness shape: it *is* the witness
-IR embedded in the bundled Clean circuit `Gadgets.IsZeroField.circuit`, extracted
-from the circuit's operations and proved identical in
+`ite` and `inv`. `var ⟨0⟩ = 3`, so the output is `3⁻¹ mod pBabybear = 1342177281`.
+It is the witness IR embedded in `Gadgets.IsZeroField.circuit`, proved identical in
 `isZeroCircuitIR_eq_testIsZero` below. -/
 def testIsZero : WitgenIR Fb 1 :=
   .ir [] (.lit #v[.ite (.feq (.expr (var ⟨0⟩)) (.const 0)) (.const 0)
@@ -880,32 +834,24 @@ def testMapRange : WitgenIR Fb 4 :=
 
 /-! ### `testIsZero` is the circuit's own witness program
 
-Clean circuits embed their witness generators structurally: every `witness` in the
-circuit DSL becomes a `FlatOperation.witness m ir` carrying its `WitgenIR` payload.
-So the witness program of `Gadgets.IsZeroField.circuit` can be *extracted* from the
-circuit — `FlatOperation.witnessOperations` collects the payloads — and compared
-against `testIsZero`.
+Every `witness` in the circuit DSL becomes a `FlatOperation.witness m ir` carrying
+its `WitgenIR` payload, so the witness program of `Gadgets.IsZeroField.circuit` can
+be extracted (`FlatOperation.witnessOperations`) and compared against `testIsZero`.
 
-Instantiation: the circuit's `main` is applied to the input `var ⟨0⟩` (the
-environment's cell 0 — exactly the cell `testIsZero` reads) at offset 1, so its
-first witness (`z`) writes the next cell, 1. The extracted first payload does not
-depend on the offset at all; only the second, the `<==` copy generator for the
-output `b` (which mentions `z` as `var ⟨1⟩`), does.
+The circuit's `main` is applied to the input `var ⟨0⟩` at offset 1, so its first
+witness `z` writes cell 1. The extracted first payload does not depend on the offset;
+only the second does, the `<==` copy generator for the output `b`, which mentions `z`
+as `var ⟨1⟩`.
 
-`isZeroCircuit_witnessIRs` shows the circuit has exactly **two** witness operations
-(local witness length 2, not 1):
+`isZeroCircuit_witnessIRs` shows the circuit has exactly two witness operations:
 
-* the `z ← witness (.ite (x =? 0) 0 x⁻¹)` payload — this is `isZeroCircuitIR`, and
-  it is **definitionally equal** to `testIsZero` (`isZeroCircuitIR_eq_testIsZero`,
-  by `rfl`), so every theorem about `testIsZero` — `compile_testIsZero`,
-  `isZeroCompiled_staticTime_unit`, `isZero_witgen_correct_139` — is literally a
-  theorem about the circuit's own witness program;
-* the trivial copy generator `isZeroCircuitCopyIR` from `let b <== 1 - x * z`,
-  which just evaluates the circuit expression `1 - x * z` over already-known cells.
+* the `z ← witness (.ite (x =? 0) 0 x⁻¹)` payload, which is `isZeroCircuitIR` and
+  definitionally equal to `testIsZero` (`isZeroCircuitIR_eq_testIsZero`, by `rfl`),
+  so every theorem about `testIsZero` is a theorem about the circuit's own witness
+  program;
+* the copy generator `isZeroCircuitCopyIR` from `let b <== 1 - x * z`.
 
-The circuit's two equality assertions (`Gadgets.Equality` subcircuits) carry no
-witnesses, which `isZeroCircuit_witnessIRs` also certifies: the extracted list has
-exactly these two entries. -/
+Its two equality assertions carry no witnesses, which the same theorem certifies. -/
 
 /-- The flat operations of the bundled Clean circuit `Gadgets.IsZeroField.circuit`,
 instantiated at input `var ⟨0⟩` (environment cell 0) and offset 1 (the first
@@ -921,8 +867,8 @@ def isZeroCircuitIR : WitgenIR Fb 1 :=
   | ⟨1, ir⟩ :: _ => ir
   | _ => .ir [] (.lit #v[.const 0])
 
-/-- **The extracted IR is the test IR** — definitionally. This is the anchor that
-turns the `testIsZero` headline theorems into statements about the Clean circuit
+/-- The extracted IR is the test IR, definitionally. This is what anchors
+turns the `testIsZero` theorems into statements about the Clean circuit
 `Gadgets.IsZeroField.circuit`: circuit → extracted IR (this theorem) → `compile`
 (`compile_testIsZero`) → 139 unit steps, correct output
 (`isZero_witgen_correct_139_circuit` in `WitgenSimIR.lean`). -/
@@ -934,7 +880,7 @@ and `z = var ⟨1⟩` the first witness). -/
 def isZeroCircuitCopyIR : WitgenIR Fb 1 :=
   .ofFExpr (.expr (1 - var ⟨0⟩ * var ⟨1⟩))
 
-/-- **The complete witness-generation story of the circuit**: `testIsZero` (= the
+/-- The circuit's complete witness list: `testIsZero` (= the
 extracted `isZeroCircuitIR`) and the trivial copy generator are *all* the witness
 generators of `Gadgets.IsZeroField.circuit` — its equality-assertion subcircuits
 carry none. -/
@@ -950,11 +896,8 @@ theorem isZeroCircuit_witnessIRs :
 
 /-! ### Trust-boundary regression tests
 
-Each generation-time check of the entry point `compile` actually rejects. Note
-there is deliberately no "wrong `L`" test: `compile` takes no `L` parameter — it
-computes `L := steps.length` from the program itself, so the register-corrupting
-mis-`L` call is impossible by construction (only the internal `compileIR` still
-takes `L`, and it is not the public path). -/
+Each generation-time check of `compile` actually rejects. There is no
+"wrong `L`" test: `compile` takes no `L` parameter, so that call is impossible. -/
 
 /-- An unsupported program: `listGet` has no lowering — the raw compiler would emit
 a dead `.imm _ 0` and produce `[0]` where the reference output is `[7]`. -/
@@ -998,13 +941,11 @@ lemma `compile_eq_none_of_output_ge`). -/
 
 /-! #### Field-size rejection tests
 
-The compiled field arithmetic reduces with a single `umod` after each `add`/`mul`,
-which is correct only at the single-word design point `p * p ≤ 2 ^ 64`. Over a
-larger modulus the raw compiler would emit code that type-checks, is fully priced
-by the cost theorems, and **returns wrong answers** (the pre-reduction product
-overflows the 64-bit word). The `decide`-able field-size checks make `compile`
-refuse such fields outright. BabyBear (`p ≈ 2^31`, `p² ≈ 2^62`) passes — the
-positive control is every pinned test above. -/
+The single `umod` after each `add`/`mul` is correct only at `p * p ≤ 2 ^ 64`. Over a
+larger modulus the raw compiler emits code that type-checks, is fully priced, and
+returns wrong answers, the pre-reduction product having overflowed the word. The
+field-size checks make `compile` refuse such fields. BabyBear passes; the positive
+control is every pinned test above. -/
 
 /-- A ~40-bit modulus: the smallest prime above `2 ^ 40`. Its square is ≈ `2 ^ 80`,
 so the single-word reduction would overflow. -/
@@ -1027,7 +968,7 @@ def testIsZero40 : WitgenIR (_root_.F p40) 1 :=
 `mulhi`-based reduction, which this compiler does not emit). -/
 def pGoldilocks : ℕ := 2 ^ 64 - 2 ^ 32 + 1
 
-/-- **Goldilocks is rejected, for every program.** Stated with the primality
+/-- Goldilocks is rejected, for every program. Stated with the primality
 instance as a hypothesis rather than constructed (trial-division `native_decide`
 at 64 bits is impractical, and the rejection does not depend on primality): if
 `F pGoldilocks` is used as a prime field at all, `compile` returns `none` on
@@ -1041,7 +982,7 @@ keep this file's imports light). -/
 def pBN254 : ℕ :=
   21888242871839275222246405745257275088548364400416034343698204186575808495617
 
-/-- **The BN254 scalar field is rejected, for every program** — a 254-bit modulus
+/-- The BN254 scalar field is rejected, for every program — a 254-bit modulus
 is nowhere near the single-word design point. Primality-instance hypothesis for
 the same reason as `compile_goldilocks_none`. -/
 theorem compile_bn254_none [Fact pBN254.Prime] {N m : ℕ}
@@ -1050,21 +991,18 @@ theorem compile_bn254_none [Fact pBN254.Prime] {N m : ℕ}
 
 /-! ### Certified native witnesses, demonstrated
 
-`WitgenIR.certified` bundles a native Lean closure (kept as the prover's fast
-evaluation path — `eval` returns the closure), an IR reimplementation, and a proof
-that the two agree on every environment. A bare closure can carry no cost bound —
-cost is intensional, and Lean functions are extensional — so `compile` rejects
-`.native`; the certified form is the sanctioned way to keep native evaluation *and*
-get certified compilation. The checks and the emitted code are those of the carried
-IR, and the equivalence transports every guarantee — exact cost, output correctness
-against the closure itself, computability, export — to the closure.
+`WitgenIR.certified` bundles a native Lean closure, kept as the prover's evaluation
+fast path, with an IR reimplementation and a proof that the two agree on every
+environment. A bare closure can carry no cost bound — cost is intensional, Lean
+functions are extensional — so `compile` rejects `.native`. The checks and the
+emitted code are those of the carried IR, and the equivalence transports exact cost,
+output correctness against the closure, computability and export to the closure.
 
-The demo closure below is the `IsZeroField` conditional-inverse witness written in
-ordinary Lean; its IR reimplementation is `testIsZero`'s program, so the certified
-program compiles to exactly `isZeroCompiled` (see `compile_isZeroCertified` and the
-pinned 139-step cost in `WitgenCost.lean`, the machine-computes-the-closure
-simulation corollary `isZeroCertified_witgen_correct_139` in `WitgenSimIR.lean`, and
-the `OnlyAccessedBelow` discharge for the bare closure in `WitgenComputable.lean`). -/
+The demo closure is the `IsZeroField` conditional-inverse witness in ordinary Lean,
+reimplemented by `testIsZero`'s program, so it compiles to exactly `isZeroCompiled`
+(`compile_isZeroCertified`; the 139-step cost in `WitgenCost.lean`, the simulation
+corollary `isZeroCertified_witgen_correct_139` in `WitgenSimIR.lean`, and the
+`OnlyAccessedBelow` discharge in `WitgenComputable.lean`). -/
 
 /-- The `IsZeroField` witness as a *native closure*: the conditional inverse of
 environment cell 0, written in ordinary Lean rather than in the IR. -/
@@ -1105,16 +1043,12 @@ end Tests
 
 /-! ### Build performance: pre-realize unfolding equations
 
-The first `simp only [f]` for a recursive `f` proves its `f.eq_def` / `f.eq_*`
-unfolding lemmas on demand, and that work is redone in *every module* that unfolds
-`f` — unless the realizations were already made inside a retained theorem of an
-imported module, in which case they ship in the `.olean`. The no-op `simp` below
-forces all unfolding lemmas of the recursive compiler/check definitions here, in
-one asynchronous proof at the definition site, so the (measured, multi-second)
-re-realization cost disappears from `WitgenSimExpr`, `WitgenSimIR`,
-`WitgenComputable` and other importers. Placed after `Tests` because `#eval`
-commands act as barriers on outstanding asynchronous proofs — putting these
-first would stall the test evals on the realization work. -/
+The first `simp only [f]` for a recursive `f` proves its unfolding lemmas on demand,
+and that work is redone in every module that unfolds `f` unless the realizations were
+already made inside a retained theorem of an imported module, where they ship in the
+`.olean`. The no-op `simp` below forces them here in one asynchronous proof, so the
+multi-second re-realization cost disappears from the importers. Placed after `Tests`
+because `#eval` acts as a barrier on outstanding asynchronous proofs. -/
 set_option linter.unusedSimpArgs false in
 private theorem compileF_eq_lemmas_realized : True := by
   simp -failIfUnchanged only [compileExpr, compileF]

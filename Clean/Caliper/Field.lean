@@ -3,35 +3,19 @@ import Caliper.Builder
 import Caliper.W64
 
 /-!
-# Generic prime-field arithmetic, from the modulus alone
+# Prime-field arithmetic from the modulus alone
 
-`Fp w p` is a field element of `ZMod p` held canonically (value `< p`) in one
-register. Everything below is generic in `p`: the modulus is a *generation-time* Lean
-value, so it is baked into the emitted code as immediates, and derived constants —
-here, the bits of `p - 2` for the Fermat inverse — are computed by ordinary Lean
-evaluation while the code is being emitted. The machine never learns about fields.
+`Fp w p` holds an element of `ZMod p` canonically (value `< p`) in one register. The
+modulus is a generation-time Lean value, baked into the emitted code as immediates;
+derived constants, such as the bits of `p - 2` for the Fermat inverse, are computed
+by Lean while emitting. The machine never learns about fields.
 
-The implementation is deliberately the simplest sound one: for any `p` with
-`p * p ≤ 2 ^ w` (single-word moduli — BabyBear, Mersenne31, …), products don't wrap,
-so reduction is the machine's native `umod` instruction. Consequences:
-
-* **Cost is independent of `p`**: `add` and `mul` are exactly 3 instructions
-  (`imm`, the ALU op, `umod`) for every modulus, and the specs say so literally.
-* The gadgets are straight-line, so they are constant-time (`straight_time_eq`) and
-  allocation-free (`allocFree_space`) for free.
-* `umod` is the expensive row of the cost table (`CostModel.cycles` prices it 30).
-  A specialized field (Montgomery, or a Mersenne-style reduction) is a *better
-  instance of the same interface*, not a different design — swap the gadget, keep
-  the spec shape, bounds only improve.
-
-Correctness specs (`addCode_spec`, `mulCode_spec`) relate machine registers to
-`ZMod p` values: canonical inputs in, canonical outputs out — the same
-assumptions/spec discipline as Clean's circuit layer, one level down. The Fermat
-`inv` is provided as a code generator with an executable check; its correctness spec
-is the standard exponentiation-ladder proof and is deferred.
+For `p * p ≤ 2 ^ w` (BabyBear, Mersenne31, …) products do not wrap, so reduction is
+the machine's `umod`. `add` and `mul` are then 3 instructions for every modulus,
+straight-line and allocation-free.
 
 Registers are parameters with explicit distinctness hypotheses; call sites with
-builder-allocated (hence distinct) registers discharge them by `omega`/`decide`.
+builder-allocated registers discharge them by `omega`/`decide`.
 -/
 
 namespace Caliper
@@ -50,16 +34,14 @@ namespace Fp
 `t` is a scratch register for the modulus; it must be distinct from the operands and
 the destination (`d` may alias `a` or `b` freely). -/
 
-/-- `d ← (a + b) mod p`. Three instructions, any modulus. The witgen compiler's
-`WitgenCompile.fieldOp` emits this same pattern (at `d := next + 1`, `t := next`),
-kept separate there to remain `rfl`-transparent at a generic `BinOp`. -/
+/-- `d ← (a + b) mod p`. `WitgenCompile.fieldOp` emits the same pattern, kept
+separate there to stay `rfl`-transparent at a generic `BinOp`. -/
 def addCode (p : ℕ) (d a b t : Reg) : Stmt w :=
   .imm t (BitVec.ofNat w p) ;;
   .bin .add d a b ;;
   .bin .umod d d t
 
-/-- `d ← (a * b) mod p`. Three instructions, any modulus with `p * p ≤ 2 ^ w`.
-Same pattern as `WitgenCompile.fieldOp` at `.mul` — see the note on `addCode`. -/
+/-- `d ← (a * b) mod p`, for `p * p ≤ 2 ^ w`. -/
 def mulCode (p : ℕ) (d a b t : Reg) : Stmt w :=
   .imm t (BitVec.ofNat w p) ;;
   .bin .mul d a b ;;
@@ -67,8 +49,7 @@ def mulCode (p : ℕ) (d a b t : Reg) : Stmt w :=
 
 /-! ## Specs
 
-Canonical values are relayed through `ZMod.val`. The `p * p ≤ 2 ^ w` hypothesis is
-what makes the unreduced sum/product wrap-free. -/
+`p * p ≤ 2 ^ w` is what makes the unreduced sum/product wrap-free. -/
 
 theorem addCode_spec {C : CostModel} {p : ℕ} (hp : 1 < p) (hpw : p * p ≤ 2 ^ w)
     {d a b t : Reg} (hta : t ≠ a) (htb : t ≠ b) (htd : t ≠ d) (x y : ZMod p) :
@@ -112,8 +93,7 @@ theorem mulCode_spec {C : CostModel} {p : ℕ} (hp : 1 < p) (hpw : p * p ≤ 2 ^
 
 /-! ## Builder interface
 
-Fresh destination and scratch registers make the distinctness side conditions true by
-construction at every call site. -/
+Fresh registers make the distinctness side conditions true by construction. -/
 
 /-- `x + y` in `ZMod p`. -/
 def add {p : ℕ} (x y : Fp w p) : Build w (Fp w p) := do
@@ -129,22 +109,14 @@ def mul {p : ℕ} (x y : Fp w p) : Build w (Fp w p) := do
   Build.emit (mulCode p d x.val y.val t)
   return ⟨d⟩
 
-/-- `x⁻¹` in `ZMod p` by Fermat: `x ^ (p - 2)`, as a square-and-multiply ladder over
-the bits of `p - 2`. For prime `p > 2` this matches the witness IR's convention
-`0⁻¹ = 0` (the ladder multiplies by `x` at least once, so `0 ↦ 0`); at `p = 2` the
-exponent is 0, the ladder is empty, and every input maps to 1 — the correctness
-contract is scoped to `2 < p`.
+/-- `x⁻¹` in `ZMod p` by Fermat: `x ^ (p - 2)` as a square-and-multiply ladder over
+the bits of `p - 2`, computed by Lean at generation time. Scoped to `2 < p`: there
+the ladder multiplies by `x` at least once, matching the witness IR's `0⁻¹ = 0`,
+while at `p = 2` the exponent is 0 and every input maps to 1.
 
-The exponent bits are computed *by Lean at generation time* — the emitted code is
-straight-line (`~2·log p` multiply/reduce steps, a per-field constant), so it is
-constant-time by `straight_time_eq` and allocation-free by `allocFree_space`.
-Correctness spec (the exponentiation-ladder argument, requiring `p` prime) is
-deferred; the `FieldDemo` at the bottom of this file checks it executably.
-
-The witgen compiler has its own copy of this ladder, `WitgenCompile.invLadder`
-(built over `WitgenCompile.toBits` rather than `Nat.bits`): that one carries the
-correctness proof — `invLadder_exec_inv` in `WitgenSim.lean` — while this builder
-version keeps the executable check only. -/
+Unproved. The compiler's own ladder `WitgenCompile.invLadder` is the one carrying a
+correctness proof (`invLadder_exec_inv`, `WitgenSim.lean`); this version is checked
+only by the demo below. -/
 def inv {p : ℕ} (x : Fp w p) : Build w (Fp w p) := do
   let t ← Build.var (Exp.lit (BitVec.ofNat w p))
   let acc ← Build.var 1
@@ -162,21 +134,17 @@ end Caliper
 
 /-! ## Fixed 64-bit surface
 
-`Caliper.W64` pins `w := 64` for the machine's own types; this is the field
-addendum, so a `Caliper64` program can name field elements without mentioning `w`. -/
+The field addendum to `Caliper.W64`, which pins `w := 64` for the machine's types. -/
 
 namespace Caliper64
 
-/-- A canonical element of `ZMod p` in a 64-bit register. -/
 abbrev Fp (p : ℕ) := Caliper.Fp 64 p
 
 end Caliper64
 
-/-! ## Demo: generic field arithmetic, from the modulus alone
+/-! ## Demo
 
-`Fp w p` needs nothing but `p`. Here it is instantiated at BabyBear: the program
-computes `5⁻¹` via the generated Fermat ladder (whose exponent bits Lean computed at
-generation time) and multiplies back. Expect `5⁻¹ * 5 = 1`. -/
+At BabyBear: compute `5⁻¹` via the generated ladder, then multiply back. -/
 
 namespace Caliper.FieldDemo
 

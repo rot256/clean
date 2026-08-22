@@ -53,7 +53,7 @@ Some heuristics for finding proofs are in [doc/proving-guide.md](doc/proving-gui
 
 ## Bounded Witness Generation
 
-Clean's witness-generation IR compiles to [Caliper](https://github.com/zksecurity/caliper), a Lean DSL for concrete running-time and memory bounds, so a circuit's witness generation carries a machine-checked step count — "this witgen runs in fewer than 2^40 steps" is a theorem, not an assumption. See [doc/caliper-witgen.md](doc/caliper-witgen.md).
+Clean's witness-generation IR compiles to [Caliper](https://github.com/zksecurity/caliper), a Lean DSL for concrete running-time and memory bounds, so a circuit's witness generation carries a machine-checked step count. See `Clean/Caliper/`.
 
 ## Roadmap
 

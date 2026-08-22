@@ -2,56 +2,30 @@ import Clean.Caliper.WitgenCompile
 import Caliper.Liveness
 
 /-!
-# Cost bounds for compiled witness generation: "witgen in < 2^40 steps, machine-checked"
+# Cost bounds for compiled witness generation
 
-Phase 2 of the witgen compiler: machine-checked *cost* bounds for the code that
-`Clean/Caliper/WitgenCompile.lean` emits.
+Phase 2 of the witgen compiler: cost bounds for the code `WitgenCompile.lean` emits.
 
-The whole file rests on one structural fact, proved here by syntactic induction over
-the compiler: **everything the compiler emits is straight-line** (no `ifNZ`, no
-`whileNZ`, no dynamic `memAlloc` — `ite` is a mask select,
-`mapRange`/`envRange`/`bitsOf` are unrolled, the Fermat inverse ladder is unrolled
-over the generation-time bits of `p - 2`, and the single output-buffer allocation
-in `compileIR`'s prologue is a `memAllocI` whose capacity is the *static* output
-length `m`, hence statically priced at `C.memAlloc + m * C.allocPerWord`), and,
-apart from that prologue `memAllocI`, **allocation-free** (`memPush` moves the fill
-level inside already-charged capacity, so it is alloc-free by definition).
+Everything rests on one structural fact, proved here by induction over the compiler:
+the emitted code is straight-line (`ite` is a mask select, `mapRange`/`envRange`/
+`bitsOf` are unrolled, the inverse ladder is unrolled over the generation-time bits
+of `p - 2`) and, apart from the prologue `memAllocI` for the output buffer,
+allocation-free. Hence:
 
-Consequences, all machine-checked below:
+* Time is a syntactic constant: by `Exec.straight_time_eq` every execution takes
+  exactly `code.staticTime C`, the same number on every input
+  (`witgenTime_data_independent` — data-independence of the abstract time counter,
+  not by itself a side-channel guarantee).
+* Buffer memory is bounded by the output length `m` (`compileIR_space_le`): the
+  prologue charges at most `m` words and nothing after it allocates.
+* Registers are the other half of the footprint, counted statically as
+  `Stmt.regPeak₀` (`Caliper.Liveness`). The compiler emits one register per IR
+  let-step plus scratch, so a buffers-only figure understates the memory;
+  `compile_total_footprint_le` bounds buffer peak plus register peak by live-ins
+  plus the single running time.
 
-* **Time is a syntactic constant.** By `Exec.straight_time_eq`, every execution of a
-  compiled program takes *exactly* `code.staticTime C` time units — an *equality*,
-  not just a bound, and the same number on every input (`witgenTime_data_independent`;
-  data-independence of the abstract time counter — an ingredient of a constant-time
-  argument, not by itself a side-channel guarantee). `staticTime` is a plain
-  recursive function of the syntax, so the cost of a concrete compiled program is a
-  numeral: computable by `#eval` and certified by evaluation (`native_decide` here,
-  since `toBits` is well-founded recursion, which `rfl` cannot reduce) — no
-  execution, no semantics, no fuel involved.
-* **Buffer memory is bounded by the output length.** The prologue's single
-  `memAllocI` charges at most `m` words (the static output length); everything after
-  it is alloc-free, so both the net live-memory change and the peak stay `≤ m`
-  (`compileIR_space_le`). Independently, `Exec.peak_le_time` bounds the peak by
-  the running time in any per-word-charging model.
-* **The register file is memory too, and it is counted.** Buffers are one summand of
-  Caliper's space accounting; the other is the statically inferred peak register
-  pressure `Stmt.regPeak₀` (`Caliper.Liveness`). That summand is not negligible
-  here — the compiler emits one register per IR let-step plus scratch — so quoting
-  `compileIR_space_le` alone would understate the footprint. Because compiled code is
-  straight-line, `Exec.straight_total_footprint_le` bounds *buffer peak plus register
-  peak* by live-ins plus the **single** running time `t`
-  (`compile_total_footprint_le`): one time certificate bounds the total memory, not
-  just the buffers.
-* **Concrete `< 2^40` bounds.** For the BabyBear test programs of
-  `WitgenCompile.lean` the pinned numbers are evaluated by `#eval`, certified by
-  `native_decide`, and turned into end-to-end theorems of the shape
-
-      theorem isZero_witgen_lt_2_40 (h : Exec .unit isZeroCompiled s s' t d p) :
-          t < 2 ^ 40
-
-  under both the uniform cost model and the calibrated `CostModel.cycles` table —
-  the bound is model-generic because everything above is proved for an arbitrary
-  `CostModel`.
+Concrete numbers for the BabyBear test programs are `#eval`ed and certified by
+`native_decide`. Everything is proved for an arbitrary `CostModel`.
 -/
 
 namespace Caliper.WitgenCompile
@@ -62,9 +36,8 @@ variable {F : Type} {w : ℕ}
 
 /-! ## Straight-line, allocation-free code
 
-`Stmt.Straight` and `Stmt.AllocFree` have the same conjunction structure over `seq`,
-and every instruction the scalar compilers emit satisfies both, so we prove the two
-predicates together in one induction and project at the end. -/
+The two predicates have the same conjunction structure over `seq` and every emitted
+instruction satisfies both, so they are proved together and projected at the end. -/
 
 /-- `seq` preserves straight-line-and-alloc-free. -/
 theorem straightAF_seq {c₁ c₂ : Stmt w} (h₁ : c₁.Straight ∧ c₁.AllocFree)
@@ -284,7 +257,7 @@ theorem compileIRCode_straight (L : ℕ) {m : ℕ} (steps : List (Step F))
   ⟨trivial, trivial, (compileSteps_straightAF L steps 0).1,
     (compileV_straightAF L out).1⟩
 
-/-- **Everything `compileIR` emits is straight-line**: no `ifNZ`, no `whileNZ`,
+/-- Everything `compileIR` emits is straight-line: no `ifNZ`, no `whileNZ`,
 anywhere. This is the fact that turns running time into a syntactic constant. -/
 theorem compileIR_straight {L : ℕ} {m : ℕ} {ir : WitgenIR F m} {code : Stmt w}
     (h : compileIR (w := w) L ir = some code) : code.Straight := by
@@ -304,14 +277,11 @@ theorem compileIR_straight {L : ℕ} {m : ℕ} {ir : WitgenIR F m} {code : Stmt 
 
 /-! ## The time theorem: witgen time is a syntactic constant -/
 
-/-- The running time of a compiled witness program, read off the *syntax* by the
-partial static clock `Stmt.staticTime?` — no execution involved. Compiled code is
-always straight-line (`compileIR_straight`), so `staticTime?` always succeeds on it
-and this agrees with mapping the raw `staticTime` over the compiler's output
-(`witgenTime_eq_map_staticTime`); routing through `staticTime?` keeps the definition
-honest by construction — it cannot produce a number for code containing loops. By
-`witgenTime_eq` below, whatever number it computes is the exact running time of
-every execution. -/
+/-- The running time of a compiled witness program, read off the syntax by the
+partial clock `Stmt.staticTime?`. Compiled code is always straight-line, so this
+agrees with the raw `staticTime` (`witgenTime_eq_map_staticTime`); routing through
+`staticTime?` means the definition cannot quote a number for code containing loops.
+By `witgenTime_eq`, the number it computes is the time of every execution. -/
 def witgenTime (C : CostModel) (L : ℕ) {m : ℕ} (ir : WitgenIR F m) : Option ℕ :=
   (compileIR (w := w) L ir).bind (·.staticTime? C)
 
@@ -326,7 +296,7 @@ theorem witgenTime_eq_map_staticTime {C : CostModel} {L m : ℕ} {ir : WitgenIR 
     simp only [witgenTime, hc, Option.bind_some, Option.map_some,
       (compileIR_straight hc).staticTime?_eq]
 
-/-- **Compiled witgen code runs in exactly its static time**, on every input: an
+/-- Compiled witgen code runs in exactly its static time, on every input: an
 equality, not just an upper bound. -/
 theorem compileIR_time_eq {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code : Stmt w}
     {s s' : State w} {t : ℕ} {d p : ℤ} (hc : compileIR (w := w) L ir = some code)
@@ -342,7 +312,7 @@ theorem witgenTime_eq {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code : St
   rw [witgenTime, hc, Option.bind_some] at hT
   exact hx.staticTime?_time_eq hT
 
-/-- **Data independence**: two executions of the same compiled witness program take
+/-- Data independence: two executions of the same compiled witness program take
 the same time, whatever their inputs. (Data-independence of the abstract time
 counter — an ingredient of a constant-time argument, not by itself a side-channel
 guarantee.) -/
@@ -354,7 +324,7 @@ theorem witgenTime_data_independent {C : CostModel} {L m : ℕ} {ir : WitgenIR F
 
 /-! ## The memory theorem: witgen space is bounded by the output length -/
 
-/-- **Compiled witgen code needs at most `m` words of memory** (`m` = the static
+/-- Compiled witgen code needs at most `m` words of memory (`m` = the static
 output length): the single prologue `memAllocI` charges at most `m`, and everything
 else is alloc-free. Both the net live-memory change and the peak are bounded. -/
 theorem compileIRCode_space_le {C : CostModel} {L m : ℕ} {steps : List (Step F)}
@@ -394,10 +364,8 @@ theorem compileIR_space_le {C : CostModel} {L m : ℕ} {ir : WitgenIR F m} {code
 
 /-! ## Checked-entry corollaries
 
-The user-facing forms of the phase-2 theorems, stated about the checked entry point
-`compile` (`WitgenCompile.lean`). `compile N ir = some code` already carries the
-structure the raw theorems need, so these are thin corollaries of the `compileIR`
-versions above. -/
+The user-facing forms, stated about `compile`. `compile N ir = some code` carries the
+structure the raw theorems need, so these are thin corollaries. -/
 
 /-- Everything the checked entry point emits is straight-line. -/
 theorem compile_straight {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
@@ -405,14 +373,14 @@ theorem compile_straight {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
   obtain ⟨_, _, -, -, -, hIR⟩ := compile_toCompileIR hc
   exact compileIR_straight hIR
 
-/-- **Checked-entry time exactness**: code accepted by `compile` runs in exactly its
+/-- Checked-entry time exactness: code accepted by `compile` runs in exactly its
 static time, on every input. -/
 theorem compile_time_eq {C : CostModel} {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     {s s' : State 64} {t : ℕ} {d p : ℤ} (hc : compile N ir = some code)
     (hx : Exec C code s s' t d p) : t = code.staticTime C :=
   hx.straight_time_eq (compile_straight hc)
 
-/-- **Checked-entry data independence**: two executions of code accepted by
+/-- Checked-entry data independence: two executions of code accepted by
 `compile` take the same time, whatever their inputs (data-independence of the
 abstract time counter — an ingredient of a constant-time argument, not by itself a
 side-channel guarantee). -/
@@ -422,7 +390,7 @@ theorem compile_time_data_independent {C : CostModel} {N m : ℕ} {ir : WitgenIR
     (h₁ : Exec C code s₁ s₁' t₁ d₁ p₁) (h₂ : Exec C code s₂ s₂' t₂ d₂ p₂) : t₁ = t₂ :=
   h₁.straight_data_independent h₂ (compile_straight hc)
 
-/-- **Checked-entry space bound**: code accepted by `compile` needs at most `m`
+/-- Checked-entry space bound: code accepted by `compile` needs at most `m`
 words of memory (`m` = the static output length), both net and peak. -/
 theorem compile_space_le {C : CostModel} {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     {s s' : State 64} {t : ℕ} {d p : ℤ} (hc : compile N ir = some code)
@@ -430,35 +398,23 @@ theorem compile_space_le {C : CostModel} {N m : ℕ} {ir : WitgenIR F m} {code :
   obtain ⟨_, _, -, -, -, hIR⟩ := compile_toCompileIR hc
   exact compileIR_space_le hIR hx
 
-/-! ### The other half of the memory: the register footprint
+/-! ### The register footprint
 
-`compile_space_le` is a *buffer* bound. Caliper accounts memory in two summands
-(`Caliper.SpaceBound`): the dynamic buffer profile that `Exec` meters, plus the
-statically inferred peak register pressure `Stmt.regPeak₀` — registers are memory,
-counted statically only because register liveness is static information (there is no
-dynamic register indexing), not because they are free. The compiler emits one
-register per IR let-step plus scratch, so the register summand is the larger one for
-small programs and must not be dropped from a space claim.
+`compile_space_le` bounds only buffers. The other summand of `Caliper.SpaceBound` is
+`Stmt.regPeak₀`, counted statically because register liveness is static information.
+For small programs it is the larger of the two. -/
 
-Straight-line code is exactly where the two summands can be quoted against one
-running time, which is what the theorems below do. -/
-
-/-- **Checked-entry register peak**: everything `compile` emits is straight-line, so
-its inferred peak register pressure is at most its live-in registers plus its own
-unit-model static time — the liveness-side analogue of `Exec.peak_le_time`, read off
-the syntax alone. -/
+/-- Emitted code is straight-line, so its inferred peak register pressure is at most
+its live-ins plus its unit-model static time. -/
 theorem compile_regPeak₀_le {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     (hc : compile N ir = some code) :
     code.regPeak₀ ≤ (code.liveBefore ∅).card + code.staticTime CostModel.unit :=
   (compile_straight hc).regPeak₀_le
 
-/-- **Checked-entry total footprint**: for code accepted by `compile`, the buffer
-peak `p` *plus* the inferred register peak is at most the live-in count plus the
-**single** running time `t`. The buffer words are covered by the per-word allocation
-charges and the registers beyond the live-ins by their first-write instructions, and
-those two instruction sets are disjoint, so the sum fits inside one `t` rather than
-two. In particular a `t < 2 ^ n` certificate is simultaneously a total-memory
-certificate. -/
+/-- Buffer peak plus register peak is at most live-ins plus the single running time
+`t`: allocation charges cover the buffer words and first-write instructions the
+registers, and those instruction sets are disjoint. So a `t < 2 ^ n` certificate is
+also a total-memory certificate. -/
 theorem compile_total_footprint_le {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 64}
     {s s' : State 64} {t : ℕ} {d p : ℤ} (hc : compile N ir = some code)
     (hx : Exec CostModel.unit code s s' t d p) :
@@ -467,15 +423,13 @@ theorem compile_total_footprint_le {N m : ℕ} {ir : WitgenIR F m} {code : Stmt 
 
 /-! ## Concrete `< 2^40` bounds for the BabyBear test programs
 
-The numbers below are *syntactic constants* of the compiled code — `#eval`ed here,
-certified by `native_decide`, and equal to the running time of **every** execution
-by `compileIR_time_eq`. -/
+The numbers are syntactic constants of the compiled code, and by `compileIR_time_eq`
+equal to the running time of every execution. -/
 
-/-- The compiled `IsZeroField` witness program (test 1 of `WitgenCompile.lean` —
-provably the witness IR of the Clean circuit `Gadgets.IsZeroField.circuit` itself,
-see `isZeroCircuitIR_eq_testIsZero`), produced by the **checked entry point**
-`compile` (environment size `N = 1`: the program reads only `var ⟨0⟩`):
-mask-select `ite`, `feq`, and the unrolled Fermat inverse ladder over BabyBear. -/
+/-- The compiled `IsZeroField` witness program, produced by `compile` at `N = 1`
+(it reads only `var ⟨0⟩`): mask-select `ite`, `feq`, and the unrolled Fermat ladder
+over BabyBear. This is the circuit's own witness IR, see
+`isZeroCircuitIR_eq_testIsZero`. -/
 def isZeroCompiled : Stmt 64 :=
   (compile 1 testIsZero).getD .skip
 
@@ -497,10 +451,9 @@ theorem compile_testIsZero : compile 1 testIsZero = some isZeroCompiled := by
 theorem compileIR_testIsZero : compileIR (w := 64) 0 testIsZero = some isZeroCompiled :=
   compile_isZero_eq_compileIR ▸ compile_testIsZero
 
-/-- The static time of the compiled `IsZero` witness under the uniform cost model —
-the same 139 the differential test of `WitgenCompile.lean` measured by running it.
-(`rfl` cannot evaluate this because `toBits` — the ladder's bit list — is defined by
-well-founded recursion, which does not reduce definitionally; `native_decide` does.) -/
+/-- The static time of the compiled `IsZero` witness, the same 139 the differential
+test in `WitgenCompile.lean` measured by running it. `rfl` cannot evaluate it:
+`toBits` is defined by well-founded recursion. -/
 theorem isZeroCompiled_staticTime_unit : isZeroCompiled.staticTime .unit = 139 := by
   native_decide
 
@@ -538,8 +491,8 @@ with `m` output elements pay `m` extra unit ticks relative to a flat-alloc model
 /-- info: some 26 -/
 #guard_msgs in #eval witgenTime (w := 64) CostModel.unit 0 testMapRange
 
-/-- **The headline, end to end**: every execution of the compiled `IsZero` witness
-program terminates in fewer than `2^40` steps — in fact in exactly 139. -/
+/-- Every execution of the compiled `IsZero` witness program terminates in fewer than
+`2^40` steps; exactly 139. -/
 theorem isZero_witgen_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
     (h : Exec .unit isZeroCompiled s s' t d p) : t < 2 ^ 40 := by
   have ht := compile_time_eq compile_testIsZero h
@@ -554,9 +507,8 @@ theorem isZero_witgen_cycles_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
   rw [isZeroCompiled_staticTime_cycles] at ht
   omega
 
-/-- Memory, same shape: the compiled `IsZero` witness never grows live *buffer*
-memory by more than its single output word — in particular far below `2^40`. This is
-one summand; `isZero_witgen_total_footprint_le_six` adds the register peak. -/
+/-- The compiled `IsZero` witness never grows live buffer memory by more than its
+single output word. `isZero_witgen_total_footprint_le_six` adds the register peak. -/
 theorem isZero_witgen_peak_le_one {s s' : State 64} {t : ℕ} {d p : ℤ}
     (h : Exec .unit isZeroCompiled s s' t d p) : p ≤ 1 := by
   have := (compile_space_le compile_testIsZero h).2
@@ -570,11 +522,8 @@ theorem isZero_witgen_space_lt_2_40 {s s' : State 64} {t : ℕ} {d p : ℤ}
 
 /-! #### The register summand, pinned
 
-The buffer bound above is one summand; the inferred register peak is the other. Both
-are syntactic constants of `isZeroCompiled`, so both are `#eval`able and certified by
-evaluation. The program names more registers than the peak counts — the Fermat ladder
-reuses a handful of slots — which is the point of inferring live ranges rather than
-counting names. -/
+The program names more registers than the peak counts, the ladder reusing a handful
+of slots. -/
 
 /-- info: 5 -/
 #guard_msgs in #eval isZeroCompiled.regPeak₀
@@ -587,10 +536,8 @@ input from the environment buffer rather than from an incoming register. -/
 /-- The register summand as a theorem, for use in space claims. -/
 theorem isZeroCompiled_regPeak₀ : isZeroCompiled.regPeak₀ = 5 := by native_decide
 
-/-- **Total memory for the `IsZero` witness program**: buffer peak plus register peak
-is at most 6 words — the single output word plus five live registers — on every
-execution. This is the number a space claim should quote; `isZero_witgen_peak_le_one`
-alone is the buffers-only half. -/
+/-- Total memory for the `IsZero` witness program: at most 6 words on every
+execution, one output word plus five live registers. -/
 theorem isZero_witgen_total_footprint_le_six {s s' : State 64} {t : ℕ} {d p : ℤ}
     (h : Exec .unit isZeroCompiled s s' t d p) :
     p + (isZeroCompiled.regPeak₀ : ℤ) ≤ 6 := by
@@ -598,13 +545,11 @@ theorem isZero_witgen_total_footprint_le_six {s s' : State 64} {t : ℕ} {d p : 
   rw [isZeroCompiled_regPeak₀]
   omega
 
-/-! ### The complete witness list: pricing the copy generator, and the circuit total
+/-! ### The complete witness list
 
-`isZeroCircuit_witnessIRs` (`WitgenCompile.lean`) certifies that `testIsZero` and the
-`<==` copy generator `isZeroCircuitCopyIR` are *all* the witness generators of the
-Clean circuit `Gadgets.IsZeroField.circuit`. Pricing the copy generator too turns the
-per-generator numbers into a certified total for the circuit's complete witness
-list. -/
+`isZeroCircuit_witnessIRs` certifies that `testIsZero` and the `<==` copy generator
+`isZeroCircuitCopyIR` are all the witness generators of `Gadgets.IsZeroField.circuit`,
+so pricing both gives a total for the circuit. -/
 
 /-- The compiled `<==` copy generator of the `IsZeroField` circuit
 (`isZeroCircuitCopyIR`, evaluating the circuit expression `1 - x * z`), produced by
@@ -628,9 +573,8 @@ theorem compile_isZeroCircuitCopyIR :
   rw [compile_isZeroCopy_eq_compileIR]
   rfl
 
-/-- The static time of the compiled copy generator under the uniform cost model:
-18 unit steps (two environment reads, the constants, and two field
-multiply/add-reduce patterns — no inverse ladder). -/
+/-- The copy generator's static time: two environment reads, the constants, and two
+field multiply/add-reduce patterns, no inverse ladder. -/
 theorem isZeroCopyCompiled_staticTime_unit :
     isZeroCopyCompiled.staticTime .unit = 18 := by
   native_decide
@@ -641,7 +585,7 @@ theorem isZeroCopyCompiled_staticTime_cycles :
     isZeroCopyCompiled.staticTime .cycles = 119 := by
   native_decide
 
-/- The same numbers through the checked entry point and the honest partial clock
+/- The same numbers through the checked entry point and the partial clock
 (`staticTime?` cannot quote a number for loopy code). -/
 /-- info: some (some 18) -/
 #guard_msgs in #eval (compile 2 isZeroCircuitCopyIR).map (·.staticTime? CostModel.unit)
@@ -649,12 +593,10 @@ theorem isZeroCopyCompiled_staticTime_cycles :
 /-- info: some (some 119) -/
 #guard_msgs in #eval (compile 2 isZeroCircuitCopyIR).map (·.staticTime? CostModel.cycles)
 
-/-- **Total witgen time for the complete `IsZeroField` circuit**: by
-`isZeroCircuit_witnessIRs`, `testIsZero` (= the extracted `isZeroCircuitIR`) and
-`isZeroCircuitCopyIR` are *all* the witness generators of
-`Gadgets.IsZeroField.circuit`, so executing their two compiled programs is the
-circuit's entire witness generation — and it takes exactly `139 + 18 = 157` unit
-steps, on every input. -/
+/-- Total witgen time for the complete `IsZeroField` circuit: its two generators are
+all of them (`isZeroCircuit_witnessIRs`), so running both compiled programs is the
+circuit's entire witness generation, at `139 + 18 = 157` unit steps on every
+input. -/
 theorem isZeroCircuit_total_witgen_time_unit {s₁ s₁' s₂ s₂' : State 64}
     {t₁ t₂ : ℕ} {d₁ p₁ d₂ p₂ : ℤ}
     (h₁ : Exec .unit isZeroCompiled s₁ s₁' t₁ d₁ p₁)
@@ -672,15 +614,12 @@ theorem isZeroCircuit_total_witgen_lt_2_40 {s₁ s₁' s₂ s₂' : State 64}
   have := isZeroCircuit_total_witgen_time_unit h₁ h₂
   omega
 
-/-! ### Certified native witnesses: the cost bound transports to the closure
+/-! ### Certified native witnesses
 
-`isZeroCertified` (`WitgenCompile.lean`) keeps the native closure `isZeroNative` as
-its evaluation fast path, but `compile` accepts it — through its certified IR
-reimplementation — and emits *literally* `testIsZero`'s code. So the exact-cost
-theorems apply verbatim: a witness whose Lean-side evaluation is an arbitrary
-closure now carries a machine-checked, input-independent step count, something a
-bare `.native` closure can never have (cost is intensional; Lean functions are
-extensional). -/
+`isZeroCertified` keeps the closure `isZeroNative` as its evaluation fast path, but
+`compile` accepts it through its IR reimplementation and emits `testIsZero`'s code,
+so the exact-cost theorems apply verbatim. A bare `.native` closure can carry no such
+bound: cost is intensional, Lean functions are extensional. -/
 
 /-- The checked entry point accepts the certified program and emits exactly the code
 of its IR reimplementation — `isZeroCompiled`. The first step is definitional
@@ -696,9 +635,8 @@ cycles as `testIsZero`, now certified *for the native closure's witness*. -/
 /-- info: some 2040 -/
 #guard_msgs in #eval (compile 1 isZeroCertified).map (·.staticTime CostModel.cycles)
 
-/-- **Exact time for a certified native witness**: every execution of the code
-compiled from `isZeroCertified` — the program whose prover-side evaluation is the
-native closure `isZeroNative` — takes exactly 139 unit steps. -/
+/-- Every execution of the code compiled from `isZeroCertified`, whose prover-side
+evaluation is the closure `isZeroNative`, takes exactly 139 unit steps. -/
 theorem isZeroCertified_witgen_time_unit {s s' : State 64} {t : ℕ} {d p : ℤ}
     (h : Exec .unit isZeroCompiled s s' t d p) : t = 139 := by
   rw [compile_time_eq compile_isZeroCertified h, isZeroCompiled_staticTime_unit]

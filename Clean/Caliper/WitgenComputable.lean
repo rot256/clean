@@ -4,32 +4,24 @@ import Clean.Gadgets.Addition8.Addition8FullCarry
 /-!
 # The witgen compiler's checks imply Clean's computable-witnesses condition
 
-The bridge between the Caliper witgen compiler's decidable, generation-time checks
-(`WitgenIR.compilable`, `WitgenIR.envBound` — `Clean/Caliper/WitgenCompile.lean`) and
-the circuit layer's *computability* notion
-(`ProverEnvironment.OnlyAccessedBelow` / `Operations.ComputableWitnesses` —
-`Clean/Circuit/Basic.lean`).
+The bridge between the witgen compiler's generation-time checks (`compilable`,
+`envBound`) and the circuit layer's computability notion
+(`ProverEnvironment.OnlyAccessedBelow`, `Operations.ComputableWitnesses`).
 
-The key observation: `ProverEnvironment.AgreesBelow N` constrains only `env.get` below
-`N` — `env.data` and `env.hint` may differ arbitrarily. The constructors whose `eval`
-reads those fields (`FExpr.dataGet`, `FExpr.hintGet`) and the arbitrary-closure escape
-hatch (`WitgenIR.native`) are exactly the ones `compilable` and `envBound` reject, and
-every remaining environment access is an `env.get` at an index `envBound` bounds below
-`N`. So the checks imply that `WitgenIR.eval` is invariant under `AgreesBelow N`
-(`WitgenIR.eval_congr`), i.e. `OnlyAccessedBelow N`
-(`WitgenIR.onlyAccessedBelow_of_checks`). Certified native witnesses
-(`WitgenIR.certified`) pass the checks through their IR reimplementation, and their
-packed equivalence proof extends `eval_congr` to the native closure their `eval`
-actually runs — so the same one-boolean-evaluation discharge covers closures too
-(`onlyAccessedBelow_certified`, `onlyAccessedBelow_of_ir_equiv`).
+`ProverEnvironment.AgreesBelow N` constrains only `env.get` below `N`; `env.data` and
+`env.hint` may differ arbitrarily. The constructors whose `eval` reads those fields
+(`FExpr.dataGet`, `FExpr.hintGet`) and the closure escape hatch `WitgenIR.native` are
+exactly the ones the checks reject, and every remaining access is an `env.get` below
+`N`. So the checks imply `WitgenIR.eval` is invariant under `AgreesBelow N`
+(`eval_congr`), i.e. `OnlyAccessedBelow N`. Certified witnesses pass the checks
+through their IR reimplementation, and their equivalence proof extends `eval_congr`
+to the closure their `eval` runs.
 
-Since `Operations.ComputableWitnesses` is *per-offset* — the generator at offset `n`
-must only access the environment below `n` — the whole-circuit form threads the offset:
-`computableChecks n ops` checks each witness generator's `envBound` at that generator's
-own offset, and `circuit_computableWitnesses_of_checks` turns one boolean evaluation of
-it into `Circuit.ComputableWitnesses`. The examples at the bottom discharge the
-obligation for the instantiated `IsZeroField` and `Addition8FullCarry` circuits this
-way — by `native_decide`, with no manual trace reasoning.
+`Operations.ComputableWitnesses` is per-offset — the generator at offset `n` may only
+access the environment below `n` — so the whole-circuit form threads the offset:
+`computableChecks n ops` checks each generator's `envBound` at its own offset, and
+`circuit_computableWitnesses_of_checks` turns one boolean evaluation into
+`Circuit.ComputableWitnesses`.
 -/
 
 namespace Caliper.WitgenCompile
@@ -239,7 +231,7 @@ theorem VExpr.eval_congr {N : ℕ} {env env' : ProverEnvironment F}
     simp only [VExpr.eval, VExpr.eval_congr h locals idx a hb.1,
       VExpr.eval_congr h locals idx b hb.2]
 
-/-- **Evaluation congruence for whole witness programs**: an environment-bounded
+/-- Evaluation congruence for whole witness programs: an environment-bounded
 witness program evaluates equally in two environments that agree below `N`.
 `envBound` rejects `native` closures, so only structured programs — whose every
 environment access is an `env.get` below `N` — remain. -/
@@ -266,22 +258,21 @@ theorem WitgenIR.eval_congr {m N : ℕ} {ir : WitgenIR F m}
 
 /-! ## The bridge -/
 
-/-- **The bridge**: the witgen compiler's generation-time checks imply the circuit
-layer's computability condition — a witness program that passes `compilable` and
-`envBound N` only accesses the environment below `N`. These are exactly the checks
-the checked entry point `compile N` certifies (`compile_checks`), so every witness
-program the compiler accepts discharges `OnlyAccessedBelow` for free.
+/-- A witness program passing `compilable` and `envBound N` only accesses the
+environment below `N`. These are the checks `compile N` certifies
+(`compile_checks`), so every program the compiler accepts discharges
+`OnlyAccessedBelow`.
 
-The `compilable` hypothesis is accepted to match the checks `compile` certifies, but
-`envBound` alone carries the proof: it too returns `false` on every constructor whose
-evaluation reads more than `env.get` (`listGet`/`dataGet`/`hintGet`, `native`). -/
+The `compilable` hypothesis is taken to match those checks, but `envBound` alone
+carries the proof: it too returns `false` on every constructor whose evaluation reads
+more than `env.get`. -/
 theorem WitgenIR.onlyAccessedBelow_of_checks {m N : ℕ} {ir : WitgenIR F m}
     (_hc : WitgenIR.compilable ir = true) (hb : WitgenIR.envBound N ir = true) :
     ProverEnvironment.OnlyAccessedBelow N ir.eval := by
   intro _ _ h
   exact WitgenIR.eval_congr hb h
 
-/-- **Native-closure discharge**: a certified IR implementation of a native witness
+/-- Native-closure discharge: a certified IR implementation of a native witness
 closure discharges the computability condition for the closure itself. If `f` agrees
 with the evaluation of a checked IR program on every environment, then `f` only
 accesses the environment below `N`. -/
@@ -295,7 +286,7 @@ theorem onlyAccessedBelow_of_ir_equiv {m N : ℕ} {f : ProverEnvironment F → V
 
 /-- The `.certified` form of the native-closure discharge: a certified witness
 program's checks (which run on its IR reimplementation) certify computability for
-**the native closure itself** — the closure's fast evaluation path, not just the IR.
+the native closure itself, the closure's fast evaluation path, not just the IR.
 This is `onlyAccessedBelow_of_ir_equiv` with the equivalence read off the
 constructor; equivalently, `WitgenIR.onlyAccessedBelow_of_checks` already covers
 certified programs since `eval (certified f ..) = f`. -/
@@ -316,7 +307,7 @@ one boolean evaluation certifies the whole circuit. -/
 
 /-- Decidable computability check for a flat operation list starting at offset `n`:
 every witness generator passes `compilable` and `envBound` at its own offset.
-Certified witness operations (`WitgenIR.certified`) are accepted for free: the two
+Certified witness operations (`WitgenIR.certified`) are accepted: the two
 checks run on their IR reimplementation, and `WitgenIR.eval_congr` transports the
 conclusion to the native closure their `eval` runs. -/
 def computableChecks (n : ℕ) : List (FlatOperation F) → Bool
@@ -356,7 +347,7 @@ theorem operations_computableWitnesses_of_checks {ops : Operations F} {n : ℕ}
   simp only [Operations.ComputableWitnesses, ← Operations.forAll_toFlat_iff]
   exact forAllComputable_of_checks env env' ops.toFlat n h
 
-/-- **Whole-circuit discharge**: one boolean evaluation of `computableChecks` over a
+/-- Whole-circuit discharge: one boolean evaluation of `computableChecks` over a
 circuit's flat operations certifies `Circuit.ComputableWitnesses` — no manual trace
 reasoning. The offset alignment is built in: the check runs each generator's
 `envBound` at that generator's own offset. -/
@@ -367,14 +358,12 @@ theorem circuit_computableWitnesses_of_checks {α : Type} {circuit : Circuit F �
 
 /-! ## The payoff, demonstrated
 
-The `IsZeroField` circuit instantiated at input `var ⟨0⟩` and offset 1 (the
-instantiation of `isZeroCircuitOps`, whose complete witness list
-`isZeroCircuit_witnessIRs` certifies): its first generator sits at offset 1 and reads
-only cell 0 (`envBound 1`), the `<==` copy generator sits at offset 2 and reads cells
-0 and 1 (`envBound 2`) — the per-offset alignment that `ComputableWitnesses` demands.
-Both `OnlyAccessedBelow` obligations, and the whole-circuit condition, are discharged
-by the bridge plus `native_decide` (the checks are well-founded mutual recursions,
-which `decide`'s kernel reduction cannot evaluate). -/
+The `IsZeroField` circuit at input `var ⟨0⟩` and offset 1: its first generator sits at
+offset 1 and reads only cell 0, the `<==` copy generator sits at offset 2 and reads
+cells 0 and 1 — the per-offset alignment `ComputableWitnesses` demands. Both
+obligations and the whole-circuit condition are discharged by the bridge plus
+`native_decide`; the checks are well-founded mutual recursions, which `decide`'s
+kernel reduction cannot evaluate. -/
 
 /-- The circuit's first witness generator (offset 1, reads cell 0). -/
 example : ProverEnvironment.OnlyAccessedBelow 1 (testIsZero.eval) :=
@@ -401,11 +390,9 @@ example : Circuit.ComputableWitnesses (F := Fb)
 
 /-! ### Certified native witnesses
 
-The computability payoff of the certified form (`isZeroCertified`,
-`WitgenCompile.lean`): the decidable checks — which run on the IR reimplementation
-and are discharged by `native_decide` — certify `OnlyAccessedBelow` for **the bare
-native closure** `isZeroNative`, a statement about an arbitrary Lean function that
-no syntactic check could establish directly. -/
+The checks run on the IR reimplementation, yet certify `OnlyAccessedBelow` for the
+bare closure `isZeroNative` — a statement about an arbitrary Lean function that no
+syntactic check could establish directly. -/
 
 /-- The bare closure only accesses the environment below 1 — via its certified IR
 equivalent. -/

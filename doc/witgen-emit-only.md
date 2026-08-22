@@ -1,7 +1,7 @@
 # Design note: emit-only witness generation
 
 **Status: proposal, not implemented.** Captures a design discussion for later
-consideration. Nothing in the current pipeline (`doc/caliper-witgen.md`) depends on it;
+consideration. Nothing in the current pipeline depends on it;
 conversely, adopting it would restructure the witgen interfaces described there.
 
 ## The principle
