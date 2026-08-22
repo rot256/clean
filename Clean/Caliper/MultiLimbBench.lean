@@ -20,7 +20,7 @@ doublings, not multiplies, which is what makes the count worth taking from a rea
 program rather than a table. Subtraction is `x + (p - 1) * y`, so it costs a multiply
 here; the IR has no field subtraction node.
 
-The point of the number is the ratio to a budget: `2 ^ 40` steps buys about `2 ^ 19`
+The point of the number is the ratio to a budget: `2 ^ 40` steps buys nearly 400 000
 scalar multiplications, so a witgen that could compute a discrete log on this curve is
 nowhere near the budget.
 -/
