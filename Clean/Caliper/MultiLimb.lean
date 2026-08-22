@@ -2388,4 +2388,292 @@ theorem mulLowLimbs_exec {k' acc a b sc : ℕ} (hl : MulLayout (k' + 1) acc a b 
   refine hd₂.congr ?_
   simp only [mulAcc, Nat.mul_mod, Nat.mod_mod]
 
+/-! ## Separated operand scanning: the field multiply
+
+`mulLimbs` gives the exact `2k`-limb product; this reduces it in place, one word at a
+time. Row `i` picks `m = t[i] * pinv mod 2 ^ 64` — which clears limb `i`, because
+`p * pinv + 1 ≡ 0 (mod 2 ^ 64)` — accumulates `m * p` into the window at offset `i`,
+and folds that window's carry into limb `i + k`.
+
+The fold's own overflow is *held* in a register rather than propagated: the only limb
+it could reach is `i + k + 1`, which nothing touches until row `i + 1` folds there.
+That is what keeps the reduction at five instructions a row beyond the accumulate,
+instead of a carry chain whose worst case is `O(k)` words.
+
+`pinv` is a single word here, not `k`: only `p * pinv ≡ -1 (mod 2 ^ 64)` is used. Like
+the modulus it is a per-field constant, computed by `montConst` at generation time and
+emitted as an immediate — nothing about it is computed on the machine.
+
+Cost is `16k² + 15k + 9` unit steps, against the CIOS driver's `16k² + 15k`: 325
+steps at BN254's `k = 4` where CIOS takes 316. Both are `2k²` multiply-accumulate
+steps and neither can be much better without Karatsuba; this shape is the one whose
+correctness follows from `mulLimbs` and `macLimbs`, which are proved. -/
+
+/-- `t := t + sc + cb` in one word, the overflow left in `cb`. Both wraps are
+detected by comparing a sum against one of its addends. -/
+def foldHeld (t sc cb u : ℕ) : Stmt 64 :=
+  .bin .add u sc cb ;;
+  .bin .ult cb u cb ;;
+  .bin .add t t u ;;
+  .bin .ult u t u ;;
+  .bin .add cb cb u
+
+/-- One reduction row: choose the multiplier that clears limb `i`, accumulate `m * p`
+at offset `i`, and fold the carry into limb `i + k` with the overflow held in `cb`. -/
+def redcRow (k acc pReg pinv m cb u sc i : ℕ) : Stmt 64 :=
+  .bin .mul m (acc + i) pinv ;;
+  macLimbs k (acc + i) pReg m sc ;;
+  foldHeld (acc + i + k) sc cb u
+
+def redcRows (k acc pReg pinv m cb u sc : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => redcRows k acc pReg pinv m cb u sc n ;; redcRow k acc pReg pinv m cb u sc n
+
+/-- `acc[k .. 2k]` becomes the `k + 1`-limb Montgomery reduction of `acc[0 .. 2k-1]`.
+The held overflow becomes the top limb. -/
+def redcLimbs (k acc pReg pinv m cb u sc : ℕ) : Stmt 64 :=
+  .imm cb 0 ;; redcRows k acc pReg pinv m cb u sc k ;; .mov (acc + 2 * k) cb
+
+/-- Registers a Montgomery multiply's frame occupies, above the caller's values. -/
+def montFrame (k : ℕ) : ℕ := 5 * k + 16
+
+/-- Where a Montgomery multiply based at `w` leaves its `k`-limb result. -/
+def montOut (k w : ℕ) : ℕ := w + 16 + 4 * k
+
+/-- `a * b * R⁻¹ mod p`, in `montOut k w`. The frame, relative to `w`: the multiplier,
+held carry and fold scratch at `0, 1, 2`; the shared six-word scratch block at `3`; the
+`2k + 1`-word accumulator at `9`; the subtraction's complement buffer at `10 + 2k` and
+its scratch at `11 + 3k`; the difference at `15 + 3k`; the select's scratch at
+`15 + 4k` and the result at `16 + 4k`. -/
+def montMulSOS (k a b pReg pinv w : ℕ) : Stmt 64 :=
+  mulLimbs k (w + 9) a b (w + 3) ;;
+  redcLimbs k (w + 9) pReg pinv w (w + 1) (w + 2) (w + 3) ;;
+  subLimbs (k + 1) (w + 15 + 3 * k) (w + 9 + k) pReg (w + 10 + 2 * k)
+    (w + 11 + 3 * k) ;;
+  selectLimbs k (montOut k w) (w + 15 + 3 * k) (w + 9 + k) (w + 11 + 3 * k)
+    (w + 15 + 4 * k)
+
+/-- The caller's obligation: the frame starts above every value the multiply reads.
+`p` is read as `k + 1` limbs, its top limb zero, by the final subtraction. -/
+structure SOSLayout (k a b pReg pinv w : ℕ) : Prop where
+  opA : a + k ≤ w
+  opB : b + k ≤ w
+  modulus : pReg + (k + 1) ≤ w
+  const : pinv < w
+
+/-! ### Cost -/
+
+def redcRowCost (C : CostModel) (k : ℕ) : ℕ :=
+  C.bin .mul + (C.imm + k * macStepCost C) + 3 * C.bin .add + 2 * C.bin .ult
+
+theorem redcRow_staticTime (C : CostModel) (k acc pReg pinv m cb u sc i : ℕ) :
+    (redcRow k acc pReg pinv m cb u sc i).staticTime C = redcRowCost C k := by
+  show (Stmt.bin .mul m (acc + i) pinv).staticTime C
+    + ((macLimbs k (acc + i) pReg m sc).staticTime C
+      + (foldHeld (acc + i + k) sc cb u).staticTime C) = _
+  rw [macLimbs_staticTime]
+  simp [foldHeld, Stmt.staticTime, redcRowCost]
+  ring
+
+theorem redcRows_staticTime (C : CostModel) (k acc pReg pinv m cb u sc : ℕ) :
+    ∀ n, (redcRows k acc pReg pinv m cb u sc n).staticTime C = n * redcRowCost C k
+  | 0 => by simp [redcRows, Stmt.staticTime]
+  | n + 1 => by
+    show (redcRows k acc pReg pinv m cb u sc n).staticTime C
+      + (redcRow k acc pReg pinv m cb u sc n).staticTime C = _
+    rw [redcRows_staticTime C k acc pReg pinv m cb u sc n, redcRow_staticTime]
+    ring
+
+theorem redcLimbs_staticTime (C : CostModel) (k acc pReg pinv m cb u sc : ℕ) :
+    (redcLimbs k acc pReg pinv m cb u sc).staticTime C
+      = C.imm + k * redcRowCost C k + C.mov := by
+  show (Stmt.imm cb 0).staticTime C
+    + ((redcRows k acc pReg pinv m cb u sc k).staticTime C
+      + (Stmt.mov (acc + 2 * k) cb).staticTime C) = _
+  rw [redcRows_staticTime]
+  simp [Stmt.staticTime]
+  ring
+
+/-- **A Montgomery multiply costs `16k² + 15k + 9` unit steps**, at every field. -/
+theorem montMulSOS_staticTime_unit (k' a b pReg pinv w : ℕ) :
+    (montMulSOS (k' + 1) a b pReg pinv w).staticTime CostModel.unit
+      = 16 * k' ^ 2 + 47 * k' + 40 := by
+  show (mulLimbs (k' + 1) _ _ _ _).staticTime CostModel.unit
+    + ((redcLimbs (k' + 1) _ _ _ _ _ _ _).staticTime CostModel.unit
+      + ((subLimbs (k' + 1 + 1) _ _ _ _ _).staticTime CostModel.unit
+        + (selectLimbs (k' + 1) _ _ _ _ _).staticTime CostModel.unit)) = _
+  rw [mulLimbs_staticTime_unit, redcLimbs_staticTime, subLimbs_staticTime,
+    selectLimbs_staticTime]
+  simp [redcRowCost, macStepCost, addStepCost, selStepCost, CostModel.unit]
+  ring
+
+/-! ### The reduction, arithmetically
+
+`redcAcc` is what the rows compute: `n` multiples of `p`, the `n`-th chosen to clear
+limb `n`. Three facts make it a Montgomery reduction — the accumulator is divisible by
+`2 ^ (64n)`, it differs from `T` by a multiple of `p` below `2 ^ (64n)`, and hence its
+quotient by `R` is below `2p` and satisfies `t * R ≡ T (mod p)`. Only
+`p * pinv + 1 ≡ 0 (mod 2 ^ 64)` is used, one word of the constant. -/
+
+/-- The accumulator after `n` word-wise reduction rows. -/
+def redcAcc (p pinv T : ℕ) : ℕ → ℕ
+  | 0 => T
+  | n + 1 =>
+    redcAcc p pinv T n
+      + limb 64 (redcAcc p pinv T n) n * pinv % 2 ^ 64 * p * 2 ^ (64 * n)
+
+/-- Each row clears one more limb. -/
+theorem redcAcc_dvd {p pinv T : ℕ} (h : (p * pinv + 1) % 2 ^ 64 = 0) :
+    ∀ n, 2 ^ (64 * n) ∣ redcAcc p pinv T n
+  | 0 => by simp [redcAcc]
+  | n + 1 => by
+    obtain ⟨q, hq⟩ := redcAcc_dvd (T := T) h n
+    have hlimb : limb 64 (redcAcc p pinv T n) n = q % 2 ^ 64 := by
+      rw [limb, hq, Nat.mul_div_cancel_left _ (Nat.two_pow_pos _)]
+    have hdvd : (2:ℕ) ^ 64 ∣ q + q % 2 ^ 64 * pinv % 2 ^ 64 * p := by
+      have h1 : q % 2 ^ 64 * pinv % 2 ^ 64 * p ≡ q * pinv * p [MOD 2 ^ 64] :=
+        Nat.ModEq.mul_right _ ((Nat.mod_modEq _ _).trans
+          (Nat.ModEq.mul_right _ (Nat.mod_modEq _ _)))
+      have h2 : (p * pinv + 1) ≡ 0 [MOD 2 ^ 64] := by
+        simp only [Nat.ModEq, Nat.zero_mod]; exact h
+      have : q + q % 2 ^ 64 * pinv % 2 ^ 64 * p ≡ 0 [MOD 2 ^ 64] := by
+        calc q + q % 2 ^ 64 * pinv % 2 ^ 64 * p
+            ≡ q + q * pinv * p [MOD 2 ^ 64] := Nat.ModEq.add_left _ h1
+          _ = q * (p * pinv + 1) := by ring
+          _ ≡ q * 0 [MOD 2 ^ 64] := Nat.ModEq.mul_left _ h2
+          _ = 0 := by ring
+      exact (Nat.modEq_zero_iff_dvd).mp this
+    obtain ⟨c, hc⟩ := hdvd
+    refine ⟨c, ?_⟩
+    have hpow : (2:ℕ) ^ (64 * (n + 1)) = 2 ^ (64 * n) * 2 ^ 64 := by
+      rw [← pow_add]; ring_nf
+    show redcAcc p pinv T n + limb 64 (redcAcc p pinv T n) n * pinv % 2 ^ 64
+      * p * 2 ^ (64 * n) = _
+    rw [hlimb, hq, hpow]
+    calc 2 ^ (64 * n) * q + q % 2 ^ 64 * pinv % 2 ^ 64 * p * 2 ^ (64 * n)
+        = 2 ^ (64 * n) * (q + q % 2 ^ 64 * pinv % 2 ^ 64 * p) := by ring
+      _ = 2 ^ (64 * n) * (2 ^ 64 * c) := by rw [hc]
+      _ = 2 ^ (64 * n) * 2 ^ 64 * c := by ring
+
+/-- The rows add a multiple of `p` below `2 ^ (64n)`. -/
+theorem redcAcc_form (p pinv T : ℕ) :
+    ∀ n, ∃ M < 2 ^ (64 * n), redcAcc p pinv T n = T + M * p
+  | 0 => ⟨0, by simp, by simp [redcAcc]⟩
+  | n + 1 => by
+    obtain ⟨M, hM, hEq⟩ := redcAcc_form p pinv T n
+    refine ⟨M + limb 64 (redcAcc p pinv T n) n * pinv % 2 ^ 64 * 2 ^ (64 * n), ?_, ?_⟩
+    · have hm : limb 64 (redcAcc p pinv T n) n * pinv % 2 ^ 64 < 2 ^ 64 :=
+        Nat.mod_lt _ (Nat.two_pow_pos _)
+      have hpow : (2:ℕ) ^ (64 * (n + 1)) = 2 ^ (64 * n) * 2 ^ 64 := by
+        rw [← pow_add]; ring_nf
+      calc M + limb 64 (redcAcc p pinv T n) n * pinv % 2 ^ 64 * 2 ^ (64 * n)
+          < 2 ^ (64 * n) + limb 64 (redcAcc p pinv T n) n * pinv % 2 ^ 64
+              * 2 ^ (64 * n) := by omega
+        _ = (limb 64 (redcAcc p pinv T n) n * pinv % 2 ^ 64 + 1) * 2 ^ (64 * n) := by ring
+        _ ≤ 2 ^ 64 * 2 ^ (64 * n) := Nat.mul_le_mul_right _ (by omega)
+        _ = 2 ^ (64 * (n + 1)) := by rw [hpow]; ring
+    · show redcAcc p pinv T n + _ = _
+      rw [hEq]; ring
+
+/-- **The word-wise reduction is a Montgomery reduction.** Its quotient by `R` is
+below `2p` and recovers `T` modulo `p` when multiplied back by `R`. -/
+theorem redcAcc_spec {p pinv T k : ℕ} (hp : 0 < p)
+    (h : (p * pinv + 1) % 2 ^ 64 = 0) (hT : T < p * 2 ^ (64 * k)) :
+    redcAcc p pinv T k / 2 ^ (64 * k) < 2 * p ∧
+      redcAcc p pinv T k / 2 ^ (64 * k) * 2 ^ (64 * k) ≡ T [MOD p] := by
+  obtain ⟨M, hM, hEq⟩ := redcAcc_form p pinv T k
+  obtain ⟨c, hc⟩ := redcAcc_dvd (T := T) h k
+  have hquot : redcAcc p pinv T k / 2 ^ (64 * k) * 2 ^ (64 * k) = redcAcc p pinv T k := by
+    rw [hc, Nat.mul_div_cancel_left _ (Nat.two_pow_pos _)]; ring
+  refine ⟨?_, ?_⟩
+  · have hlt : redcAcc p pinv T k / 2 ^ (64 * k) * 2 ^ (64 * k) < 2 * p * 2 ^ (64 * k) := by
+      calc redcAcc p pinv T k / 2 ^ (64 * k) * 2 ^ (64 * k) = T + M * p := by
+            rw [hquot, hEq]
+        _ < p * 2 ^ (64 * k) + 2 ^ (64 * k) * p :=
+            by have := Nat.mul_lt_mul_of_lt_of_le hM (le_refl p) hp; omega
+        _ = 2 * p * 2 ^ (64 * k) := by ring
+    exact Nat.lt_of_mul_lt_mul_right hlt
+  · rw [hquot, hEq]
+    simp [Nat.ModEq, Nat.add_mul_mod_self_right]
+
+/-! ### The fold
+
+`foldHeld`'s two wrap tests, and what the five instructions leave in `t` and `cb`. -/
+
+theorem foldHeld_arith {tv sv cbv : ℕ} (htv : tv < 2 ^ 64) (hsv : sv < 2 ^ 64)
+    (hcbv : cbv ≤ 2) :
+    tv + sv + cbv
+      = (tv + (sv + cbv) % 2 ^ 64) % 2 ^ 64
+        + ((if (sv + cbv) % 2 ^ 64 < cbv then 1 else 0)
+            + (if (tv + (sv + cbv) % 2 ^ 64) % 2 ^ 64 < (sv + cbv) % 2 ^ 64 then 1
+                else 0)) * 2 ^ 64 := by
+  split_ifs <;> omega
+
+theorem foldHeld_exec {t sc cb u : ℕ}
+    (hcu : cb ≠ u) (htu : t ≠ u) (htc : t ≠ cb)
+    {s : State 64} {tv sv cbv : ℕ}
+    (htv : tv < 2 ^ 64) (hsv : sv < 2 ^ 64) (hcbv : cbv ≤ 2)
+    (hrt : s.regs t = BitVec.ofNat 64 tv) (hrs : s.regs sc = BitVec.ofNat 64 sv)
+    (hrc : s.regs cb = BitVec.ofNat 64 cbv) :
+    ∃ s' tt dd pp, Exec C (foldHeld t sc cb u) s s' tt dd pp ∧
+      ∃ tv' cbv', tv' < 2 ^ 64 ∧ cbv' ≤ 2 ∧
+        tv + sv + cbv = tv' + cbv' * 2 ^ 64 ∧
+        s'.regs t = BitVec.ofNat 64 tv' ∧ s'.regs cb = BitVec.ofNat 64 cbv' ∧
+        (∀ q, q ≠ t → q ≠ cb → q ≠ u → s'.regs q = s.regs q) ∧
+        s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hnat : ∀ x : ℕ, x < 2 ^ 64 → (BitVec.ofNat 64 x).toNat = x := by
+    intro x hx; simp only [BitVec.toNat_ofNat]; omega
+  have hadd : ∀ x y : ℕ, BitVec.ofNat 64 x + BitVec.ofNat 64 y
+      = BitVec.ofNat 64 ((x + y) % 2 ^ 64) := by
+    intro x y; apply BitVec.eq_of_toNat_eq; simp [Nat.add_mod]
+  refine ⟨_, _, _, _, .seq .bin (.seq .bin (.seq .bin (.seq .bin .bin))),
+    (tv + (sv + cbv) % 2 ^ 64) % 2 ^ 64,
+    (if (sv + cbv) % 2 ^ 64 < cbv then 1 else 0)
+      + (if (tv + (sv + cbv) % 2 ^ 64) % 2 ^ 64 < (sv + cbv) % 2 ^ 64 then 1 else 0),
+    Nat.mod_lt _ (Nat.two_pow_pos _), by split_ifs <;> omega,
+    foldHeld_arith htv hsv hcbv, ?_, ?_, ?_, rfl, rfl⟩
+  · simp only [BinOp.eval, regs_setReg_self,
+      regs_setReg_ne _ _ htc, regs_setReg_ne _ _ htu, regs_setReg_ne _ _ (Ne.symm hcu),
+      regs_setReg_ne _ _ (Ne.symm htu), hrt, hrs, hrc, hadd]
+  · simp only [BinOp.eval, regs_setReg_self,
+      regs_setReg_ne _ _ hcu, regs_setReg_ne _ _ htc, regs_setReg_ne _ _ htu,
+      regs_setReg_ne _ _ (Ne.symm hcu), regs_setReg_ne _ _ (Ne.symm htu),
+      regs_setReg_ne _ _ (Ne.symm htc),
+      hrt, hrs, hrc, hadd, hnat _ (Nat.mod_lt _ (Nat.two_pow_pos 64)),
+      hnat _ (show cbv < 2 ^ 64 by omega)]
+    split_ifs <;> rfl
+  · intro q hqt hqc hqu
+    simp only [regs_setReg_ne _ _ hqc, regs_setReg_ne _ _ hqu,
+      regs_setReg_ne _ _ hqt]
+
+/-! ### Straightness -/
+
+theorem foldHeld_saf (t sc cb u : ℕ) : SAF (foldHeld t sc cb u) :=
+  (saf_leaf_bin _ _ _ _).seq ((saf_leaf_bin _ _ _ _).seq ((saf_leaf_bin _ _ _ _).seq
+    ((saf_leaf_bin _ _ _ _).seq (saf_leaf_bin _ _ _ _))))
+
+theorem redcRow_saf (k acc pReg pinv m cb u sc i : ℕ) :
+    SAF (redcRow k acc pReg pinv m cb u sc i) :=
+  (saf_leaf_bin _ _ _ _).seq ((macLimbs_saf _ _ _ _ _).seq (foldHeld_saf _ _ _ _))
+
+theorem redcRows_saf (k acc pReg pinv m cb u sc : ℕ) :
+    ∀ n, SAF (redcRows k acc pReg pinv m cb u sc n)
+  | 0 => saf_skip
+  | n + 1 => (redcRows_saf k acc pReg pinv m cb u sc n).seq (redcRow_saf _ _ _ _ _ _ _ _ _)
+
+theorem redcLimbs_saf (k acc pReg pinv m cb u sc : ℕ) :
+    SAF (redcLimbs k acc pReg pinv m cb u sc) :=
+  (saf_leaf_imm _ _).seq ((redcRows_saf _ _ _ _ _ _ _ _ _).seq (saf_leaf_mov _ _))
+
+theorem montMulSOS_saf (k a b pReg pinv w : ℕ) : SAF (montMulSOS k a b pReg pinv w) :=
+  (mulLimbs_saf _ _ _ _ _).seq ((redcLimbs_saf _ _ _ _ _ _ _ _).seq
+    ((subLimbs_saf _ _ _ _ _ _).seq (selectLimbs_saf _ _ _ _ _ _)))
+
+/-- Worst-case runtime of a Montgomery multiply, at every field. -/
+theorem montMulSOS_time {k' a b pReg pinv w : ℕ} {s s' : State 64} {t : ℕ} {d pp : ℤ}
+    (h : Exec CostModel.unit (montMulSOS (k' + 1) a b pReg pinv w) s s' t d pp) :
+    t = 16 * k' ^ 2 + 47 * k' + 40 :=
+  (h.straight_time_eq (montMulSOS_saf _ _ _ _ _ _).1).trans
+    (montMulSOS_staticTime_unit _ _ _ _ _ _)
+
 end Caliper.MultiLimb
