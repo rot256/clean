@@ -3,6 +3,7 @@ import Clean.Caliper.MultiLimbOps
 import Clean.Caliper.RegOnly
 import Clean.Caliper.MultiLimbInv
 import Clean.Caliper.MultiLimbIR
+import Clean.Caliper.MultiLimbEntry
 import Clean.Caliper.MultiLimb
 import Clean.Caliper.WitgenCompile
 import Clean.Caliper.WitgenComputable
