@@ -1,4 +1,5 @@
 import Clean.Caliper.MultiLimbCompile
+import Clean.Caliper.MultiLimbOps
 import Clean.Caliper.MultiLimb
 import Clean.Caliper.WitgenCompile
 import Clean.Caliper.WitgenComputable

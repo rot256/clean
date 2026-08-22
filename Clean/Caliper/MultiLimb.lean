@@ -1454,6 +1454,32 @@ theorem loadLimbs_staticTime (C : CostModel) (base idx sc : ℕ) :
     show (loadLimbs base idx sc n).staticTime C + _ = _
     rw [loadLimbs_staticTime C base idx sc n]; simp [Stmt.staticTime]; ring
 
+/-- `immLimbs` writes exactly the limbs of `v`, and touches nothing else. -/
+theorem immLimbs_exec (base v : ℕ) {s : State 64} :
+    ∀ n, ∃ s' t dd pp, Exec C (immLimbs base v n) s s' t dd pp ∧
+      RegsEnc s' base n v ∧
+      (∀ q, q < base → s'.regs q = s.regs q) ∧
+      (∀ q, base + n ≤ q → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps
+  | 0 => ⟨s, 0, 0, 0, .skip, fun _ h => absurd h (by omega), fun _ _ => rfl,
+      fun _ _ => rfl, rfl, rfl⟩
+  | n + 1 => by
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hlow₁, hhigh₁, hbuf₁, hcap₁⟩ :=
+      immLimbs_exec base v (s := s) n
+    refine ⟨_, _, _, _, .seq hex₁ .imm, ?_, ?_, ?_, ?_, ?_⟩
+    · intro j hj
+      rcases Nat.lt_or_ge j n with hlt | hge
+      · rw [regs_setReg_ne _ _ (show base + j ≠ base + n by omega)]; exact hd₁ j hlt
+      · have : j = n := by omega
+        subst this
+        exact regs_setReg_self _ _ _
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ base + n by omega)]; exact hlow₁ q hq
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ base + n by omega)]; exact hhigh₁ q (by omega)
+    · simpa using hbuf₁
+    · simpa using hcap₁
+
 theorem immLimbs_saf (base v : ℕ) : ∀ n, SAF (immLimbs base v n)
   | 0 => saf_skip
   | n + 1 => (immLimbs_saf base v n).seq (saf_leaf_imm _ _)
