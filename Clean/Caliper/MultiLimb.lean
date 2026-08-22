@@ -2172,4 +2172,92 @@ def pGoldilocks : ℕ := 2 ^ 64 - 2 ^ 32 + 1
 #guard_msgs in
 #eval montConstOk pBN254 12345 4
 
+/-! ## Low-half multiply
+
+The Montgomery multiplier `M = (T mod R) * pinv mod R` needs only the *low* `k` limbs
+of a `k × k` product. A full `mulLimbs` computes all `2k` and throws half away. Row
+`i` of the low half only reaches limb `k - 1`, so it needs `k - i` accumulate steps
+rather than `k`, and no carry is stored — the carry leaves the low half.
+
+That turns the row cost from a constant `k` into a shrinking `k - i`, so the total
+falls from `8k² - k` to `4k² + 2k`: at `k = 4`, 72 steps against 124. -/
+
+/-- Row `i` of a low-half multiply: only limbs `i .. k - 1` matter. -/
+def mulLowRow (k acc a b sc i : ℕ) : Stmt 64 :=
+  macLimbs (k - i) (acc + i) a (b + i) sc
+
+def mulLowRowsFrom (k acc a b sc : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => mulLowRowsFrom k acc a b sc n ;; mulLowRow k acc a b sc (n + 1)
+
+/-- `acc ← (a * b) mod 2 ^ (64k)`, the low half only. -/
+def mulLowLimbs (k acc a b sc : ℕ) : Stmt 64 :=
+  match k with
+  | 0 => .skip
+  | k' + 1 => macSetLimbs (k' + 1) acc a b sc ;; mulLowRowsFrom (k' + 1) acc a b sc k'
+
+theorem mulLowRow_staticTime (C : CostModel) (k acc a b sc i : ℕ) :
+    (mulLowRow k acc a b sc i).staticTime C = C.imm + (k - i) * macStepCost C :=
+  macLimbs_staticTime _ _ _ _ _ _
+
+theorem mulLowRowsFrom_staticTime (C : CostModel) (k acc a b sc : ℕ) :
+    ∀ n, (mulLowRowsFrom k acc a b sc n).staticTime C
+      = n * C.imm + (∑ i ∈ Finset.range n, (k - (i + 1))) * macStepCost C
+  | 0 => by simp [mulLowRowsFrom, Stmt.staticTime]
+  | n + 1 => by
+    show (mulLowRowsFrom k acc a b sc n).staticTime C
+      + (mulLowRow k acc a b sc (n + 1)).staticTime C = _
+    rw [mulLowRowsFrom_staticTime C k acc a b sc n, mulLowRow_staticTime,
+      Finset.sum_range_succ]
+    ring
+
+/-- Gauss's sum, in the truncated-subtraction form the row lengths take. Stated as
+twice the sum so no division appears. -/
+theorem two_mul_sum_range_sub :
+    ∀ n : ℕ, 2 * ∑ i ∈ Finset.range n, (n - i) = n * (n + 1)
+  | 0 => by simp
+  | n + 1 => by
+    have h : ∀ i ∈ Finset.range n, n + 1 - i = (n - i) + 1 := fun i hi => by
+      simp only [Finset.mem_range] at hi; omega
+    have hexp : (n + 1) * (n + 1 + 1) = n * (n + 1) + 2 * (n + 1) := by ring
+    have ih := two_mul_sum_range_sub n
+    rw [Finset.sum_range_succ, Finset.sum_congr rfl h, Finset.sum_add_distrib,
+      Finset.sum_const, Finset.card_range, smul_eq_mul, mul_one]
+    omega
+
+/-- A low-half multiply costs `4k² + 2k` unit steps, against `8k² - k` for the full
+product: 72 steps at `k = 4` where the full multiply takes 124. -/
+theorem mulLowLimbs_staticTime_unit (k' acc a b sc : ℕ) :
+    (mulLowLimbs (k' + 1) acc a b sc).staticTime CostModel.unit
+      = 4 * k' ^ 2 + 10 * k' + 6 := by
+  show (macSetLimbs (k' + 1) acc a b sc).staticTime CostModel.unit
+    + (mulLowRowsFrom (k' + 1) acc a b sc k').staticTime CostModel.unit = _
+  rw [macSetLimbs_staticTime, mulLowRowsFrom_staticTime]
+  have hgauss : 2 * ∑ i ∈ Finset.range k', (k' + 1 - (i + 1)) = k' * (k' + 1) := by
+    rw [Finset.sum_congr rfl fun i _ => show k' + 1 - (i + 1) = k' - i by omega]
+    exact two_mul_sum_range_sub k'
+  have hsq : k' * (k' + 1) = k' ^ 2 + k' := by ring
+  simp only [macStepCost, macSetStepCost, CostModel.unit]
+  omega
+
+theorem mulLowRow_saf (k acc a b sc i : ℕ) : SAF (mulLowRow k acc a b sc i) :=
+  macLimbs_saf _ _ _ _ _
+
+theorem mulLowRowsFrom_saf (k acc a b sc : ℕ) :
+    ∀ n, SAF (mulLowRowsFrom k acc a b sc n)
+  | 0 => saf_skip
+  | n + 1 => (mulLowRowsFrom_saf k acc a b sc n).seq (mulLowRow_saf _ _ _ _ _ _)
+
+theorem mulLowLimbs_saf (k acc a b sc : ℕ) : SAF (mulLowLimbs k acc a b sc) := by
+  cases k with
+  | zero => exact saf_skip
+  | succ k' => exact (macSetLimbs_saf _ _ _ _ _).seq (mulLowRowsFrom_saf _ _ _ _ _ _)
+
+/-- Worst-case runtime of a low-half multiply, at every field. -/
+theorem mulLowLimbs_time {k' acc a b sc : ℕ} {s s' : State 64} {t : ℕ} {d pp : ℤ}
+    (h : Exec CostModel.unit (mulLowLimbs (k' + 1) acc a b sc) s s' t d pp) :
+    t = 4 * k' ^ 2 + 10 * k' + 6 :=
+  (h.straight_time_eq (mulLowLimbs_saf _ _ _ _ _).1).trans
+    (mulLowLimbs_staticTime_unit _ _ _ _ _)
+
 end Caliper.MultiLimb
