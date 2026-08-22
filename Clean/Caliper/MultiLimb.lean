@@ -2260,4 +2260,132 @@ theorem mulLowLimbs_time {k' acc a b sc : ℕ} {s s' : State 64} {t : ℕ} {d pp
   (h.straight_time_eq (mulLowLimbs_saf _ _ _ _ _).1).trans
     (mulLowLimbs_staticTime_unit _ _ _ _ _)
 
+/-! ### Correctness of the low-half multiply
+
+The invariant is the same `mulAcc` as the full product, but only `k` limbs of it are
+kept: `RegsEnc s acc k (mulAcc A B n)` constrains the value only modulo `2 ^ (64k)`,
+which is exactly what a low-half multiply computes. Row `i` reads `a`'s low `k - i`
+limbs rather than all `k` — the limbs it drops contribute only above `2 ^ (64k)`. -/
+
+/-- Row `i` of the low half extends the invariant by one limb of `B`, modulo
+`2 ^ (64k)`. -/
+theorem mulLowRow_exec {k acc a b sc i : ℕ} (hl : MulLayout k acc a b sc) (hik : i < k)
+    {s : State 64} {A B : ℕ}
+    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B)
+    (hacc : RegsEnc s acc k (mulAcc A B i)) :
+    ∃ s' t dd pp, Exec C (mulLowRow k acc a b sc i) s s' t dd pp ∧
+      RegsEnc s' acc k (mulAcc A B (i + 1)) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hA' := hl.opA
+  have hB' := hl.opB
+  have hD := hl.dest
+  set m := k - i with hm
+  have hmk : i + m = k := by omega
+  set X := A % 2 ^ (64 * m) with hX
+  set W := mulAcc A B i / 2 ^ (64 * i) with hW
+  have hXlt : X < 2 ^ (64 * m) := Nat.mod_lt _ (Nat.two_pow_pos _)
+  have haX : RegsEnc s a m X := by
+    intro j hj; rw [hX, limb_mod hj]; exact har j (by omega)
+  have hwin : RegsEnc s (acc + i) m W := by
+    intro j hj
+    rw [show acc + i + j = acc + (i + j) by ring, hacc (i + j) (by omega), hW,
+      limb_window]
+  have hbi : s.regs (b + i) = BitVec.ofNat 64 (limb 64 B i) := hbr i hik
+  have hmac : MacLayout m (acc + i) a (b + i) sc := ⟨by omega, by omega, by omega⟩
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, _, hpres₁, hmid₁, _, hbuf₁, hcap₁⟩ :=
+    macLimbs_exec (C := C) hmac (limb_lt 64 B i) hXlt haX hwin hbi
+  -- the accumulator, split at the row's offset
+  have hlow : mulAcc A B i % 2 ^ (64 * i) < 2 ^ (64 * i) := Nat.mod_lt _ (Nat.two_pow_pos _)
+  have hsplit : mulAcc A B (i + 1)
+      = mulAcc A B i % 2 ^ (64 * i) + (W + A * limb 64 B i) * 2 ^ (64 * i) := by
+    have hdm : 2 ^ (64 * i) * (mulAcc A B i / 2 ^ (64 * i))
+        + mulAcc A B i % 2 ^ (64 * i) = mulAcc A B i := Nat.div_add_mod _ _
+    rw [mulAcc_succ, hW]
+    calc mulAcc A B i + A * limb 64 B i * 2 ^ (64 * i)
+        = (2 ^ (64 * i) * (mulAcc A B i / 2 ^ (64 * i))
+            + mulAcc A B i % 2 ^ (64 * i)) + A * limb 64 B i * 2 ^ (64 * i) := by
+          rw [hdm]
+      _ = mulAcc A B i % 2 ^ (64 * i)
+            + (mulAcc A B i / 2 ^ (64 * i) + A * limb 64 B i) * 2 ^ (64 * i) := by ring
+  have hquot : mulAcc A B (i + 1) / 2 ^ (64 * i) = W + A * limb 64 B i := by
+    rw [hsplit]; exact div_shift_exact hlow
+  -- the row computes the window's new value modulo `2 ^ (64 m)`
+  have hcong : (W % 2 ^ (64 * m) + X * limb 64 B i) % 2 ^ (64 * m)
+      = (W + A * limb 64 B i) % 2 ^ (64 * m) := by
+    rw [hX]; simp [Nat.add_mod, Nat.mul_mod]
+  refine ⟨s₁, _, _, _, hex₁, ?_, fun q hq => hpres₁ q hq, hbuf₁, hcap₁⟩
+  intro j hj
+  rcases Nat.lt_or_ge j i with hji | hji
+  · rw [hmid₁ _ (by omega) (by omega), hacc j (by omega), mulAcc_succ,
+      limb_add_shift_lt hji]
+  · have hj' : j = i + (j - i) := by omega
+    have hjm : j - i < m := by omega
+    rw [hj', show acc + (i + (j - i)) = acc + i + (j - i) by ring, hd₁ (j - i) hjm,
+      limb_window, hquot, ← limb_mod (v := W + A * limb 64 B i) hjm, ← hcong,
+      limb_mod hjm]
+
+/-- Rows `1 .. n` of the low half. -/
+theorem mulLowRowsFrom_exec {k acc a b sc : ℕ} (hl : MulLayout k acc a b sc)
+    {s : State 64} {A B : ℕ}
+    (har : RegsEnc s a k A) (hbr : RegsEnc s b k B)
+    (hacc : RegsEnc s acc k (mulAcc A B 1)) :
+    ∀ n, n + 1 ≤ k →
+      ∃ s' t dd pp, Exec C (mulLowRowsFrom k acc a b sc n) s s' t dd pp ∧
+        RegsEnc s' acc k (mulAcc A B (n + 1)) ∧
+        (∀ q, q < sc → s'.regs q = s.regs q) ∧
+        s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hA' := hl.opA
+  have hB' := hl.opB
+  have hD := hl.dest
+  intro n
+  induction n with
+  | zero => intro _; exact ⟨s, 0, 0, 0, .skip, hacc, fun _ _ => rfl, rfl, rfl⟩
+  | succ n ih =>
+    intro hn
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ := ih (by omega)
+    have har₁ : RegsEnc s₁ a k A := by
+      intro j hj; rw [hpres₁ _ (by omega)]; exact har j hj
+    have hbr₁ : RegsEnc s₁ b k B := by
+      intro j hj; rw [hpres₁ _ (by omega)]; exact hbr j hj
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hd₂, hpres₂, hbuf₂, hcap₂⟩ :=
+      mulLowRow_exec (C := C) (i := n + 1) hl (by omega) har₁ hbr₁ hd₁
+    exact ⟨s₂, _, _, _, .seq hex₁ hex₂, hd₂,
+      fun q hq => (hpres₂ q hq).trans (hpres₁ q hq),
+      hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+
+/-- **The low-half multiply is correct.** The destination's `k` limbs hold
+`A * B mod 2 ^ (64k)` — the Montgomery multiplier, at half the partial products of a
+full product. -/
+theorem mulLowLimbs_exec {k' acc a b sc : ℕ} (hl : MulLayout (k' + 1) acc a b sc)
+    {s : State 64} {A B : ℕ} (hA : A < 2 ^ (64 * (k' + 1)))
+    (har : RegsEnc s a (k' + 1) A) (hbr : RegsEnc s b (k' + 1) B) :
+    ∃ s' t dd pp, Exec C (mulLowLimbs (k' + 1) acc a b sc) s s' t dd pp ∧
+      RegsEnc s' acc (k' + 1) (A * B) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hA' := hl.opA
+  have hB' := hl.opB
+  have hD := hl.dest
+  have hmac : MacLayout (k' + 1) acc a b sc := ⟨by omega, by omega, by omega⟩
+  have hb0 : s.regs b = BitVec.ofNat 64 (limb 64 B 0) := by
+    have := hbr 0 (by omega); simpa using this
+  have hval : mulAcc A B 1 = A * limb 64 B 0 := by
+    simp only [mulAcc, limb, Nat.mul_zero, pow_zero, Nat.div_one, Nat.mul_one]
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, _, hpres₁, _, hbuf₁, hcap₁⟩ :=
+    macSetLimbs_exec (C := C) hmac (limb_lt 64 B 0) hA har hb0
+  have hacc₁ : RegsEnc s₁ acc (k' + 1) (mulAcc A B 1) := by
+    intro j hj; rw [hd₁ j hj, hval]
+  have har₁ : RegsEnc s₁ a (k' + 1) A := by
+    intro j hj; rw [hpres₁ _ (by omega)]; exact har j hj
+  have hbr₁ : RegsEnc s₁ b (k' + 1) B := by
+    intro j hj; rw [hpres₁ _ (by omega)]; exact hbr j hj
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hd₂, hpres₂, hbuf₂, hcap₂⟩ :=
+    mulLowRowsFrom_exec (C := C) hl har₁ hbr₁ hacc₁ k' (by omega)
+  refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_,
+    fun q hq => (hpres₂ q hq).trans (hpres₁ q hq),
+    hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+  refine hd₂.congr ?_
+  simp only [mulAcc, Nat.mul_mod, Nat.mod_mod]
+
 end Caliper.MultiLimb
