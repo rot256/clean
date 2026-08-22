@@ -1185,4 +1185,110 @@ proved `TimeTriple` rather than leaning on `staticTime`, and `compile_time_eq` b
 inverting programs; that was never a side-channel guarantee here, and
 `witgen < 2 ^ 40` is an upper-bound claim to begin with. -/
 
+/-! ## Straight-line, and hence real runtime bounds
+
+The cost formulas above are functions of the syntax. They become statements about
+*executions* through `Exec.straight_time_eq`, which needs the code straight-line —
+true of every gadget here, since none emits `ifNZ`, `whileNZ` or a dynamic
+`memAlloc`. `AllocFree` comes along in the same induction and gives the memory side.
+
+This is what makes the bounds hold *for every field*: `k` is a parameter, so
+`montMulOpt_time` prices a Montgomery multiplication over a modulus of any size. -/
+
+/-- Straight-line and allocation-free, the pair every gadget here satisfies. -/
+def SAF (c : Stmt 64) : Prop := c.Straight ∧ c.AllocFree
+
+theorem SAF.seq {c₁ c₂ : Stmt 64} (h₁ : SAF c₁) (h₂ : SAF c₂) : SAF (c₁ ;; c₂) :=
+  ⟨⟨h₁.1, h₂.1⟩, ⟨h₁.2, h₂.2⟩⟩
+
+theorem saf_leaf_bin (op : BinOp) (d a b : Reg) : SAF (.bin op d a b) := ⟨trivial, trivial⟩
+theorem saf_leaf_un (op : UnOp) (d a : Reg) : SAF (.un op d a) := ⟨trivial, trivial⟩
+theorem saf_leaf_imm (d : Reg) (v : Word 64) : SAF (.imm d v) := ⟨trivial, trivial⟩
+theorem saf_leaf_mov (d a : Reg) : SAF (.mov d a) := ⟨trivial, trivial⟩
+theorem saf_skip : SAF (.skip : Stmt 64) := ⟨trivial, trivial⟩
+
+theorem addStep_saf (d a b sc i : ℕ) : SAF (addStep d a b sc i) := by
+  simp [addStep, SAF, Stmt.Straight, Stmt.AllocFree]
+
+theorem addLoop_saf (d a b sc : ℕ) : ∀ n, SAF (addLoop d a b sc n)
+  | 0 => saf_skip
+  | n + 1 => (addLoop_saf d a b sc n).seq (addStep_saf d a b sc n)
+
+theorem addLimbsC_saf (k d a b sc c0 : ℕ) : SAF (addLimbsC k d a b sc c0) :=
+  (saf_leaf_imm _ _).seq (addLoop_saf d a b sc k)
+
+theorem notLoop_saf (nb b : ℕ) : ∀ n, SAF (notLoop nb b n)
+  | 0 => saf_skip
+  | n + 1 => (notLoop_saf nb b n).seq (saf_leaf_un _ _ _)
+
+theorem subLimbs_saf (k d a b nb sc : ℕ) : SAF (subLimbs k d a b nb sc) :=
+  (notLoop_saf nb b k).seq (addLimbsC_saf k d a nb sc 1)
+
+theorem macStep_saf (acc x y sc j : ℕ) : SAF (macStep acc x y sc j) := by
+  simp [macStep, SAF, Stmt.Straight, Stmt.AllocFree]
+
+theorem macLoop_saf (acc x y sc : ℕ) : ∀ n, SAF (macLoop acc x y sc n)
+  | 0 => saf_skip
+  | n + 1 => (macLoop_saf acc x y sc n).seq (macStep_saf acc x y sc n)
+
+theorem macLimbs_saf (k acc x y sc : ℕ) : SAF (macLimbs k acc x y sc) :=
+  (saf_leaf_imm _ _).seq (macLoop_saf acc x y sc k)
+
+theorem macSetStep_saf (acc x y sc j : ℕ) : SAF (macSetStep acc x y sc j) := by
+  simp [macSetStep, SAF, Stmt.Straight, Stmt.AllocFree]
+
+theorem macSetLoop_saf (acc x y sc : ℕ) : ∀ n, SAF (macSetLoop acc x y sc n)
+  | 0 => saf_skip
+  | n + 1 => (macSetLoop_saf acc x y sc n).seq (macSetStep_saf acc x y sc n)
+
+theorem macSetLimbs_saf (k acc x y sc : ℕ) : SAF (macSetLimbs k acc x y sc) :=
+  (saf_leaf_imm _ _).seq (macSetLoop_saf acc x y sc k)
+
+theorem selectStep_saf (d a b f sc i : ℕ) : SAF (selectStep d a b f sc i) := by
+  simp [selectStep, SAF, Stmt.Straight, Stmt.AllocFree]
+
+theorem selectLoop_saf (d a b f sc : ℕ) : ∀ n, SAF (selectLoop d a b f sc n)
+  | 0 => saf_skip
+  | n + 1 => (selectLoop_saf d a b f sc n).seq (selectStep_saf d a b f sc n)
+
+theorem selectLimbs_saf (k d a b f sc : ℕ) : SAF (selectLimbs k d a b f sc) :=
+  selectLoop_saf d a b f sc k
+
+theorem foldCarry_saf (acc sc k : ℕ) : SAF (foldCarry acc sc k) := by
+  simp [foldCarry, SAF, Stmt.Straight, Stmt.AllocFree]
+
+theorem ciosRowAt_saf (k acc a b p pinv sc m i : ℕ) :
+    SAF (ciosRowAt k acc a b p pinv sc m i) :=
+  (macLimbs_saf _ _ _ _ _).seq ((foldCarry_saf _ _ _).seq ((saf_leaf_bin _ _ _ _).seq
+    ((macLimbs_saf _ _ _ _ _).seq (foldCarry_saf _ _ _))))
+
+theorem ciosRowsFrom_saf (k acc a b p pinv sc m : ℕ) :
+    ∀ n, SAF (ciosRowsFrom k acc a b p pinv sc m n)
+  | 0 => saf_skip
+  | n + 1 => (ciosRowsFrom_saf k acc a b p pinv sc m n).seq
+      (ciosRowAt_saf _ _ _ _ _ _ _ _ _)
+
+theorem ciosRow0_saf (k acc a b p pinv sc m : ℕ) :
+    SAF (ciosRow0 k acc a b p pinv sc m) :=
+  (macSetLimbs_saf _ _ _ _ _).seq ((saf_leaf_mov _ _).seq ((saf_leaf_imm _ _).seq
+    ((saf_leaf_bin _ _ _ _).seq ((macLimbs_saf _ _ _ _ _).seq (foldCarry_saf _ _ _)))))
+
+theorem montMulOpt_saf (k acc a b p pinv sc m : ℕ) :
+    SAF (montMulOpt k acc a b p pinv sc m) := by
+  cases k with
+  | zero => exact saf_skip
+  | succ k' =>
+    exact (ciosRow0_saf _ _ _ _ _ _ _ _).seq (ciosRowsFrom_saf _ _ _ _ _ _ _ _ _)
+
+/-- **Worst-case running time of a Montgomery multiplication, at every field.** Over a
+`k`-limb modulus — `k = ⌈bits p / 64⌉`, so any prime whatsoever — every execution
+takes exactly `16k² + 6k - 1` unit steps, written subtraction-free at `k = k' + 1`.
+Exact rather than merely bounded, because the code is straight-line. -/
+theorem montMulOpt_time {k' acc a b p pinv sc m : ℕ} {s s' : State 64} {t : ℕ}
+    {d pp : ℤ}
+    (h : Exec CostModel.unit (montMulOpt (k' + 1) acc a b p pinv sc m) s s' t d pp) :
+    t = 16 * k' ^ 2 + 38 * k' + 21 :=
+  (h.straight_time_eq (montMulOpt_saf _ _ _ _ _ _ _ _).1).trans
+    (montMulOpt_staticTime_unit _ _ _ _ _ _ _ _)
+
 end Caliper.MultiLimb
