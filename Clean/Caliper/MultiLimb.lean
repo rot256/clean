@@ -1291,4 +1291,148 @@ theorem montMulOpt_time {k' acc a b p pinv sc m : ℕ} {s s' : State 64} {t : �
   (h.straight_time_eq (montMulOpt_saf _ _ _ _ _ _ _ _).1).trans
     (montMulOpt_staticTime_unit _ _ _ _ _ _ _ _)
 
+/-! ## Modular arithmetic, and the cost of a field operation at any modulus
+
+`limbCount p` is how many 64-bit words a modulus needs; every operation below is
+parameterised by it, so the bounds hold at every field. Reduction is a conditional
+subtract done branch-free: subtract the modulus, then select on the borrow bit, which
+is exactly the flag `subLimbs` already produces.
+
+For a *small* modulus the compiler should not use these: the existing single-word
+`fieldOp` reduces with one `umod` and costs 3 instructions where `montAdd` costs
+`14k + 3`, which at `k = 1` is 17. The dispatch is per-operation, since the
+single-word path needs `2p ≤ 2^64` for addition but `p² ≤ 2^64` for multiplication —
+Goldilocks can use it for one and not the other. -/
+
+/-- Number of 64-bit limbs a modulus needs. -/
+def limbCount (p : ℕ) : ℕ := (Nat.size p + 63) / 64
+
+/-- The single-word `fieldOp` reduction is sound for addition when `2p ≤ 2 ^ 64`. -/
+def addFitsWord (p : ℕ) : Prop := 2 * p ≤ 2 ^ 64
+
+/-- …and for multiplication only when `p² ≤ 2 ^ 64`. -/
+def mulFitsWord (p : ℕ) : Prop := p * p ≤ 2 ^ 64
+
+/-- `d ← (a + b) mod p`. Add, subtract the modulus, and select on "the sum reached the
+modulus", which is the addition's carry-out or the subtraction's no-borrow bit. -/
+def montAdd (k d a b pReg t u nb sc flag : ℕ) : Stmt 64 :=
+  addLimbs k t a b sc ;;
+  subLimbs k u t pReg nb flag ;;
+  .bin .or flag sc flag ;;
+  selectLimbs k d u t flag sc
+
+/-- `d ← (a - b) mod p`. Subtract, add the modulus back, and select on the borrow. -/
+def montSub (k d a b pReg t u nb sc flag : ℕ) : Stmt 64 :=
+  subLimbs k t a b nb flag ;;
+  addLimbs k u t pReg sc ;;
+  selectLimbs k d t u flag sc
+
+/-- Montgomery multiplication followed by the conditional subtract that brings the
+result below the modulus. -/
+def montMulRed (k d acc a b pReg pinv m t nb sc : ℕ) : Stmt 64 :=
+  montMulOpt k acc a b pReg pinv sc m ;;
+  subLimbs k t (acc + k) pReg nb sc ;;
+  selectLimbs k d t (acc + k) sc nb
+
+/-! ### Cost -/
+
+def montAddCost (C : CostModel) (k : ℕ) : ℕ :=
+  (C.imm + k * addStepCost C) + (k * C.un .not + (C.imm + k * addStepCost C))
+    + C.bin .or + k * selStepCost C
+
+def montSubCost (C : CostModel) (k : ℕ) : ℕ :=
+  (k * C.un .not + (C.imm + k * addStepCost C)) + (C.imm + k * addStepCost C)
+    + k * selStepCost C
+
+theorem montAdd_staticTime (C : CostModel) (k d a b pReg t u nb sc flag : ℕ) :
+    (montAdd k d a b pReg t u nb sc flag).staticTime C = montAddCost C k := by
+  show (addLimbs k t a b sc).staticTime C
+    + ((subLimbs k u t pReg nb flag).staticTime C
+      + ((Stmt.bin .or flag sc flag).staticTime C
+        + (selectLimbs k d u t flag sc).staticTime C)) = _
+  rw [show addLimbs k t a b sc = addLimbsC k t a b sc 0 from rfl, addLimbsC_staticTime,
+    subLimbs_staticTime, selectLimbs_staticTime]
+  simp [Stmt.staticTime, montAddCost]
+  ring
+
+theorem montSub_staticTime (C : CostModel) (k d a b pReg t u nb sc flag : ℕ) :
+    (montSub k d a b pReg t u nb sc flag).staticTime C = montSubCost C k := by
+  show (subLimbs k t a b nb flag).staticTime C
+    + ((addLimbs k u t pReg sc).staticTime C
+      + (selectLimbs k d t u flag sc).staticTime C) = _
+  rw [subLimbs_staticTime, show addLimbs k u t pReg sc = addLimbsC k u t pReg sc 0 from rfl,
+    addLimbsC_staticTime, selectLimbs_staticTime]
+  simp [montSubCost]
+  ring
+
+/-- A modular addition over a `k`-limb modulus costs exactly `14k + 3` unit steps. -/
+theorem montAdd_staticTime_unit (k d a b pReg t u nb sc flag : ℕ) :
+    (montAdd k d a b pReg t u nb sc flag).staticTime CostModel.unit = 14 * k + 3 := by
+  rw [montAdd_staticTime]
+  simp [montAddCost, addStepCost, selStepCost, CostModel.unit]
+  ring
+
+/-- A modular subtraction costs exactly `14k + 2`. -/
+theorem montSub_staticTime_unit (k d a b pReg t u nb sc flag : ℕ) :
+    (montSub k d a b pReg t u nb sc flag).staticTime CostModel.unit = 14 * k + 2 := by
+  rw [montSub_staticTime]
+  simp [montSubCost, addStepCost, selStepCost, CostModel.unit]
+  ring
+
+/-- A reduced Montgomery multiplication costs exactly `16k² + 15k` unit steps,
+subtraction-free at `k = k' + 1`. -/
+theorem montMulRed_staticTime_unit (k' d acc a b pReg pinv m t nb sc : ℕ) :
+    (montMulRed (k' + 1) d acc a b pReg pinv m t nb sc).staticTime CostModel.unit
+      = 16 * k' ^ 2 + 47 * k' + 31 := by
+  show (montMulOpt (k' + 1) acc a b pReg pinv sc m).staticTime CostModel.unit
+    + ((subLimbs (k' + 1) t (acc + (k' + 1)) pReg nb sc).staticTime CostModel.unit
+      + (selectLimbs (k' + 1) d t (acc + (k' + 1)) sc nb).staticTime CostModel.unit) = _
+  rw [montMulOpt_staticTime_unit, subLimbs_staticTime, selectLimbs_staticTime]
+  simp [addStepCost, selStepCost, CostModel.unit]
+  ring
+
+/-! ### Straightness -/
+
+theorem montAdd_saf (k d a b pReg t u nb sc flag : ℕ) :
+    SAF (montAdd k d a b pReg t u nb sc flag) :=
+  (addLimbsC_saf _ _ _ _ _ _).seq ((subLimbs_saf _ _ _ _ _ _).seq
+    ((saf_leaf_bin _ _ _ _).seq (selectLimbs_saf _ _ _ _ _ _)))
+
+theorem montSub_saf (k d a b pReg t u nb sc flag : ℕ) :
+    SAF (montSub k d a b pReg t u nb sc flag) :=
+  (subLimbs_saf _ _ _ _ _ _).seq ((addLimbsC_saf _ _ _ _ _ _).seq
+    (selectLimbs_saf _ _ _ _ _ _))
+
+theorem montMulRed_saf (k d acc a b pReg pinv m t nb sc : ℕ) :
+    SAF (montMulRed k d acc a b pReg pinv m t nb sc) :=
+  (montMulOpt_saf _ _ _ _ _ _ _ _).seq ((subLimbs_saf _ _ _ _ _ _).seq
+    (selectLimbs_saf _ _ _ _ _ _))
+
+/-! ### Worst-case runtime, at every field
+
+The three theorems the goal asks for: a field operation over a modulus of *any* size
+runs in exactly the stated number of steps, on every input. -/
+
+theorem montAdd_time {k d a b pReg t u nb sc flag : ℕ} {s s' : State 64} {tm : ℕ}
+    {dd pp : ℤ}
+    (h : Exec CostModel.unit (montAdd k d a b pReg t u nb sc flag) s s' tm dd pp) :
+    tm = 14 * k + 3 :=
+  (h.straight_time_eq (montAdd_saf _ _ _ _ _ _ _ _ _ _).1).trans
+    (montAdd_staticTime_unit _ _ _ _ _ _ _ _ _ _)
+
+theorem montSub_time {k d a b pReg t u nb sc flag : ℕ} {s s' : State 64} {tm : ℕ}
+    {dd pp : ℤ}
+    (h : Exec CostModel.unit (montSub k d a b pReg t u nb sc flag) s s' tm dd pp) :
+    tm = 14 * k + 2 :=
+  (h.straight_time_eq (montSub_saf _ _ _ _ _ _ _ _ _ _).1).trans
+    (montSub_staticTime_unit _ _ _ _ _ _ _ _ _ _)
+
+theorem montMulRed_time {k' d acc a b pReg pinv m t nb sc : ℕ} {s s' : State 64}
+    {tm : ℕ} {dd pp : ℤ}
+    (h : Exec CostModel.unit (montMulRed (k' + 1) d acc a b pReg pinv m t nb sc)
+      s s' tm dd pp) :
+    tm = 16 * k' ^ 2 + 47 * k' + 31 :=
+  (h.straight_time_eq (montMulRed_saf _ _ _ _ _ _ _ _ _ _ _).1).trans
+    (montMulRed_staticTime_unit _ _ _ _ _ _ _ _ _ _ _)
+
 end Caliper.MultiLimb
