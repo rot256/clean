@@ -982,12 +982,207 @@ def ciosRow0 (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
   macLimbs k acc p m sc ;;
   foldCarry acc sc k
 
+/-- Rows `1 .. n` of a shift-free CIOS. -/
+def ciosRowsFrom (k acc a b p pinv sc m : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => ciosRowsFrom k acc a b p pinv sc m n ;;
+      ciosRowAt k acc a b p pinv sc m (n + 1)
+
 /-- Shift-free CIOS with a specialised first row. -/
 def montMulOpt (k acc a b p pinv sc m : ℕ) : Stmt 64 :=
   match k with
   | 0 => .skip
   | k' + 1 => ciosRow0 (k' + 1) acc a b p pinv sc m ;;
-      ((List.range k').foldl
-        (fun c i => c ;; ciosRowAt (k' + 1) acc a b p pinv sc m (i + 1)) .skip)
+      ciosRowsFrom (k' + 1) acc a b p pinv sc m k'
+
+/-! ## Cost, as closed forms
+
+Every gadget's running time as a function of the limb count, proved for all `k` and
+generic in the cost model — not evaluated at a few instantiations. These are worth
+more than pins: compiled witgen code is straight-line, so `Exec.straight_time_eq`
+makes `staticTime` the *exact* running time of every execution, and a closed form in
+`k` therefore bounds the gadget at every field, including ones nobody has run. -/
+
+/-- Per-limb cost of an addition step: three adds and two unsigned compares. -/
+def addStepCost (C : CostModel) : ℕ := 3 * C.bin .add + 2 * C.bin .ult
+
+/-- Per-limb cost of a multiply-accumulate step. -/
+def macStepCost (C : CostModel) : ℕ :=
+  C.bin .mul + C.bin .mulhi + 4 * C.bin .add + 2 * C.bin .ult
+
+/-- Per-limb cost of a multiply-set step: no accumulator read, so two fewer adds and
+one fewer compare. -/
+def macSetStepCost (C : CostModel) : ℕ :=
+  C.bin .mul + C.bin .mulhi + 2 * C.bin .add + C.bin .ult
+
+/-- Per-limb cost of a select step. -/
+def selStepCost (C : CostModel) : ℕ := C.bin .sub + C.bin .mul + C.bin .add
+
+/-- Cost of folding a carry into the accumulator's top limbs. -/
+def foldCarryCost (C : CostModel) : ℕ := 2 * C.bin .add + C.bin .ult
+
+theorem addLoop_staticTime (C : CostModel) (d a b sc : ℕ) :
+    ∀ n, (addLoop d a b sc n).staticTime C = n * addStepCost C
+  | 0 => by simp [addLoop, Stmt.staticTime]
+  | n + 1 => by
+    show (addLoop d a b sc n).staticTime C + (addStep d a b sc n).staticTime C = _
+    rw [addLoop_staticTime C d a b sc n]
+    simp [addStep, Stmt.staticTime, addStepCost]
+    ring
+
+theorem addLimbsC_staticTime (C : CostModel) (k d a b sc c0 : ℕ) :
+    (addLimbsC k d a b sc c0).staticTime C = C.imm + k * addStepCost C := by
+  show C.imm + (addLoop d a b sc k).staticTime C = _
+  rw [addLoop_staticTime]
+
+theorem notLoop_staticTime (C : CostModel) (nb b : ℕ) :
+    ∀ n, (notLoop nb b n).staticTime C = n * C.un .not
+  | 0 => by simp [notLoop, Stmt.staticTime]
+  | n + 1 => by
+    show (notLoop nb b n).staticTime C + _ = _
+    rw [notLoop_staticTime C nb b n]; simp [Stmt.staticTime]; ring
+
+theorem subLimbs_staticTime (C : CostModel) (k d a b nb sc : ℕ) :
+    (subLimbs k d a b nb sc).staticTime C
+      = k * C.un .not + (C.imm + k * addStepCost C) := by
+  show (notLoop nb b k).staticTime C + (addLimbsC k d a nb sc 1).staticTime C = _
+  rw [notLoop_staticTime, addLimbsC_staticTime]
+
+theorem macLoop_staticTime (C : CostModel) (acc x y sc : ℕ) :
+    ∀ n, (macLoop acc x y sc n).staticTime C = n * macStepCost C
+  | 0 => by simp [macLoop, Stmt.staticTime]
+  | n + 1 => by
+    show (macLoop acc x y sc n).staticTime C + (macStep acc x y sc n).staticTime C = _
+    rw [macLoop_staticTime C acc x y sc n]
+    simp [macStep, Stmt.staticTime, macStepCost]
+    ring
+
+theorem macLimbs_staticTime (C : CostModel) (k acc x y sc : ℕ) :
+    (macLimbs k acc x y sc).staticTime C = C.imm + k * macStepCost C := by
+  show C.imm + (macLoop acc x y sc k).staticTime C = _
+  rw [macLoop_staticTime]
+
+theorem macSetLoop_staticTime (C : CostModel) (acc x y sc : ℕ) :
+    ∀ n, (macSetLoop acc x y sc n).staticTime C = n * macSetStepCost C
+  | 0 => by simp [macSetLoop, Stmt.staticTime]
+  | n + 1 => by
+    show (macSetLoop acc x y sc n).staticTime C
+      + (macSetStep acc x y sc n).staticTime C = _
+    rw [macSetLoop_staticTime C acc x y sc n]
+    simp [macSetStep, Stmt.staticTime, macSetStepCost]
+    ring
+
+theorem macSetLimbs_staticTime (C : CostModel) (k acc x y sc : ℕ) :
+    (macSetLimbs k acc x y sc).staticTime C = C.imm + k * macSetStepCost C := by
+  show C.imm + (macSetLoop acc x y sc k).staticTime C = _
+  rw [macSetLoop_staticTime]
+
+theorem selectLoop_staticTime (C : CostModel) (d a b f sc : ℕ) :
+    ∀ n, (selectLoop d a b f sc n).staticTime C = n * selStepCost C
+  | 0 => by simp [selectLoop, Stmt.staticTime]
+  | n + 1 => by
+    show (selectLoop d a b f sc n).staticTime C
+      + (selectStep d a b f sc n).staticTime C = _
+    rw [selectLoop_staticTime C d a b f sc n]
+    simp [selectStep, Stmt.staticTime, selStepCost]
+    ring
+
+theorem selectLimbs_staticTime (C : CostModel) (k d a b f sc : ℕ) :
+    (selectLimbs k d a b f sc).staticTime C = k * selStepCost C :=
+  selectLoop_staticTime C d a b f sc k
+
+/-! ### Cost of the Montgomery multiply
+
+The quadratic ones. `ciosRowCost` is linear in `k`, and there are `k` rows. -/
+
+/-- Cost of one shift-free CIOS row: two multiply-accumulates, two carry folds and
+the multiplication choosing the reduction multiplier. -/
+def ciosRowCost (C : CostModel) (k : ℕ) : ℕ :=
+  2 * (C.imm + k * macStepCost C) + 2 * foldCarryCost C + C.bin .mul
+
+/-- Cost of the specialised first row: a multiply-*set* in place of the first
+multiply-accumulate, and a written top limb in place of a carry fold. -/
+def ciosRow0Cost (C : CostModel) (k : ℕ) : ℕ :=
+  (C.imm + k * macSetStepCost C) + C.mov + C.imm + C.bin .mul
+    + (C.imm + k * macStepCost C) + foldCarryCost C
+
+theorem foldCarry_staticTime (C : CostModel) (acc sc k : ℕ) :
+    (foldCarry acc sc k).staticTime C = foldCarryCost C := by
+  simp [foldCarry, Stmt.staticTime, foldCarryCost]; ring
+
+theorem ciosRowAt_staticTime (C : CostModel) (k acc a b p pinv sc m i : ℕ) :
+    (ciosRowAt k acc a b p pinv sc m i).staticTime C = ciosRowCost C k := by
+  show (macLimbs k (acc + i) a (b + i) sc).staticTime C
+      + ((foldCarry (acc + i) sc k).staticTime C
+        + ((Stmt.bin .mul m (acc + i) pinv).staticTime C
+          + ((macLimbs k (acc + i) p m sc).staticTime C
+            + (foldCarry (acc + i) sc k).staticTime C))) = _
+  rw [macLimbs_staticTime, macLimbs_staticTime, foldCarry_staticTime]
+  simp [Stmt.staticTime, ciosRowCost]
+  ring
+
+theorem ciosRowsFrom_staticTime (C : CostModel) (k acc a b p pinv sc m : ℕ) :
+    ∀ n, (ciosRowsFrom k acc a b p pinv sc m n).staticTime C = n * ciosRowCost C k
+  | 0 => by simp [ciosRowsFrom, Stmt.staticTime]
+  | n + 1 => by
+    show (ciosRowsFrom k acc a b p pinv sc m n).staticTime C
+      + (ciosRowAt k acc a b p pinv sc m (n + 1)).staticTime C = _
+    rw [ciosRowsFrom_staticTime C k acc a b p pinv sc m n, ciosRowAt_staticTime]
+    ring
+
+theorem ciosRow0_staticTime (C : CostModel) (k acc a b p pinv sc m : ℕ) :
+    (ciosRow0 k acc a b p pinv sc m).staticTime C = ciosRow0Cost C k := by
+  show (macSetLimbs k acc a b sc).staticTime C
+      + ((Stmt.mov (acc + k) sc).staticTime C
+        + ((Stmt.imm (acc + k + 1) 0).staticTime C
+          + ((Stmt.bin .mul m acc pinv).staticTime C
+            + ((macLimbs k acc p m sc).staticTime C
+              + (foldCarry acc sc k).staticTime C)))) = _
+  rw [macSetLimbs_staticTime, macLimbs_staticTime, foldCarry_staticTime]
+  simp [Stmt.staticTime, ciosRow0Cost]
+  ring
+
+/-- **The cost of a Montgomery multiplication, for every limb count.** One
+specialised first row plus `k'` ordinary rows. -/
+theorem montMulOpt_staticTime (C : CostModel) (k' acc a b p pinv sc m : ℕ) :
+    (montMulOpt (k' + 1) acc a b p pinv sc m).staticTime C
+      = ciosRow0Cost C (k' + 1) + k' * ciosRowCost C (k' + 1) := by
+  show (ciosRow0 (k' + 1) acc a b p pinv sc m).staticTime C
+    + (ciosRowsFrom (k' + 1) acc a b p pinv sc m k').staticTime C = _
+  rw [ciosRow0_staticTime, ciosRowsFrom_staticTime]
+
+/-- The same under the uniform model, as an explicit polynomial: a Montgomery
+multiplication over a `k`-limb modulus costs exactly `16k² + 6k - 1` steps, written
+subtraction-free at `k = k' + 1`. -/
+theorem montMulOpt_staticTime_unit (k' acc a b p pinv sc m : ℕ) :
+    (montMulOpt (k' + 1) acc a b p pinv sc m).staticTime CostModel.unit
+      = 16 * k' ^ 2 + 38 * k' + 21 := by
+  rw [montMulOpt_staticTime]
+  simp [ciosRow0Cost, ciosRowCost, macStepCost, macSetStepCost, foldCarryCost,
+    CostModel.unit]
+  ring
+
+/-! ### Loops and upper bounds
+
+Everything above is straight-line, so its cost is an *equality*: `staticTime` is the
+running time of every execution. GCD-based inversion will not be, by decision: it is
+emitted as a `whileNZ` with a measure rather than unrolled to a worst-case divstep
+count, so its code stays small and it exits early, at the price of a `≤` instead of an
+`=`.
+
+`Caliper.Triple.whileNZ_measure` is the rule — an invariant indexed by a remaining-
+iterations budget, a guard triple, and a body triple that decrements the budget,
+yielding `(k + 1) * (Tg + C.branch) + k * Tb`. For a binary extended GCD over an
+`n`-bit modulus the budget is `2n`, a generation-time constant, so the bound is still
+a number the compiler computes without running anything.
+
+What this costs the pipeline, and what has to change with it: a program containing a
+loop is not `Stmt.Straight`, so `compile_time_eq` and `staticTime?` no longer apply to
+it, and `TimedCircuit.underBudget` — which is built on `staticTime?` — cannot quote a
+number. The replacement is to carry the bound with the code: the compiler returns a
+proved `TimeTriple` rather than leaning on `staticTime`, and `compile_time_eq` becomes
+`compile_time_le`. Data-independence of the time counter is genuinely lost for
+inverting programs; that was never a side-channel guarantee here, and
+`witgen < 2 ^ 40` is an upper-bound claim to begin with. -/
 
 end Caliper.MultiLimb
