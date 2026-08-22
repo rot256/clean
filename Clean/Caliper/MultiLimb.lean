@@ -2646,6 +2646,232 @@ theorem foldHeld_exec {t sc cb u : ℕ}
     simp only [regs_setReg_ne _ _ hqc, regs_setReg_ne _ _ hqu,
       regs_setReg_ne _ _ hqt]
 
+/-! ### The rows
+
+The invariant: the accumulator's `2k` limbs hold `W`, a register holds the pending
+carry `cbv`, and together they are the pure `redcAcc` at row `i` — the carry weighted
+at limb `i + k`, the one limb the code has not yet written it into. -/
+
+/-- A row's bookkeeping, with the three limb weights left abstract: `A` for the row's
+offset, `B` for the accumulate's width, `Z` for a word. Given the accumulator split at
+those weights, the accumulate's own split, and the fold's identity, the row's new
+accumulator plus its held carry is the old one plus `pm * A`. -/
+theorem redcRow_value {A B Z Wl Ww tv Whi Sl c cbv tv' cbv' W pm : ℕ}
+    (hW : W = Wl + Ww * A + tv * (A * B) + Whi * (A * B * Z))
+    (hS : Ww + pm = Sl + c * B)
+    (hf : tv + c + cbv = tv' + cbv' * Z) :
+    Wl + Sl * A + tv' * (A * B) + Whi * (A * B * Z) + cbv' * (A * B * Z)
+      = W + pm * A + cbv * (A * B) :=
+  calc Wl + Sl * A + tv' * (A * B) + Whi * (A * B * Z) + cbv' * (A * B * Z)
+      = Wl + Sl * A + (tv' + cbv' * Z) * (A * B) + Whi * (A * B * Z) := by ring
+    _ = Wl + Sl * A + (tv + c + cbv) * (A * B) + Whi * (A * B * Z) := by rw [hf]
+    _ = Wl + (Sl + c * B) * A + (tv + cbv) * (A * B) + Whi * (A * B * Z) := by ring
+    _ = Wl + (Ww + pm) * A + (tv + cbv) * (A * B) + Whi * (A * B * Z) := by rw [hS]
+    _ = Wl + Ww * A + tv * (A * B) + Whi * (A * B * Z) + pm * A + cbv * (A * B) := by ring
+    _ = W + pm * A + cbv * (A * B) := by rw [← hW]
+
+/-- The caller's obligation for a reduction: the modulus and the constant below the
+multiplier, then the held carry, the fold scratch, the six-word block, and the
+accumulator, in that order. -/
+structure RedcLayout (k acc pReg pinv m cb u sc : ℕ) : Prop where
+  const : pinv < m
+  modulus : pReg + k ≤ m
+  holdReg : m < cb
+  foldReg : cb < u
+  scratchReg : u < sc
+  block : sc + 6 ≤ acc
+
+theorem redcRow_exec {k acc pReg pinv m cb u sc i : ℕ}
+    (hl : RedcLayout k acc pReg pinv m cb u sc) (hik : i < k)
+    {s : State 64} {p pv T W cbv : ℕ} (hplt : p < 2 ^ (64 * k))
+    (hpr : RegsEnc s pReg k p) (hcr : s.regs pinv = BitVec.ofNat 64 pv)
+    (hWlt : W < 2 ^ (64 * (2 * k)))
+    (haccr : RegsEnc s acc (2 * k) W)
+    (hcbr : s.regs cb = BitVec.ofNat 64 cbv) (hcbv : cbv ≤ 2)
+    (hinv : redcAcc p pv T i = W + cbv * 2 ^ (64 * (i + k))) :
+    ∃ s' tt dd pp, Exec C (redcRow k acc pReg pinv m cb u sc i) s s' tt dd pp ∧
+      ∃ W' cbv', W' < 2 ^ (64 * (2 * k)) ∧ cbv' ≤ 2 ∧
+        RegsEnc s' acc (2 * k) W' ∧
+        s'.regs cb = BitVec.ofNat 64 cbv' ∧
+        redcAcc p pv T (i + 1) = W' + cbv' * 2 ^ (64 * (i + 1 + k)) ∧
+        (∀ q, q < m → s'.regs q = s.regs q) ∧
+        s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  obtain ⟨hconst, hmod, hhold, hfold, hscr, hblock⟩ := hl
+  -- the three limb weights
+  have hpi : (2:ℕ) ^ (64 * (i + k)) = 2 ^ (64 * i) * 2 ^ (64 * k) := by
+    rw [← pow_add]; ring_nf
+  have hpi1 : (2:ℕ) ^ (64 * (i + k + 1)) = 2 ^ (64 * (i + k)) * 2 ^ 64 := by
+    rw [← pow_add]; ring_nf
+  have hpi2 : (2:ℕ) ^ (64 * (i + 1 + k)) = 2 ^ (64 * (i + k)) * 2 ^ 64 := by
+    rw [← pow_add, show 64 * (i + k) + 64 = 64 * (i + 1 + k) by ring]
+  obtain ⟨Whi, hWhi⟩ : ∃ x, x = W / 2 ^ (64 * (i + k + 1)) := ⟨_, rfl⟩
+  -- the multiplier
+  have hlimbi : s.regs (acc + i) = BitVec.ofNat 64 (limb 64 W i) := haccr i (by omega)
+  have hmvlt : limb 64 W i * pv % 2 ^ 64 < 2 ^ 64 := Nat.mod_lt _ (Nat.two_pow_pos _)
+  have hmul : (BinOp.eval .mul (s.regs (acc + i)) (s.regs pinv) : Word 64)
+      = BitVec.ofNat 64 (limb 64 W i * pv % 2 ^ 64) := by
+    rw [hlimbi, hcr]; apply BitVec.eq_of_toNat_eq; simp [Nat.mul_mod]
+  have hex1 : Exec C (.bin .mul m (acc + i) pinv) s
+      (s.setReg m (BitVec.ofNat 64 (limb 64 W i * pv % 2 ^ 64))) (C.bin .mul) 0 0 := by
+    rw [← hmul]; exact .bin
+  set s₁ := s.setReg m (BitVec.ofNat 64 (limb 64 W i * pv % 2 ^ 64)) with hs₁def
+  set mv := limb 64 W i * pv % 2 ^ 64 with hmvdef
+  have hpr₁ : RegsEnc s₁ pReg k p := by
+    intro j hj; rw [hs₁def, regs_setReg_ne _ _ (show pReg + j ≠ m by omega)]; exact hpr j hj
+  have hacc₁ : RegsEnc s₁ acc (2 * k) W := by
+    intro j hj; rw [hs₁def, regs_setReg_ne _ _ (show acc + j ≠ m by omega)]; exact haccr j hj
+  have hm₁ : s₁.regs m = BitVec.ofNat 64 mv := by rw [hs₁def]; simp
+  have hcb₁ : s₁.regs cb = BitVec.ofNat 64 cbv := by
+    rw [hs₁def, regs_setReg_ne _ _ (show cb ≠ m by omega)]; exact hcbr
+  -- the accumulate
+  have hmac : MacLayout k (acc + i) pReg m sc := ⟨by omega, by omega, by omega⟩
+  have hwin : RegsEnc s₁ (acc + i) k (W / 2 ^ (64 * i)) := by
+    intro j hj
+    rw [show acc + i + j = acc + (i + j) by ring, hacc₁ (i + j) (by omega), limb_window]
+  obtain ⟨s₂, t₂, d₂, p₂, hex2, hd₂, hsc₂, hpres₂, hmid₂, hhigh₂, hbuf₂, hcap₂⟩ :=
+    macLimbs_exec (C := C) hmac hmvlt hplt hpr₁ hwin hm₁
+  set S := W / 2 ^ (64 * i) % 2 ^ (64 * k) + p * mv with hSdef
+  have hSlt : S < 2 ^ (64 * k) * 2 ^ 64 := by
+    have h1 : p * mv ≤ (2 ^ (64 * k) - 1) * (2 ^ 64 - 1) :=
+      Nat.mul_le_mul (by omega) (by omega)
+    have h2 : (0:ℕ) < 2 ^ (64 * k) := Nat.two_pow_pos _
+    have h3 : (0:ℕ) < 2 ^ 64 := Nat.two_pow_pos _
+    have h4 : W / 2 ^ (64 * i) % 2 ^ (64 * k) < 2 ^ (64 * k) := Nat.mod_lt _ h2
+    rw [hSdef]; nlinarith [h1, h2, h3, h4]
+  have hclt : S / 2 ^ (64 * k) < 2 ^ 64 := Nat.div_lt_of_lt_mul hSlt
+  -- the fold
+  have ht₂ : s₂.regs (acc + i + k) = BitVec.ofNat 64 (limb 64 W (i + k)) := by
+    rw [hhigh₂ k le_rfl, hs₁def, regs_setReg_ne _ _ (show acc + i + k ≠ m by omega),
+      show acc + i + k = acc + (i + k) by ring]
+    exact haccr (i + k) (by omega)
+  have hcb₂ : s₂.regs cb = BitVec.ofNat 64 cbv := by rw [hpres₂ cb (by omega)]; exact hcb₁
+  obtain ⟨s₃, t₃, d₃, p₃, hex3, tv', cbv', htv'lt, hcbv'le, hfoldeq, hrt₃, hrc₃,
+      hpres₃, hbuf₃, hcap₃⟩ :=
+    foldHeld_exec (C := C) (t := acc + i + k) (sc := sc) (cb := cb) (u := u)
+      (by omega) (by omega) (by omega)
+      (limb_lt 64 W (i + k)) hclt hcbv ht₂ hsc₂ hcb₂
+  -- the new accumulator value, and the three ways of splitting it
+  obtain ⟨W', hW'def⟩ : ∃ x, x = W % 2 ^ (64 * i) + S % 2 ^ (64 * k) * 2 ^ (64 * i)
+      + tv' * 2 ^ (64 * (i + k)) + Whi * 2 ^ (64 * (i + k + 1)) := ⟨_, rfl⟩
+  have hlowi : W % 2 ^ (64 * i) < 2 ^ (64 * i) := Nat.mod_lt _ (Nat.two_pow_pos _)
+  have hSlow : S % 2 ^ (64 * k) < 2 ^ (64 * k) := Nat.mod_lt _ (Nat.two_pow_pos _)
+  have hlow1 : W % 2 ^ (64 * i) + S % 2 ^ (64 * k) * 2 ^ (64 * i)
+      < 2 ^ (64 * (i + k)) := by
+    rw [hpi]
+    calc W % 2 ^ (64 * i) + S % 2 ^ (64 * k) * 2 ^ (64 * i)
+        < 2 ^ (64 * i) + S % 2 ^ (64 * k) * 2 ^ (64 * i) := by omega
+      _ = (S % 2 ^ (64 * k) + 1) * 2 ^ (64 * i) := by ring
+      _ ≤ 2 ^ (64 * k) * 2 ^ (64 * i) := Nat.mul_le_mul_right _ (by omega)
+      _ = 2 ^ (64 * i) * 2 ^ (64 * k) := by ring
+  have hlow2 : W % 2 ^ (64 * i) + S % 2 ^ (64 * k) * 2 ^ (64 * i)
+      + tv' * 2 ^ (64 * (i + k)) < 2 ^ (64 * (i + k + 1)) := by
+    rw [hpi1]
+    calc W % 2 ^ (64 * i) + S % 2 ^ (64 * k) * 2 ^ (64 * i) + tv' * 2 ^ (64 * (i + k))
+        < 2 ^ (64 * (i + k)) + tv' * 2 ^ (64 * (i + k)) := by omega
+      _ = (tv' + 1) * 2 ^ (64 * (i + k)) := by ring
+      _ ≤ 2 ^ 64 * 2 ^ (64 * (i + k)) := Nat.mul_le_mul_right _ (by omega)
+      _ = 2 ^ (64 * (i + k)) * 2 ^ 64 := by ring
+  have hform1 : W' = W % 2 ^ (64 * i)
+      + (S % 2 ^ (64 * k) + (tv' + Whi * 2 ^ 64) * 2 ^ (64 * k)) * 2 ^ (64 * i) := by
+    rw [hW'def, hpi1, hpi]; ring
+  have hform2 : W' = W % 2 ^ (64 * i) + S % 2 ^ (64 * k) * 2 ^ (64 * i)
+      + (tv' + Whi * 2 ^ 64) * 2 ^ (64 * (i + k)) := by
+    rw [hW'def, hpi1]; ring
+  have hform3 : W' = (W % 2 ^ (64 * i) + S % 2 ^ (64 * k) * 2 ^ (64 * i)
+      + tv' * 2 ^ (64 * (i + k))) + Whi * 2 ^ (64 * (i + k + 1)) := by rw [hW'def]
+  have hW'div : W' / 2 ^ (64 * i)
+      = S % 2 ^ (64 * k) + (tv' + Whi * 2 ^ 64) * 2 ^ (64 * k) := by
+    rw [hform1]; exact div_shift_exact hlowi
+  have hW'hi : W' / 2 ^ (64 * (i + k + 1)) = Whi := by
+    rw [hform3]; exact div_shift_exact hlow2
+  -- how `W` splits at the same three weights
+  have hd1 : W / 2 ^ (64 * i) / 2 ^ (64 * k) = W / 2 ^ (64 * (i + k)) := by
+    rw [Nat.div_div_eq_div_mul, ← pow_add, show 64 * i + 64 * k = 64 * (i + k) by ring]
+  have hd2 : W / 2 ^ (64 * (i + k)) / 2 ^ 64 = Whi := by
+    rw [hWhi, Nat.div_div_eq_div_mul, ← pow_add,
+      show 64 * (i + k) + 64 = 64 * (i + k + 1) by ring]
+  have hWsplit : W = W % 2 ^ (64 * i) + W / 2 ^ (64 * i) % 2 ^ (64 * k) * 2 ^ (64 * i)
+      + limb 64 W (i + k) * (2 ^ (64 * i) * 2 ^ (64 * k))
+      + Whi * (2 ^ (64 * i) * 2 ^ (64 * k) * 2 ^ 64) := by
+    have e1 := Nat.div_add_mod W (2 ^ (64 * i))
+    have e2 := Nat.div_add_mod (W / 2 ^ (64 * i)) (2 ^ (64 * k))
+    have e3 := Nat.div_add_mod (W / 2 ^ (64 * (i + k))) (2 ^ 64)
+    rw [hd1] at e2
+    rw [hd2] at e3
+    rw [show limb 64 W (i + k) = W / 2 ^ (64 * (i + k)) % 2 ^ 64 from rfl]
+    calc W = 2 ^ (64 * i) * (W / 2 ^ (64 * i)) + W % 2 ^ (64 * i) := e1.symm
+      _ = 2 ^ (64 * i) * (2 ^ (64 * k) * (W / 2 ^ (64 * (i + k)))
+            + W / 2 ^ (64 * i) % 2 ^ (64 * k)) + W % 2 ^ (64 * i) := by rw [e2]
+      _ = 2 ^ (64 * i) * (2 ^ (64 * k) * (2 ^ 64 * Whi
+            + W / 2 ^ (64 * (i + k)) % 2 ^ 64)
+            + W / 2 ^ (64 * i) % 2 ^ (64 * k)) + W % 2 ^ (64 * i) := by rw [e3]
+      _ = _ := by ring
+  -- the invariant advances
+  have hSform : W / 2 ^ (64 * i) % 2 ^ (64 * k) + p * mv
+      = S % 2 ^ (64 * k) + S / 2 ^ (64 * k) * 2 ^ (64 * k) := by
+    rw [Nat.mod_add_div']
+  have hkey : W' + cbv' * 2 ^ (64 * (i + 1 + k))
+      = W + p * mv * 2 ^ (64 * i) + cbv * 2 ^ (64 * (i + k)) := by
+    have h := redcRow_value (A := 2 ^ (64 * i)) (B := 2 ^ (64 * k)) (Z := 2 ^ 64)
+      (pm := p * mv) (cbv := cbv) hWsplit hSform hfoldeq
+    rw [hW'def, hpi2, hpi1, hpi]
+    exact h
+  have hlimbinv : limb 64 (redcAcc p pv T i) i = limb 64 W i := by
+    rw [hinv]; exact limb_add_shift_lt (show i < i + k by omega)
+  have hadv : redcAcc p pv T (i + 1) = W' + cbv' * 2 ^ (64 * (i + 1 + k)) := by
+    show redcAcc p pv T i
+      + limb 64 (redcAcc p pv T i) i * pv % 2 ^ 64 * p * 2 ^ (64 * i) = _
+    rw [hlimbinv, ← hmvdef, hinv, hkey]; ring
+  -- the new accumulator still fits `2k` limbs
+  have hWhilt : Whi < 2 ^ (64 * (k - i - 1)) := by
+    rw [hWhi]
+    apply Nat.div_lt_of_lt_mul
+    rw [← pow_add, show 64 * (i + k + 1) + 64 * (k - i - 1) = 64 * (2 * k) by omega]
+    exact hWlt
+  have hW'lt : W' < 2 ^ (64 * (2 * k)) := by
+    rw [hform3, ← show (2:ℕ) ^ (64 * (i + k + 1)) * 2 ^ (64 * (k - i - 1))
+      = 2 ^ (64 * (2 * k)) from by
+        rw [← pow_add, show 64 * (i + k + 1) + 64 * (k - i - 1) = 64 * (2 * k) by omega]]
+    calc W % 2 ^ (64 * i) + S % 2 ^ (64 * k) * 2 ^ (64 * i) + tv' * 2 ^ (64 * (i + k))
+          + Whi * 2 ^ (64 * (i + k + 1))
+        < 2 ^ (64 * (i + k + 1)) + Whi * 2 ^ (64 * (i + k + 1)) := by omega
+      _ = (Whi + 1) * 2 ^ (64 * (i + k + 1)) := by ring
+      _ ≤ 2 ^ (64 * (k - i - 1)) * 2 ^ (64 * (i + k + 1)) :=
+          Nat.mul_le_mul_right _ (by omega)
+      _ = 2 ^ (64 * (i + k + 1)) * 2 ^ (64 * (k - i - 1)) := by ring
+  refine ⟨s₃, _, _, _, .seq hex1 (.seq hex2 hex3), W', cbv', hW'lt, hcbv'le, ?_, hrc₃,
+    hadv, ?_, hbuf₃.trans (hbuf₂.trans (by rw [hs₁def]; simp)),
+    hcap₃.trans (hcap₂.trans (by rw [hs₁def]; simp))⟩
+  · intro j hj
+    rcases Nat.lt_or_ge j i with hji | hji
+    · rw [hpres₃ _ (by omega) (by omega) (by omega), hmid₂ _ (by omega) (by omega),
+        hs₁def, regs_setReg_ne _ _ (show acc + j ≠ m by omega), haccr j (by omega)]
+      exact congrArg (BitVec.ofNat 64)
+        (by rw [hform1, limb_add_shift_lt hji, limb_mod hji])
+    · obtain ⟨jj, rfl⟩ : ∃ jj, j = i + jj := ⟨j - i, by omega⟩
+      rcases Nat.lt_or_ge jj k with hjk | hjk
+      · rw [show acc + (i + jj) = acc + i + jj by ring, hpres₃ _ (by omega) (by omega)
+          (by omega), hd₂ jj hjk]
+        exact congrArg (BitVec.ofNat 64)
+          (by rw [limb_window, hW'div, limb_add_shift_lt hjk, limb_mod hjk])
+      · rcases Nat.eq_or_lt_of_le hjk with hje | hjg
+        · rw [← hje, show acc + (i + k) = acc + i + k by ring, hrt₃]
+          refine congrArg (BitVec.ofNat 64) ?_
+          rw [hform2, limb_add_shift_eq hlow1]
+          omega
+        · obtain ⟨jt, rfl⟩ : ∃ jt, jj = k + 1 + jt := ⟨jj - k - 1, by omega⟩
+          rw [show acc + (i + (k + 1 + jt)) = acc + i + (k + 1 + jt) by ring,
+            hpres₃ _ (by omega) (by omega) (by omega), hhigh₂ (k + 1 + jt) (by omega),
+            hs₁def, regs_setReg_ne _ _ (show acc + i + (k + 1 + jt) ≠ m by omega),
+            show acc + i + (k + 1 + jt) = acc + (i + (k + 1 + jt)) by ring,
+            haccr (i + (k + 1 + jt)) (by omega)]
+          refine congrArg (BitVec.ofNat 64) ?_
+          rw [show i + (k + 1 + jt) = (i + k + 1) + jt by ring, limb_window, limb_window,
+            hW'hi, ← hWhi]
+  · intro q hq
+    rw [hpres₃ q (by omega) (by omega) (by omega), hpres₂ q (by omega), hs₁def,
+      regs_setReg_ne _ _ (show q ≠ m by omega)]
+
 /-! ### Straightness -/
 
 theorem foldHeld_saf (t sc cb u : ℕ) : SAF (foldHeld t sc cb u) :=
