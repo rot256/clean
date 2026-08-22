@@ -1435,4 +1435,47 @@ theorem montMulRed_time {k' d acc a b pReg pinv m t nb sc : ℕ} {s s' : State 6
   (h.straight_time_eq (montMulRed_saf _ _ _ _ _ _ _ _ _ _ _).1).trans
     (montMulRed_staticTime_unit _ _ _ _ _ _ _ _ _ _ _)
 
+/-! ## Loading and materialising limbs
+
+Two leaf emitters the IR lowering needs: `k` immediates for a constant, and `k`
+environment loads for a variable. The environment buffer is taken to hold field
+elements *already in Montgomery form*, `k` words apiece — the encoding is ours to
+pick, and picking it this way removes a Montgomery conversion (`16k² + 15k` steps)
+from every single variable read. -/
+
+/-- `k` immediates writing the limbs of `v` into `base ..`. -/
+def immLimbs (base v : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => immLimbs base v n ;; .imm (base + n) (BitVec.ofNat 64 (limb 64 v n))
+
+/-- `k` loads of buffer `0` at `idx * k ..`, into `base ..`. Two instructions a limb:
+the index immediate and the load. -/
+def loadLimbs (base idx sc : ℕ) : ℕ → Stmt 64
+  | 0 => .skip
+  | n + 1 => loadLimbs base idx sc n ;;
+      (.imm sc (BitVec.ofNat 64 (idx + n)) ;; .memLoad (base + n) 0 sc)
+
+theorem immLimbs_staticTime (C : CostModel) (base v : ℕ) :
+    ∀ n, (immLimbs base v n).staticTime C = n * C.imm
+  | 0 => by simp [immLimbs, Stmt.staticTime]
+  | n + 1 => by
+    show (immLimbs base v n).staticTime C + _ = _
+    rw [immLimbs_staticTime C base v n]; simp [Stmt.staticTime]; ring
+
+theorem loadLimbs_staticTime (C : CostModel) (base idx sc : ℕ) :
+    ∀ n, (loadLimbs base idx sc n).staticTime C = n * (C.imm + C.memLoad)
+  | 0 => by simp [loadLimbs, Stmt.staticTime]
+  | n + 1 => by
+    show (loadLimbs base idx sc n).staticTime C + _ = _
+    rw [loadLimbs_staticTime C base idx sc n]; simp [Stmt.staticTime]; ring
+
+theorem immLimbs_saf (base v : ℕ) : ∀ n, SAF (immLimbs base v n)
+  | 0 => saf_skip
+  | n + 1 => (immLimbs_saf base v n).seq (saf_leaf_imm _ _)
+
+theorem loadLimbs_saf (base idx sc : ℕ) : ∀ n, SAF (loadLimbs base idx sc n)
+  | 0 => saf_skip
+  | n + 1 => (loadLimbs_saf base idx sc n).seq
+      ((saf_leaf_imm _ _).seq ⟨trivial, trivial⟩)
+
 end Caliper.MultiLimb
