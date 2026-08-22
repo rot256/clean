@@ -2872,6 +2872,96 @@ theorem redcRow_exec {k acc pReg pinv m cb u sc i : ℕ}
     rw [hpres₃ q (by omega) (by omega) (by omega), hpres₂ q (by omega), hs₁def,
       regs_setReg_ne _ _ (show q ≠ m by omega)]
 
+/-- Rows `0 .. n - 1`, chaining the invariant from `redcAcc`'s base. -/
+theorem redcRows_exec {k acc pReg pinv m cb u sc : ℕ}
+    (hl : RedcLayout k acc pReg pinv m cb u sc)
+    {s : State 64} {p pv T : ℕ} (hplt : p < 2 ^ (64 * k))
+    (hpr : RegsEnc s pReg k p) (hcr : s.regs pinv = BitVec.ofNat 64 pv)
+    (hTlt : T < 2 ^ (64 * (2 * k))) (haccr : RegsEnc s acc (2 * k) T)
+    (hcbr : s.regs cb = BitVec.ofNat 64 0) :
+    ∀ n ≤ k, ∃ s' tt dd pp,
+      Exec C (redcRows k acc pReg pinv m cb u sc n) s s' tt dd pp ∧
+      ∃ W cbv, W < 2 ^ (64 * (2 * k)) ∧ cbv ≤ 2 ∧
+        RegsEnc s' acc (2 * k) W ∧
+        s'.regs cb = BitVec.ofNat 64 cbv ∧
+        redcAcc p pv T n = W + cbv * 2 ^ (64 * (n + k)) ∧
+        (∀ q, q < m → s'.regs q = s.regs q) ∧
+        s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hconst := hl.const
+  have hmod := hl.modulus
+  intro n
+  induction n with
+  | zero =>
+    intro _
+    exact ⟨s, 0, 0, 0, .skip, T, 0, hTlt, by omega, haccr, hcbr, by simp [redcAcc],
+      fun _ _ => rfl, rfl, rfl⟩
+  | succ n ih =>
+    intro hn
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, W, cbv, hWlt, hcbv, haccr₁, hcbr₁, hinv₁, hpres₁,
+      hbuf₁, hcap₁⟩ := ih (by omega)
+    have hpr₁ : RegsEnc s₁ pReg k p := by
+      intro j hj; rw [hpres₁ _ (by omega)]; exact hpr j hj
+    have hcr₁ : s₁.regs pinv = BitVec.ofNat 64 pv := by
+      rw [hpres₁ _ (by omega)]; exact hcr
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, W', cbv', hW'lt, hcbv', haccr₂, hcbr₂, hinv₂,
+      hpres₂, hbuf₂, hcap₂⟩ :=
+      redcRow_exec (C := C) (i := n) hl (by omega) hplt hpr₁ hcr₁ hWlt haccr₁ hcbr₁
+        hcbv hinv₁
+    exact ⟨s₂, _, _, _, .seq hex₁ hex₂, W', cbv', hW'lt, hcbv', haccr₂, hcbr₂, hinv₂,
+      fun q hq => (hpres₂ q hq).trans (hpres₁ q hq),
+      hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+
+/-- **The reduction is correct.** From a `2k`-limb `T` in the accumulator, registers
+`acc + k .. acc + 2k` hold `redcAcc p pinv T k / R` — which `redcAcc_spec` says is
+below `2p` and recovers `T` modulo `p`. -/
+theorem redcLimbs_exec {k acc pReg pinv m cb u sc : ℕ}
+    (hl : RedcLayout k acc pReg pinv m cb u sc)
+    {s : State 64} {p pv T : ℕ} (hplt : p < 2 ^ (64 * k))
+    (hpr : RegsEnc s pReg k p) (hcr : s.regs pinv = BitVec.ofNat 64 pv)
+    (hTlt : T < 2 ^ (64 * (2 * k))) (haccr : RegsEnc s acc (2 * k) T) :
+    ∃ s' tt dd pp, Exec C (redcLimbs k acc pReg pinv m cb u sc) s s' tt dd pp ∧
+      RegsEnc s' (acc + k) (k + 1) (redcAcc p pv T k / 2 ^ (64 * k)) ∧
+      (∀ q, q < m → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hconst := hl.const
+  have hmod := hl.modulus
+  have hhold := hl.holdReg
+  have hblock := hl.block
+  have hscr := hl.scratchReg
+  have hfoldr := hl.foldReg
+  -- zero the held carry
+  set s₀ := s.setReg cb (0 : Word 64) with hs₀
+  have hpr₀ : RegsEnc s₀ pReg k p := by
+    intro j hj; rw [hs₀, regs_setReg_ne _ _ (show pReg + j ≠ cb by omega)]; exact hpr j hj
+  have hcr₀ : s₀.regs pinv = BitVec.ofNat 64 pv := by
+    rw [hs₀, regs_setReg_ne _ _ (show pinv ≠ cb by omega)]; exact hcr
+  have hacc₀ : RegsEnc s₀ acc (2 * k) T := by
+    intro j hj; rw [hs₀, regs_setReg_ne _ _ (show acc + j ≠ cb by omega)]; exact haccr j hj
+  have hcb₀ : s₀.regs cb = BitVec.ofNat 64 0 := by rw [hs₀]; simp
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, W, cbv, hWlt, hcbv, haccr₁, hcbr₁, hinv₁, hpres₁,
+    hbuf₁, hcap₁⟩ := redcRows_exec (C := C) hl hplt hpr₀ hcr₀ hTlt hacc₀ hcb₀ k le_rfl
+  rw [show k + k = 2 * k by ring] at hinv₁
+  -- the held carry becomes the accumulator's top limb
+  have hVlimb : ∀ j < 2 * k + 1,
+      (s₁.setReg (acc + 2 * k) (s₁.regs cb)).regs (acc + j)
+        = BitVec.ofNat 64 (limb 64 (redcAcc p pv T k) j) := by
+    intro j hj
+    rcases Nat.lt_or_ge j (2 * k) with hlt | hge
+    · rw [regs_setReg_ne _ _ (show acc + j ≠ acc + 2 * k by omega), haccr₁ j hlt, hinv₁,
+        limb_add_shift_lt hlt]
+    · have : j = 2 * k := by omega
+      subst this
+      rw [regs_setReg_self, hcbr₁, hinv₁, limb_add_shift_eq hWlt]
+      exact congrArg (BitVec.ofNat 64) (by omega)
+  refine ⟨_, _, _, _, .seq .imm (.seq hex₁ .mov), ?_, ?_, ?_, ?_⟩
+  · intro j hj
+    rw [show acc + k + j = acc + (k + j) by ring, hVlimb (k + j) (by omega), limb_window]
+  · intro q hq
+    rw [regs_setReg_ne _ _ (show q ≠ acc + 2 * k by omega), hpres₁ q hq, hs₀,
+      regs_setReg_ne _ _ (show q ≠ cb by omega)]
+  · simpa [hs₀] using hbuf₁
+  · simpa [hs₀] using hcap₁
+
 /-! ### Straightness -/
 
 theorem foldHeld_saf (t sc cb u : ℕ) : SAF (foldHeld t sc cb u) :=
