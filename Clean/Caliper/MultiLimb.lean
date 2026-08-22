@@ -1,5 +1,6 @@
 import Clean.Caliper.Limbs
 import Std.Tactic.BVDecide
+import Mathlib.Data.Nat.Size
 
 /-!
 # Multi-limb machine arithmetic, at the 64-bit surface
@@ -2002,5 +2003,97 @@ theorem mulLimbs_exec {k' acc a b sc : ℕ} (hl : MulLayout (k' + 1) acc a b sc)
     hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
   intro j hj
   rw [hd₂ j (by omega), hfull]
+
+/-! ## Montgomery reduction
+
+`redcVal p pinv R T = (T + M * p) / R` with `M = (T mod R) * pinv mod R`. The
+constant `pinv` satisfies `p * pinv + 1 ≡ 0 (mod R)`; it is not computed here, it is
+*checked* — that congruence is decidable at generation time, so the compiler supplies
+the constant and the check certifies it. That keeps an extended-Euclid implementation
+out of the trusted path entirely.
+
+Three facts make it a reduction: the division is exact, the result is below `2p`, and
+`t * R ≡ T (mod p)` — the last stated multiplicatively so no inverse of `R` is ever
+needed. -/
+
+/-- The multiplier chosen to clear the low half. -/
+def redcM (pinv R T : ℕ) : ℕ := (T % R) * pinv % R
+
+/-- The Montgomery reduction of `T`, as a pure function. -/
+def redcVal (p pinv R T : ℕ) : ℕ := (T + redcM pinv R T * p) / R
+
+theorem redcM_lt {pinv R T : ℕ} (hR : 0 < R) : redcM pinv R T < R :=
+  Nat.mod_lt _ hR
+
+/-- The division in a Montgomery reduction is exact: `M` is chosen precisely so that
+`T + M * p` vanishes mod `R`. No positivity of `R` is needed for this half. -/
+theorem redc_exact {p pinv R T : ℕ} (hpinv : (p * pinv + 1) % R = 0) :
+    (T + redcM pinv R T * p) % R = 0 := by
+  have h3 : redcM pinv R T * p ≡ T * pinv * p [MOD R] :=
+    Nat.ModEq.mul_right _ ((Nat.mod_modEq _ _).trans
+      (Nat.ModEq.mul_right _ (Nat.mod_modEq _ _)))
+  have hzero : (p * pinv + 1) ≡ 0 [MOD R] := by unfold Nat.ModEq; simp [hpinv]
+  have : T + redcM pinv R T * p ≡ 0 [MOD R] := by
+    calc T + redcM pinv R T * p
+        ≡ T + T * pinv * p [MOD R] := Nat.ModEq.add_left _ h3
+      _ = T * (p * pinv + 1) := by ring
+      _ ≡ T * 0 [MOD R] := Nat.ModEq.mul_left _ hzero
+      _ = 0 := by ring
+  simpa [Nat.ModEq] using this
+
+/-- Recovering the numerator from the quotient, given exactness. -/
+theorem redc_mul {p pinv R T : ℕ} (hpinv : (p * pinv + 1) % R = 0) :
+    redcVal p pinv R T * R = T + redcM pinv R T * p := by
+  have h := redc_exact (p := p) (pinv := pinv) (R := R) (T := T) hpinv
+  have hdm := Nat.div_add_mod (T + redcM pinv R T * p) R
+  rw [h, Nat.add_zero] at hdm
+  simp only [redcVal]
+  rw [Nat.mul_comm]
+  exact hdm
+
+/-- A Montgomery reduction lands below `2p`. -/
+theorem redc_lt {p pinv R T : ℕ} (hR : 0 < R) (hpinv : (p * pinv + 1) % R = 0)
+    (hT : T < p * R) : redcVal p pinv R T < 2 * p := by
+  have hp : 0 < p := by
+    rcases Nat.eq_zero_or_pos p with h | h
+    · subst h; simp at hT
+    · exact h
+  have hmul := redc_mul (p := p) (pinv := pinv) (R := R) (T := T) hpinv
+  have hMp : redcM pinv R T * p < R * p :=
+    Nat.mul_lt_mul_of_lt_of_le (redcM_lt hR) le_rfl hp
+  have hlt : redcVal p pinv R T * R < 2 * p * R := by
+    calc redcVal p pinv R T * R = T + redcM pinv R T * p := hmul
+      _ < p * R + R * p := by omega
+      _ = 2 * p * R := by ring
+  exact Nat.lt_of_mul_lt_mul_right hlt
+
+/-- The reduction's defining congruence, stated multiplicatively so that no inverse of
+`R` appears: `t * R ≡ T (mod p)`. -/
+theorem redc_modEq {p pinv R T : ℕ} (hpinv : (p * pinv + 1) % R = 0) :
+    redcVal p pinv R T * R ≡ T [MOD p] := by
+  rw [redc_mul hpinv]
+  simp [Nat.ModEq, Nat.add_mul_mod_self_right]
+
+/-- **Montgomery multiplication, specified.** From `a, b < p`, reducing their product
+lands below `2p` and satisfies `t * R ≡ a * b (mod p)`. Composed with `mulLimbs_exec`,
+which computes `a * b` exactly at any modulus, this is the arithmetic contract a
+multi-limb field multiply has to meet — with `p ≤ R` the only condition on the field,
+and that holds by construction since `R = 2 ^ (64 * limbCount p)`. -/
+theorem montMul_spec {p pinv R a b : ℕ} (hR : 0 < R) (hpR : p ≤ R)
+    (hpinv : (p * pinv + 1) % R = 0) (ha : a < p) (hb : b < p) :
+    redcVal p pinv R (a * b) < 2 * p ∧
+      redcVal p pinv R (a * b) * R ≡ a * b [MOD p] := by
+  have hp : 0 < p := by omega
+  have hab : a * b < p * R :=
+    Nat.lt_of_lt_of_le (Nat.mul_lt_mul_of_lt_of_le ha (le_of_lt hb) hp)
+      (Nat.mul_le_mul_left _ hpR)
+  exact ⟨redc_lt hR hpinv hab, redc_modEq hpinv⟩
+
+/-- `R = 2 ^ (64 * limbCount p)` is at least `p`, so `montMul_spec`'s only field-side
+condition is discharged by the limb count itself. -/
+theorem le_two_pow_limbCount (p : ℕ) : p ≤ 2 ^ (64 * limbCount p) := by
+  have hle : Nat.size p ≤ 64 * limbCount p := by
+    simp only [limbCount]; omega
+  exact le_of_lt (Nat.size_le.mp hle)
 
 end Caliper.MultiLimb
