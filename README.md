@@ -51,6 +51,10 @@ We follow standard Lean/Mathlib conventions with some local variations. See [doc
 
 Some heuristics for finding proofs are in [doc/proving-guide.md](doc/proving-guide.md).
 
+## Bounded Witness Generation
+
+Clean's witness-generation IR compiles to [Caliper](https://github.com/zksecurity/caliper), a Lean DSL for concrete running-time and memory bounds, so a circuit's witness generation carries a machine-checked step count — "this witgen runs in fewer than 2^40 steps" is a theorem, not an assumption. See [doc/caliper-witgen.md](doc/caliper-witgen.md).
+
 ## Roadmap
 
 The following is a rough, longer-term roadmap for clean. Note that some of the bullets below could be multi-month projects!

@@ -32,11 +32,14 @@ variable {F : Type}
 
 /-! ## Exportability -/
 
-/-- A witness program is exportable iff it is structured IR (`.native` closures are
-the migration escape hatch and cannot be serialized). -/
+/-- A witness program is exportable iff it carries structured IR (`.native` closures
+are the migration escape hatch and cannot be serialized). A `.certified` program is
+exportable: its IR reimplementation is serialized, and the packed equivalence proof
+guarantees the exported IR computes exactly what the native closure does. -/
 def WitgenIR.exportable {m : ℕ} : WitgenIR F m → Bool
   | .native _ => false
   | .ir _ _ => true
+  | @WitgenIR.certified _ _ _ _ _ _ _ => true
 
 /-- Indices (into the flat operation list) of witness operations that are not
 exportable. Empty iff all reachable witness generators are structured IR. -/
@@ -128,10 +131,14 @@ def Step.toJson : Step F → Json
 
 instance : ToJson (Step F) := ⟨Step.toJson⟩
 
-/-- Serialize a witness program; fails on `.native`. -/
+/-- Serialize a witness program; fails on `.native`. A `.certified` program
+serializes its IR reimplementation — by the packed equivalence proof, the external
+interpreter then computes the same outputs as the native closure the Lean prover
+runs. -/
 def WitgenIR.toJson? {m : ℕ} : WitgenIR F m → Except String Json
   | .native _ => .error "witness program contains a native (closure) witness"
-  | .ir steps out => .ok <| Json.mkObj [
+  | .ir steps out
+  | @WitgenIR.certified _ _ _ _ steps out _ => .ok <| Json.mkObj [
       ("steps", Lean.toJson steps),
       ("output", out.toJson)]
 
