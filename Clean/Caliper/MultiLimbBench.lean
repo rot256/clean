@@ -1,4 +1,4 @@
-import Clean.Caliper.MultiLimbEntry
+import Clean.Caliper.MultiLimbSimIR
 
 /-!
 # A benchmark: elliptic-curve arithmetic at BN254
@@ -90,5 +90,70 @@ theorem scalarMulCost_lt : scalarMulCost < 2 ^ 22 := by decide +kernel
 /-- info: 396790 -/
 #guard_msgs in
 #eval 2 ^ 40 / scalarMulCost
+
+/-! ## End to end
+
+The two halves of what a compiled program certifies, on this program: the emitted code
+computes the doubled point, and it does so inside the budget. Primality of BN254's
+modulus is a hypothesis — it is true, but a Lean proof of it is a Pratt certificate,
+not something the compiler's checks decide. -/
+
+/-- Four limbs at BN254. -/
+theorem limbCount_pBN254 : limbCount pBN254 = 4 := by decide +kernel
+
+section Correct
+
+variable [Fact (Nat.Prime pBN254)]
+
+/-- The doubling passes every generation-time check. -/
+theorem jacobianDouble_compiles :
+    compileML 3 jacobianDouble jacobianDoubleOut = some
+      (compileIRCodeML (limbCount (FiniteField.size Fbn)) (FiniteField.size Fbn)
+        (montConstWord (FiniteField.size Fbn)) jacobianDouble.length jacobianDouble
+        jacobianDoubleOut) := by
+  have hcond : (Caliper.WitgenCompile.WitgenIR.compilable
+        (WitgenIR.ir jacobianDouble jacobianDoubleOut)
+      && Caliper.WitgenCompile.WitgenIR.envBound 3
+        (WitgenIR.ir jacobianDouble jacobianDoubleOut)
+      && decide (3 * limbCount pBN254 ≤ 2 ^ 64)
+      && decide ((3 : ℕ) < 2 ^ 64)
+      && fieldOkML pBN254) = true := by decide +kernel
+  have hcond' : (Caliper.WitgenCompile.WitgenIR.compilable
+        (WitgenIR.ir jacobianDouble jacobianDoubleOut)
+      && Caliper.WitgenCompile.WitgenIR.envBound 3
+        (WitgenIR.ir jacobianDouble jacobianDoubleOut)
+      && decide (3 * limbCount (FiniteField.size Fbn) ≤ 2 ^ 64)
+      && decide ((3 : ℕ) < 2 ^ 64)
+      && fieldOkML (FiniteField.size Fbn)) = true := hcond
+  rw [compileML, if_pos hcond']
+
+/-- **The compiled doubling is correct, and inside the budget.** From any state whose
+environment buffer holds `X`, `Y`, `Z` in Montgomery form, the emitted code runs to a
+state whose output buffer holds the doubled point in the same encoding — in fewer than
+`2 ^ 13` machine steps. -/
+theorem jacobianDouble_correct_and_fast (env : ProverEnvironment Fbn)
+    (envArr : Array (Word 64)) (henv : EnvEncML (limbCount pBN254) env 3 envArr)
+    {s : State 64} (hbuf : s.bufs 0 = envArr) :
+    ∃ s' t d pp,
+      Exec CostModel.unit
+        (compileIRCodeML (limbCount (FiniteField.size Fbn)) (FiniteField.size Fbn)
+          (montConstWord (FiniteField.size Fbn)) jacobianDouble.length jacobianDouble
+          jacobianDoubleOut) s s' t d pp ∧
+      s'.bufs 1 = (encFlat (limbCount pBN254)
+        ((WitgenIR.ir jacobianDouble jacobianDoubleOut).eval env).toList).toArray ∧
+      t < 2 ^ 13 := by
+  obtain ⟨s', t, d, pp, hex, hout⟩ :=
+    compileML_sim (C := CostModel.unit) jacobianDouble_compiles env envArr henv hbuf
+  refine ⟨s', t, d, pp, hex, hout, ?_⟩
+  have ht := compileML_timeLe jacobianDouble_compiles _ _ _ _ _ hex
+  have hcost : irCostML (limbCount (FiniteField.size Fbn)) 3 jacobianDouble
+      jacobianDoubleOut = doubleCost := by
+    rw [show FiniteField.size Fbn = pBN254 from rfl, limbCount_pBN254]
+    rfl
+  rw [hcost] at ht
+  have := doubleCost_lt
+  omega
+
+end Correct
 
 end Caliper.MultiLimb
