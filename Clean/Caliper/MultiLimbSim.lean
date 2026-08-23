@@ -1,5 +1,5 @@
 import Clean.Caliper.MultiLimbIR
-import Clean.Caliper.WitgenSim
+import Clean.Caliper.WitgenSimExpr
 
 /-!
 # Encodings and leaf lemmas for the multi-limb compiler's correctness
@@ -388,7 +388,7 @@ answer — which is what the IR's `0⁻¹ = 0` asks for. -/
 theorem montInv_field {k a w : ℕ} {s : State 64} {pv : ℕ} {x : F p}
     (hk : 0 < k) (hp2 : 2 < p) (hpR : p < 2 ^ (64 * k))
     (hpinv : (p * pv + 1) % 2 ^ 64 = 0) (hkb : 128 * k < 2 ^ 64)
-    (hpre : PreludeEnc p pv k s) (hw : k + 4 ≤ w) (haw : a + k ≤ w)
+    (hpre : PreludeEnc p pv k s) (hw : k + 3 ≤ w) (haw : a + k ≤ w)
     (har : RegsEnc s a k (montVal k x)) :
     ∃ s' tt dd pp,
       Exec C (invLimbs k a 0 w ;;
@@ -452,6 +452,68 @@ theorem montInv_field {k a w : ℕ} {s : State 64} {pv : ℕ} {x : F p}
     rwa [hval] at hV
   · intro q hq
     rw [hpres q (by omega), hpres₁ q hq]
+
+/-- Montgomery form is injective: `R` is a unit, so distinct elements have distinct
+forms. This is what lets an equality test run on the stored form directly. -/
+theorem montVal_inj {k : ℕ} (hp2 : 2 < p) {x y : F p} (h : montVal k x = montVal k y) :
+    x = y := by
+  have h' : x * (2 : F p) ^ (64 * k) = y * (2 : F p) ^ (64 * k) := by
+    rw [← montVal_cast, ← montVal_cast, h]
+  exact mul_right_cancel₀ (two_pow_ne_zero hp2 (64 * k)) h'
+
+/-- The low limb is the value mod `2 ^ 64`. -/
+theorem limb_low (v : ℕ) : limb 64 v 0 = v % 2 ^ 64 := by simp [limb]
+
+theorem ofNat_mod (v : ℕ) : BitVec.ofNat 64 (v % 2 ^ 64) = BitVec.ofNat 64 v := by
+  apply BitVec.eq_of_toNat_eq; simp
+
+/-- A single word is a one-limb block. -/
+theorem regsEnc_one {s : State 64} {r : ℕ} {u : UInt64}
+    (h : s.regs r = Caliper.WitgenCompile.encU u) : RegsEnc s r 1 u.toNat := by
+  intro j hj
+  have hj0 : j = 0 := by omega
+  subst hj0
+  rw [Nat.add_zero, h, limb_low, ofNat_mod]
+  exact (Caliper.WitgenCompile.encU_ofNat_toNat u).symm
+
+/-- …and back. -/
+theorem word_of_regsEnc_one {s : State 64} {r v : ℕ} (h : RegsEnc s r 1 v) :
+    s.regs r = BitVec.ofNat 64 v := by
+  have h0 := h 0 (by omega)
+  rw [Nat.add_zero] at h0
+  rwa [limb_low, ofNat_mod] at h0
+
+/-! ### Condition words
+
+The comparison gadgets return `1`/`0` as a `BitVec.ofNat`; these bridge that to the
+`encB` of the reference `Bool`. The `Decidable` instances are strict-implicit so that
+they unify with whatever instance the reference `eval` elaborated. -/
+
+open Caliper.WitgenCompile in
+/-- Equality on Montgomery forms decides field equality. -/
+theorem encB_montEq {k : ℕ} (hp2 : 2 < p) (x y : F p) {inst : Decidable (x = y)} :
+    BitVec.ofNat 64 (if montVal k x = montVal k y then 1 else 0)
+      = encB (@decide (x = y) inst) := by
+  cases hd : @decide (x = y) inst with
+  | false => rw [if_neg fun he => of_decide_eq_false hd (montVal_inj hp2 he)]; rfl
+  | true => rw [if_pos (congrArg (montVal k) (of_decide_eq_true hd))]; rfl
+
+open Caliper.WitgenCompile in
+omit [Fact p.Prime] in
+/-- The order test on canonical values. -/
+theorem encB_valLt (x y : F p) {inst : Decidable (ZMod.val x < ZMod.val y)} :
+    BitVec.ofNat 64 (if ZMod.val x < ZMod.val y then 1 else 0)
+      = encB (@decide (ZMod.val x < ZMod.val y) inst) := by
+  cases hd : @decide (ZMod.val x < ZMod.val y) inst with
+  | false => rw [if_neg (of_decide_eq_false hd)]; rfl
+  | true => rw [if_pos (of_decide_eq_true hd)]; rfl
+
+open Caliper.WitgenCompile in
+omit [Fact p.Prime] in
+/-- The bit test. -/
+theorem encB_bit (m i : ℕ) :
+    BitVec.ofNat 64 (if m.testBit i then 1 else 0) = encB (m.testBit i) := by
+  cases m.testBit i <;> rfl
 
 end FieldGadgets
 

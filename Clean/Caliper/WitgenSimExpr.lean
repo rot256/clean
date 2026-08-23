@@ -28,7 +28,7 @@ open Witgen
 /-! ## Word-level helper lemmas -/
 
 /-- Distinct u64 values have distinct bit-pattern words. -/
-private theorem encU_injective : Function.Injective encU := by
+theorem encU_injective : Function.Injective encU := by
   intro a b h
   have h' := congrArg BitVec.toNat h
   rw [encU_toNat, encU_toNat] at h'
@@ -36,58 +36,58 @@ private theorem encU_injective : Function.Injective encU := by
 
 /-- The shift-amount mask `&&& (w - 1)` of the compiled u64 shifts is `% 64` on
 values, matching `UInt64`'s mod-64 shift semantics. -/
-private theorem toNat_and_63 (y : Word 64) :
+theorem toNat_and_63 (y : Word 64) :
     (y &&& BitVec.ofNat 64 (64 - 1)).toNat = y.toNat % 64 := by
   have h63 : (64 - 1) % 2 ^ 64 = 2 ^ 6 - 1 := by norm_num
   rw [BitVec.toNat_and, BitVec.toNat_ofNat, h63, Nat.and_two_pow_sub_one_eq_mod]
 
-private theorem encU_add (a b : UInt64) : encU a + encU b = encU (a + b) := by
+theorem encU_add (a b : UInt64) : encU a + encU b = encU (a + b) := by
   apply BitVec.eq_of_toNat_eq; simp [encU_toNat]
 
-private theorem encU_mul (a b : UInt64) : encU a * encU b = encU (a * b) := by
+theorem encU_mul (a b : UInt64) : encU a * encU b = encU (a * b) := by
   apply BitVec.eq_of_toNat_eq; simp [encU_toNat]
 
-private theorem encU_div (a b : UInt64) : encU a / encU b = encU (a / b) := by
+theorem encU_div (a b : UInt64) : encU a / encU b = encU (a / b) := by
   apply BitVec.eq_of_toNat_eq; simp [encU_toNat]
 
-private theorem encU_mod (a b : UInt64) : encU a % encU b = encU (a % b) := by
+theorem encU_mod (a b : UInt64) : encU a % encU b = encU (a % b) := by
   apply BitVec.eq_of_toNat_eq; simp [encU_toNat]
 
-private theorem encU_and (a b : UInt64) : encU a &&& encU b = encU (a &&& b) := by
+theorem encU_and (a b : UInt64) : encU a &&& encU b = encU (a &&& b) := by
   apply BitVec.eq_of_toNat_eq; simp [encU_toNat]
 
-private theorem encU_or (a b : UInt64) : encU a ||| encU b = encU (a ||| b) := by
+theorem encU_or (a b : UInt64) : encU a ||| encU b = encU (a ||| b) := by
   apply BitVec.eq_of_toNat_eq; simp [encU_toNat]
 
-private theorem encU_xor (a b : UInt64) : encU a ^^^ encU b = encU (a ^^^ b) := by
+theorem encU_xor (a b : UInt64) : encU a ^^^ encU b = encU (a ^^^ b) := by
   apply BitVec.eq_of_toNat_eq; simp [encU_toNat]
 
 /-- The compiled left shift (mask, then machine `shl`) agrees with `UInt64.shiftLeft`. -/
-private theorem encU_shiftL (a b : UInt64) :
+theorem encU_shiftL (a b : UInt64) :
     encU a <<< (encU b &&& BitVec.ofNat 64 (64 - 1)).toNat = encU (a <<< b) := by
   apply BitVec.eq_of_toNat_eq
   rw [BitVec.toNat_shiftLeft, toNat_and_63, encU_toNat, encU_toNat, encU_toNat,
     UInt64.toNat_shiftLeft]
 
 /-- The compiled right shift (mask, then machine `shr`) agrees with `UInt64.shiftRight`. -/
-private theorem encU_shiftR (a b : UInt64) :
+theorem encU_shiftR (a b : UInt64) :
     encU a >>> (encU b &&& BitVec.ofNat 64 (64 - 1)).toNat = encU (a >>> b) := by
   apply BitVec.eq_of_toNat_eq
   rw [BitVec.toNat_ushiftRight, toNat_and_63, encU_toNat, encU_toNat, encU_toNat,
     UInt64.toNat_shiftRight]
 
 /-- The condition-word `&&&` is boolean conjunction. -/
-private theorem encB_and (a b : Bool) : encB a &&& encB b = encB (a && b) := by
+theorem encB_and (a b : Bool) : encB a &&& encB b = encB (a && b) := by
   cases a <;> cases b <;> decide
 
 /-- The `isZero` of a condition word is the negated condition's word. -/
-private theorem encB_not (b : Bool) :
+theorem encB_not (b : Bool) :
     (if encB b = 0 then 1 else 0 : Word 64) = encB (!b) := by
   cases b <;> decide
 
 /-- The `eq`-comparison of bit-pattern words decides u64 equality (generic in the
 `Decidable` instance, to match whatever instance the reference `eval` elaborated). -/
-private theorem encB_ueq (x y : UInt64) [Decidable (x = y)] :
+theorem encB_ueq (x y : UInt64) [Decidable (x = y)] :
     (if encU x = encU y then 1 else 0 : Word 64) = encB (decide (x = y)) := by
   by_cases h : x = y
   · rw [decide_eq_true h, if_pos (congrArg encU h)]
@@ -96,7 +96,7 @@ private theorem encB_ueq (x y : UInt64) [Decidable (x = y)] :
     rfl
 
 /-- The `ult`-comparison of bit-pattern words decides u64 `<`. -/
-private theorem encB_ult (x y : UInt64) [Decidable (x < y)] :
+theorem encB_ult (x y : UInt64) [Decidable (x < y)] :
     (if (encU x).toNat < (encU y).toNat then 1 else 0 : Word 64) =
       encB (decide (x < y)) := by
   rw [encU_toNat, encU_toNat]
@@ -107,13 +107,13 @@ private theorem encB_ult (x y : UInt64) [Decidable (x < y)] :
     rfl
 
 /-- The word of a u64 constant, baked as a `toNat` immediate, is its bit pattern. -/
-private theorem encU_ofNat_toNat (n : UInt64) : BitVec.ofNat 64 n.toNat = encU n := by
+theorem encU_ofNat_toNat (n : UInt64) : BitVec.ofNat 64 n.toNat = encU n := by
   apply BitVec.eq_of_toNat_eq
   rw [encU_toNat, BitVec.toNat_ofNat]
   exact Nat.mod_eq_of_lt n.toBitVec.isLt
 
 /-- The `idx` register's word reads back as the u64 of the index. -/
-private theorem encU_ofNat (n : ℕ) : BitVec.ofNat 64 n = encU (UInt64.ofNat n) := rfl
+theorem encU_ofNat (n : ℕ) : BitVec.ofNat 64 n = encU (UInt64.ofNat n) := rfl
 
 section FieldWord
 
