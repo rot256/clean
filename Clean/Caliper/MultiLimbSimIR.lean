@@ -1,5 +1,6 @@
 import Clean.Caliper.MultiLimbSimExpr
 import Clean.Caliper.WitgenSimIR
+import Clean.Caliper.MultiLimbEntry
 
 /-!
 # The multi-limb lowering simulates the witness IR
@@ -665,6 +666,93 @@ theorem compileVML_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L : 
       rw [hbo₂ bb hb1, hbo₁ bb hb1]
     · rw [hcp₂, hcp₁]
 
+/-! ## The whole program -/
+
+/-- **The multi-limb lowering simulates the witness IR.** For every compilable,
+environment-bounded witness program, from any start state whose buffer `0` holds the
+reference environment in Montgomery form, the emitted code has an execution ending
+with buffer `1` holding the Montgomery limbs of `WitgenIR.eval`'s output.
+
+Out-of-range buffer accesses have no `Exec` derivation, so exhibiting the execution
+also proves memory safety. -/
+theorem compileIRCodeML_sim {steps : List (Step (F p))} {m : ℕ} {out : VExpr (F p) m}
+    (hcomp : WitgenIR.compilable (WitgenIR.ir steps out) = true)
+    (hbound : WitgenIR.envBound N (WitgenIR.ir steps out) = true)
+    {s : State 64} (hbuf : s.bufs 0 = envArr) :
+    ∃ s' t d pp,
+      Exec C (compileIRCodeML k p pv steps.length steps out) s s' t d pp ∧
+      s'.bufs 1 = (encFlat k ((WitgenIR.ir steps out).eval env).toList).toArray := by
+  simp only [WitgenIR.compilable, Bool.and_eq_true] at hcomp
+  simp only [WitgenIR.envBound, Bool.and_eq_true] at hbound
+  have hk : 0 < k := hf.limbs_pos
+  set L := steps.length with hLdef
+  -- the prelude
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hmod₁, hlow₁, hhigh₁, hbf₁, hcp₁⟩ :=
+    immLimbs_exec (C := C) 0 p (s := s.allocBuf 1 (m * k)) (k + 1)
+  have hpre : PreludeEnc p pv k
+      ((s₁.setReg (k + 1) (BitVec.ofNat 64 pv)).setReg (idxReg k L) 0) :=
+    ⟨fun j hj => by
+        rw [regs_setReg_ne _ _ (show 0 + j ≠ idxReg k L by
+            simp only [idxReg]; omega),
+          regs_setReg_ne _ _ (show 0 + j ≠ k + 1 by omega)]
+        exact hmod₁ j hj,
+      by
+        rw [regs_setReg_ne _ _ (show k + 1 ≠ idxReg k L by
+            simp only [idxReg]; omega), regs_setReg_self]⟩
+  have hLM : LocalsMatch ([] : List VSort) (#[] : Array (F p ⊕ UInt64)) :=
+    ⟨rfl, fun i hi => absurd hi (by simp)⟩
+  have hs₃ : StateEncML k pv L envArr (#[] : Array (F p ⊕ UInt64)) 0 (tmpBase k L)
+      ((s₁.setReg (k + 1) (BitVec.ofNat 64 pv)).setReg (idxReg k L) 0) := by
+    refine ⟨?_, by simp, Nat.le_refl _, hpre, fun i hi => absurd hi (by simp), ?_⟩
+    · rw [bufs_setReg, bufs_setReg, hbf₁, bufs_allocBuf_ne _ _ (by decide)]
+      exact hbuf
+    · rw [regs_setReg_self]; rfl
+  obtain ⟨s₄, t₄, d₄, p₄, hex₄, hs₄, hL₄, hbf₄, hcp₄⟩ :=
+    compileStepsML_sim (C := C) hf env N envArr henv hNk steps [] #[] L _
+      hLM hcomp.1 hbound.1 (by simp [hLdef]) hs₃
+  have hcap₄ : (s₄.bufs 1).size + m * k ≤ s₄.caps 1 := by
+    rw [hbf₄, hcp₄]
+    simp only [caps_setReg, bufs_setReg, hbf₁, hcp₁, bufs_allocBuf_self,
+      caps_allocBuf_self]
+    simp
+  obtain ⟨s₅, t₅, d₅, p₅, hex₅, hout₅, -, -, -⟩ :=
+    compileVML_sim (C := C) hf env N envArr henv hNk (steps.map Step.sort)
+      (evalSteps env steps #[]) L (by rw [List.nil_append] at hL₄; exact hL₄) out s₄
+      hcomp.2 hbound.2 hs₄ hcap₄
+  refine ⟨s₅, _, _, _,
+    .seq .memAllocI (.seq (.seq hex₁ .imm) (.seq .imm (.seq hex₄ hex₅))), ?_⟩
+  rw [hout₅, hbf₄]
+  simp only [bufs_setReg, hbf₁, bufs_allocBuf_self, WitgenIR.eval]
+  rw [Array.empty_append]
+
 end Sim
+
+/-! ## The checked entry point -/
+
+section Entry
+
+variable {C : CostModel} {p : ℕ} [Fact p.Prime]
+
+/-- **The checked multi-limb entry point is correct.** For every witness program
+`compileML` accepts, from any start state whose buffer `0` holds the reference
+environment in Montgomery form, the emitted code has an execution ending with buffer
+`1` holding the Montgomery limbs of the program's reference output. Together with
+`compileML_timeLe` this is the pair a compiled witness program certifies: it computes
+the right thing, in a number of steps the compiler names in advance. -/
+theorem compileML_sim {N m : ℕ} {steps : List (Step (F p))} {out : VExpr (F p) m}
+    {code : Stmt 64} (h : compileML N steps out = some code)
+    (env : ProverEnvironment (F p)) (envArr : Array (Word 64))
+    (henv : EnvEncML (limbCount p) env N envArr)
+    {s : State 64} (hbuf : s.bufs 0 = envArr) :
+    ∃ s' t d pp, Exec C code s s' t d pp ∧
+      s'.bufs 1 = (encFlat (limbCount p)
+        ((WitgenIR.ir steps out).eval env).toList).toArray := by
+  obtain ⟨hcomp, hbound, hNk, -, hp2, hk0, hkb, hpinv, rfl⟩ := compileML_checks h
+  rw [size_F] at hNk hp2 hk0 hkb hpinv ⊢
+  have hf : FieldOkML p (montConstWord p) (limbCount p) :=
+    ⟨hp2, hk0, lt_two_pow_limbCount p, hpinv, hkb⟩
+  exact compileIRCodeML_sim hf env N envArr henv hNk hcomp hbound hbuf
+
+end Entry
 
 end Caliper.MultiLimb

@@ -10,9 +10,11 @@ is only ever produced under conditions the proofs assume.
 
 The checks split in two. The program-side ones are the same as `compile`'s —
 compilability, the environment bound, and the two size bounds that keep indices inside
-their 64-bit immediates. The field-side ones are `fieldOkML`: the modulus is odd and
-above two, it needs at least one limb, its limb count leaves the inversion's iteration
-budget inside a word, and the computed Montgomery constant passes its own congruence.
+their 64-bit immediates. The environment bound is `N * k ≤ 2 ^ 64` rather than
+`N ≤ 2 ^ 64`: an element takes `k` words, so it is the *word* index that has to fit.
+The field-side ones are `fieldOkML`: the modulus is odd and above two, it needs at
+least one limb, its limb count leaves the inversion's iteration budget inside a word,
+and the computed Montgomery constant passes its own congruence.
 
 Nothing here bounds the field from above. `compile` needs `p² ≤ 2 ^ 64` and so refuses
 BN254; `fieldOkML pBN254` is `true`.
@@ -25,11 +27,9 @@ and the modulus without running anything. `compileML_underBudget` is the form a 
 claim takes — `witgen < 2 ^ 40` and the like — with the comparison decided at
 generation time.
 
-What it does *not* yet certify is that the code computes the right witness. The
-arithmetic it is built from is proved (`montAdd_exec`, `montSub_exec`,
-`montMulSOS_exec`, `eqLimbs_exec`, `ltLimbs_exec`, `montMulConst_exec`); the
-simulation theorem tying the whole lowering to `WitgenIR.eval`, and the correctness of
-the gcd inversion's *value*, are the two gaps left.
+`compileML_sim` (in `MultiLimbSimIR.lean`) is the correctness half: the emitted code
+has an execution ending with the output buffer holding the Montgomery limbs of
+`WitgenIR.eval`'s output.
 -/
 
 namespace Caliper.MultiLimb
@@ -50,7 +50,7 @@ def compileML (N : ℕ) {m : ℕ} (steps : List (Step F)) (out : VExpr F m) :
     Option (Stmt 64) :=
   if WitgenIR.compilable (WitgenIR.ir steps out)
       && WitgenIR.envBound N (WitgenIR.ir steps out)
-      && decide (N ≤ 2 ^ 64) && decide (m < 2 ^ 64)
+      && decide (N * limbCount (FiniteField.size F) ≤ 2 ^ 64) && decide (m < 2 ^ 64)
       && fieldOkML (FiniteField.size F) then
     some (compileIRCodeML (limbCount (FiniteField.size F)) (FiniteField.size F)
       (montConstWord (FiniteField.size F)) steps.length steps out)
@@ -62,7 +62,7 @@ theorem compileML_checks {N m : ℕ} {steps : List (Step F)} {out : VExpr F m}
     {code : Stmt 64} (h : compileML N steps out = some code) :
     WitgenIR.compilable (WitgenIR.ir steps out) = true ∧
       WitgenIR.envBound N (WitgenIR.ir steps out) = true ∧
-      N ≤ 2 ^ 64 ∧ m < 2 ^ 64 ∧
+      N * limbCount (FiniteField.size F) ≤ 2 ^ 64 ∧ m < 2 ^ 64 ∧
       2 < FiniteField.size F ∧
       0 < limbCount (FiniteField.size F) ∧
       128 * limbCount (FiniteField.size F) < 2 ^ 64 ∧
