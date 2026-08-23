@@ -1295,6 +1295,244 @@ theorem invStep_exec {k u v r s pReg W : ℕ}
           rw [hpres' q (by omega) (by omega) (by omega), hpresab q (by omega),
             hpres₃ q (by omega)]
 
+/-! ### One pass of the loop -/
+
+/-- Subtracting one from a nonzero word takes one off its value. -/
+theorem toNat_sub_one {x : Word 64} (h : x ≠ 0) :
+    (x - (1 : Word 64)).toNat = x.toNat - 1 := by
+  have h1 : x.toNat ≠ 0 := fun hh => h (BitVec.eq_of_toNat_eq (by simp [hh]))
+  have h2 : x.toNat < 2 ^ 64 := x.isLt
+  have h3 : (1 : Word 64).toNat = 1 := rfl
+  simp only [BitVec.toNat_sub, h3]
+  omega
+
+/-- **One pass is correct.** With `u` nonzero it spends one iteration of the budget on
+a row; with `u` zero the gcd is done, so it empties the counter and leaves the
+coefficient where it is. -/
+theorem invBody_exec {k u v r s pReg cnt W : ℕ}
+    (hpc : pReg + k ≤ cnt) (hcu : cnt < u) (huv : u + k ≤ v) (hvr : v + k ≤ r)
+    (hrs : r + k ≤ s) (hsW : s + k ≤ W)
+    {st : State 64} {p a U V R S : ℕ}
+    (hp : p % 2 = 1) (hpR : p < 2 ^ (64 * k)) (h1 : 1 < p)
+    (hcnz : st.regs cnt ≠ 0)
+    (hinv : GcdInv p a U V R S)
+    (hur : RegsEnc st u k U) (hvv : RegsEnc st v k V)
+    (hrr : RegsEnc st r k R) (hss : RegsEnc st s k S)
+    (hpr : RegsEnc st pReg k p) :
+    ∃ st' t dd pp, Exec C (invBody k u v r s pReg cnt W) st st' t dd pp ∧
+      (∀ q, q < cnt → st'.regs q = st.regs q) ∧
+      st'.bufs = st.bufs ∧ st'.caps = st.caps ∧
+      (U = 0 → st'.regs cnt = 0 ∧ RegsEnc st' s k S) ∧
+      (U ≠ 0 → (st'.regs cnt).toNat = (st.regs cnt).toNat - 1 ∧
+        RegsEnc st' u k (gcdRow p U V R S).1 ∧
+        RegsEnc st' v k (gcdRow p U V R S).2.1 ∧
+        RegsEnc st' r k (gcdRow p U V R S).2.2.1 ∧
+        RegsEnc st' s k (gcdRow p U V R S).2.2.2 ∧
+        RegsEnc st' pReg k p) := by
+  have hUlt := hinv.ult
+  have hUb : U < 2 ^ (64 * k) := by omega
+  obtain ⟨s₀, t₀, d₀, p₀, hex₀, hflag, hpres₀, hbuf₀, hcap₀⟩ :=
+    nzLimbs_exec (C := C) (show u + k ≤ W by omega) hUb hur
+  rw [show nzOut W = W + 1 from rfl] at hflag
+  by_cases hU0 : U = 0
+  · -- the gcd is done: empty the counter
+    refine ⟨s₀.setReg cnt 0, _, _, _,
+      .seq hex₀ (.ifNZ_false (by rw [hflag, if_pos hU0]; rfl) .imm), ?_, ?_, ?_, ?_, ?_⟩
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ cnt by omega), hpres₀ q (by omega)]
+    · simpa using hbuf₀
+    · simpa using hcap₀
+    · refine fun _ => ⟨by simp, fun j hj => ?_⟩
+      rw [regs_setReg_ne _ _ (show s + j ≠ cnt by omega), hpres₀ _ (by omega)]
+      exact hss j hj
+    · exact fun h => absurd hU0 h
+  · -- one row, one iteration off the counter
+    set s₁ := s₀.setReg (W + 2) (1 : Word 64) with h₁
+    have hexi : Exec C (.imm (W + 2) (1 : Word 64)) s₀ s₁ C.imm 0 0 := by rw [h₁]; exact .imm
+    set s₂ := s₁.setReg cnt (BinOp.eval .sub (s₁.regs cnt) (s₁.regs (W + 2))) with h₂
+    have hexb : Exec C (.bin .sub cnt cnt (W + 2)) s₁ s₂ (C.bin .sub) 0 0 := by
+      rw [h₂]; exact .bin
+    have hc₁ : s₁.regs cnt = st.regs cnt := by
+      rw [h₁, regs_setReg_ne _ _ (show cnt ≠ W + 2 by omega), hpres₀ _ (show cnt ≠ W + 1 by omega)]
+    have hw₁ : s₁.regs (W + 2) = 1 := by rw [h₁]; simp
+    have hcnt₂ : (s₂.regs cnt).toNat = (st.regs cnt).toNat - 1 := by
+      rw [h₂, regs_setReg_self, hc₁, hw₁]
+      show ((st.regs cnt) - (1 : Word 64)).toNat = _
+      exact toNat_sub_one hcnz
+    have hpres₂ : ∀ q, q ≠ W + 1 → q ≠ W + 2 → q ≠ cnt → s₂.regs q = st.regs q := by
+      intro q hq1 hq2 hq3
+      rw [h₂, regs_setReg_ne _ _ hq3, h₁, regs_setReg_ne _ _ hq2, hpres₀ q hq1]
+    have hu₂ : RegsEnc s₂ u k U := fun j hj => by
+      rw [hpres₂ _ (by omega) (by omega) (by omega)]; exact hur j hj
+    have hv₂ : RegsEnc s₂ v k V := fun j hj => by
+      rw [hpres₂ _ (by omega) (by omega) (by omega)]; exact hvv j hj
+    have hr₂ : RegsEnc s₂ r k R := fun j hj => by
+      rw [hpres₂ _ (by omega) (by omega) (by omega)]; exact hrr j hj
+    have hs₂ : RegsEnc s₂ s k S := fun j hj => by
+      rw [hpres₂ _ (by omega) (by omega) (by omega)]; exact hss j hj
+    have hp₂ : RegsEnc s₂ pReg k p := fun j hj => by
+      rw [hpres₂ _ (by omega) (by omega) (by omega)]; exact hpr j hj
+    obtain ⟨st', t', d', p', hex', hU', hV', hR', hS', hP', hpres', hbuf', hcap'⟩ :=
+      invStep_exec (C := C) (W := W + 3) (show pReg + k ≤ u by omega) huv hvr hrs
+        (show s + k ≤ W + 3 by omega) hp hpR h1 hinv hu₂ hv₂ hr₂ hs₂ hp₂
+    have hnz : s₀.regs (W + 1) ≠ 0 := by
+      rw [hflag, if_neg hU0]
+      exact fun h => absurd ((word_ofNat_eq_zero (by omega)).mp h) (by omega)
+    refine ⟨st', _, _, _,
+      .seq hex₀ (.ifNZ_true hnz (.seq hexi (.seq hexb hex'))), ?_, ?_, ?_, ?_, ?_⟩
+    · intro q hq
+      rw [hpres' q (by omega), hpres₂ q (by omega) (by omega) (by omega)]
+    · rw [hbuf', h₂, h₁]; simpa using hbuf₀
+    · rw [hcap', h₂, h₁]; simpa using hcap₀
+    · exact fun h => absurd h hU0
+    · exact fun _ => ⟨by rw [hpres' cnt (by omega), hcnt₂], hU', hV', hR', hS', hP'⟩
+
+/-! ### The loop
+
+The counter carries the whole termination argument. Each row cuts `bitlen u +
+bitlen v` by at least one, so once the counter is exhausted `u` has reached zero —
+and `u = 0` is what the loop's exit and the gcd's conclusion both key on. -/
+
+/-- **The loop is correct.** It runs the rows out until `u` is zero, and the invariant
+survives to the end, so the `s` block holds a coefficient for a state of the gcd whose
+`u` is zero. -/
+theorem invLoop_exec {k u v r s pReg cnt W : ℕ}
+    (hpc : pReg + k ≤ cnt) (hcu : cnt < u) (huv : u + k ≤ v) (hvr : v + k ≤ r)
+    (hrs : r + k ≤ s) (hsW : s + k ≤ W)
+    {p a : ℕ} (hp : p % 2 = 1) (hpR : p < 2 ^ (64 * k)) (h1 : 1 < p) :
+    ∀ (n : ℕ) {st : State 64} {U V R S : ℕ}, GcdInv p a U V R S →
+      (st.regs cnt).toNat ≤ n →
+      (U ≠ 0 → Nat.size U + Nat.size V ≤ (st.regs cnt).toNat) →
+      RegsEnc st u k U → RegsEnc st v k V → RegsEnc st r k R → RegsEnc st s k S →
+      RegsEnc st pReg k p →
+      ∃ st' t dd pp, Exec C (invLoop k u v r s pReg cnt W) st st' t dd pp ∧
+        (∃ V' R' S', GcdInv p a 0 V' R' S' ∧ RegsEnc st' s k S') ∧
+        (∀ q, q < cnt → st'.regs q = st.regs q) ∧
+        st'.bufs = st.bufs ∧ st'.caps = st.caps := by
+  intro n
+  induction n with
+  | zero =>
+    intro st U V R S hinv hcnt hsize _ _ _ hss _
+    have hz : st.regs cnt = 0 := by
+      refine BitVec.eq_of_toNat_eq ?_
+      have hz0 : (0 : Word 64).toNat = 0 := rfl
+      omega
+    have hU0 : U = 0 := by
+      by_contra hne
+      have hb := hsize hne
+      have hv1 := Nat.size_pos.mpr hinv.vpos
+      omega
+    subst hU0
+    exact ⟨st, _, _, _, .while_done .skip hz, ⟨V, R, S, hinv, hss⟩,
+      fun _ _ => rfl, rfl, rfl⟩
+  | succ n ih =>
+    intro st U V R S hinv hcnt hsize hur hvv hrr hss hpr
+    by_cases hz : st.regs cnt = 0
+    · have hU0 : U = 0 := by
+        by_contra hne
+        have h₂ := hsize hne
+        have hv1 := Nat.size_pos.mpr hinv.vpos
+        have hz0 : (0 : Word 64).toNat = 0 := rfl
+        rw [hz] at h₂
+        omega
+      subst hU0
+      exact ⟨st, _, _, _, .while_done .skip hz, ⟨V, R, S, hinv, hss⟩,
+        fun _ _ => rfl, rfl, rfl⟩
+    · obtain ⟨st₁, t₁, d₁, p₁, hex₁, hpres₁, hbuf₁, hcap₁, hdone, hstep⟩ :=
+        invBody_exec (C := C) hpc hcu huv hvr hrs hsW hp hpR h1 hz hinv
+          hur hvv hrr hss hpr
+      by_cases hU0 : U = 0
+      · obtain ⟨hcnt₁, hss₁⟩ := hdone hU0
+        subst hU0
+        exact ⟨st₁, _, _, _,
+          .while_step .skip hz hex₁ (.while_done .skip hcnt₁),
+          ⟨V, R, S, hinv, hss₁⟩, hpres₁, hbuf₁, hcap₁⟩
+      · obtain ⟨hcnt₁, hu₁, hv₁, hr₁, hs₁, hp₁⟩ := hstep hU0
+        have hsz := gcdRow_size (a := a) hinv hU0
+        have hsize₀ := hsize hU0
+        have hcnz : (st.regs cnt).toNat ≠ 0 := fun hh =>
+          hz (BitVec.eq_of_toNat_eq (by rw [hh]; rfl))
+        obtain ⟨st', t', d', p', hex', hres, hpres', hbuf', hcap'⟩ :=
+          ih (gcdRow_inv hp h1 hinv) (by omega) (fun _ => by omega)
+            hu₁ hv₁ hr₁ hs₁ hp₁
+        refine ⟨st', _, _, _, .while_step .skip hz hex₁ hex', hres, ?_,
+          hbuf'.trans hbuf₁, hcap'.trans hcap₁⟩
+        intro q hq
+        rw [hpres' q hq, hpres₁ q hq]
+
+/-! ### The inversion -/
+
+/-- **The inversion is correct.** For a canonical `A < p` coprime to `p`, the `s` block
+holds a canonical inverse; for `A = 0` — the only non-unit below a prime `p` — it holds
+whatever the gcd's last row left, which the coprimality hypothesis excludes. -/
+theorem invLimbs_exec {k a pReg w : ℕ}
+    (hmod : pReg + k ≤ w) (hopA : a + k ≤ w) (hk : 128 * k < 2 ^ 64)
+    {st : State 64} {p A : ℕ}
+    (hp : p % 2 = 1) (hpR : p < 2 ^ (64 * k)) (h1 : 1 < p) (hA : A < p)
+    (har : RegsEnc st a k A) (hpr : RegsEnc st pReg k p) :
+    ∃ st' t dd pp, Exec C (invLimbs k a pReg w) st st' t dd pp ∧
+      (∃ S, RegsEnc st' (invOut k w) k S ∧ S < p ∧
+        (Nat.gcd A p = 1 → S * A ≡ 1 [MOD p])) ∧
+      (∀ q, q < w → st'.regs q = st.regs q) ∧
+      st'.bufs = st.bufs ∧ st'.caps = st.caps := by
+  obtain ⟨s₁, t₁, d₁, q₁, hex₁, hu₁, hpres₁, hbuf₁, hcap₁⟩ :=
+    movLimbs_exec (C := C) (d := w + 1) (Or.inr (by omega)) har
+  have hp₁ : RegsEnc s₁ pReg k p := fun j hj => by
+    rw [hpres₁ _ (by omega)]; exact hpr j hj
+  obtain ⟨s₂, t₂, d₂, q₂, hex₂, hv₂, hpres₂, hbuf₂, hcap₂⟩ :=
+    movLimbs_exec (C := C) (d := w + 1 + k) (Or.inr (by omega)) hp₁
+  obtain ⟨s₃, t₃, d₃, q₃, hex₃, hr₃, hlow₃, hhigh₃, hbuf₃, hcap₃⟩ :=
+    immLimbs_exec (C := C) (w + 1 + 2 * k) 1 (s := s₂) k
+  obtain ⟨s₄, t₄, d₄, q₄, hex₄, hs₄, hlow₄, hhigh₄, hbuf₄, hcap₄⟩ :=
+    immLimbs_exec (C := C) (w + 1 + 3 * k) 0 (s := s₃) k
+  set s₅ := s₄.setReg w (BitVec.ofNat 64 (invBudget k)) with h₅
+  have hexi : Exec C (.imm w (BitVec.ofNat 64 (invBudget k))) s₄ s₅ C.imm 0 0 := by
+    rw [h₅]; exact .imm
+  have hu₅ : RegsEnc s₅ (w + 1) k A := fun j hj => by
+    rw [h₅, regs_setReg_ne _ _ (show w + 1 + j ≠ w by omega),
+      hlow₄ _ (by omega), hlow₃ _ (by omega), hpres₂ _ (by omega)]
+    exact hu₁ j hj
+  have hv₅ : RegsEnc s₅ (w + 1 + k) k p := fun j hj => by
+    rw [h₅, regs_setReg_ne _ _ (show w + 1 + k + j ≠ w by omega),
+      hlow₄ _ (by omega), hlow₃ _ (by omega)]
+    exact hv₂ j hj
+  have hr₅ : RegsEnc s₅ (w + 1 + 2 * k) k 1 := fun j hj => by
+    rw [h₅, regs_setReg_ne _ _ (show w + 1 + 2 * k + j ≠ w by omega),
+      hlow₄ _ (by omega)]
+    exact hr₃ j hj
+  have hs₅ : RegsEnc s₅ (w + 1 + 3 * k) k 0 := fun j hj => by
+    rw [h₅, regs_setReg_ne _ _ (show w + 1 + 3 * k + j ≠ w by omega)]
+    exact hs₄ j hj
+  have hp₅ : RegsEnc s₅ pReg k p := fun j hj => by
+    rw [h₅, regs_setReg_ne _ _ (show pReg + j ≠ w by omega),
+      hlow₄ _ (by omega), hlow₃ _ (by omega), hpres₂ _ (by omega),
+      hpres₁ _ (by omega)]
+    exact hpr j hj
+  have hcnt₅ : (s₅.regs w).toNat = 128 * k := by
+    rw [h₅, regs_setReg_self]
+    simp only [BitVec.toNat_ofNat, invBudget]
+    omega
+  have hsizep : Nat.size p ≤ 64 * k := Nat.size_le.mpr hpR
+  have hsizeA : Nat.size A ≤ 64 * k := Nat.size_le.mpr (by omega)
+  obtain ⟨st', t', d', q', hex', ⟨V', R', S', hinv', hres'⟩, hpres', hbuf', hcap'⟩ :=
+    invLoop_exec (C := C) (u := w + 1) (v := w + 1 + k) (r := w + 1 + 2 * k)
+      (s := w + 1 + 3 * k) (W := w + 1 + 4 * k) (a := A) hmod (by omega) (by omega)
+      (by omega) (by omega) (by omega) hp hpR h1 (128 * k)
+      (gcdInv_init hp h1 hA) (by omega) (fun _ => by omega) hu₅ hv₅ hr₅ hs₅ hp₅
+  refine ⟨st', _, _, _,
+    .seq hex₁ (.seq hex₂ (.seq hex₃ (.seq hex₄ (.seq hexi hex')))),
+    ⟨S', hres', hinv'.slt, fun hcop => gcdInv_result hinv' hcop⟩, ?_, ?_, ?_⟩
+  · intro q hq
+    rw [hpres' q hq, h₅, regs_setReg_ne _ _ (show q ≠ w by omega),
+      hlow₄ _ (by omega), hlow₃ _ (by omega), hpres₂ _ (by omega),
+      hpres₁ _ (by omega)]
+  · rw [hbuf', h₅]
+    show s₄.bufs = st.bufs
+    rw [hbuf₄, hbuf₃, hbuf₂, hbuf₁]
+  · rw [hcap', h₅]
+    show s₄.caps = st.caps
+    rw [hcap₄, hcap₃, hcap₂, hcap₁]
+
 /-! ## The time bound
 
 The measure is the counter, so `whileNZ_measure` needs three facts and no arithmetic:
@@ -1307,15 +1545,6 @@ theorem seq0 {P R Q : State 64 → Prop} {c₁ c₂ : Stmt 64} {T₁ T₂ : ℕ}
     (h₁ : Triple C P c₁ R T₁ 0 0) (h₂ : Triple C R c₂ Q T₂ 0 0) :
     Triple C P (c₁ ;; c₂) Q (T₁ + T₂) 0 0 :=
   (h₁.seq h₂).weaken (le_refl _) (by simp) (by simp)
-
-/-- Subtracting one from a nonzero word takes one off its value. -/
-theorem toNat_sub_one {x : Word 64} (h : x ≠ 0) :
-    (x - (1 : Word 64)).toNat = x.toNat - 1 := by
-  have h1 : x.toNat ≠ 0 := fun hh => h (BitVec.eq_of_toNat_eq (by simp [hh]))
-  have h2 : x.toNat < 2 ^ 64 := x.isLt
-  have h3 : (1 : Word 64).toNat = 1 := rfl
-  simp only [BitVec.toNat_sub, h3]
-  omega
 
 /-- One pass either spends an iteration on a row or, `u` having reached zero, empties
 the counter. Either way the counter ends strictly smaller, and no data hypothesis
