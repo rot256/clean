@@ -1406,7 +1406,7 @@ theorem invLoop_exec {k u v r s pReg cnt W : ℕ}
       RegsEnc st u k U → RegsEnc st v k V → RegsEnc st r k R → RegsEnc st s k S →
       RegsEnc st pReg k p →
       ∃ st' t dd pp, Exec C (invLoop k u v r s pReg cnt W) st st' t dd pp ∧
-        (∃ V' R' S', GcdInv p a 0 V' R' S' ∧ RegsEnc st' s k S') ∧
+        (∃ V' R' S', GcdInv p a 0 V' R' S' ∧ RegsEnc st' s k S' ∧ (U = 0 → S' = S)) ∧
         (∀ q, q < cnt → st'.regs q = st.regs q) ∧
         st'.bufs = st.bufs ∧ st'.caps = st.caps := by
   intro n
@@ -1423,7 +1423,7 @@ theorem invLoop_exec {k u v r s pReg cnt W : ℕ}
       have hv1 := Nat.size_pos.mpr hinv.vpos
       omega
     subst hU0
-    exact ⟨st, _, _, _, .while_done .skip hz, ⟨V, R, S, hinv, hss⟩,
+    exact ⟨st, _, _, _, .while_done .skip hz, ⟨V, R, S, hinv, hss, fun _ => rfl⟩,
       fun _ _ => rfl, rfl, rfl⟩
   | succ n ih =>
     intro st U V R S hinv hcnt hsize hur hvv hrr hss hpr
@@ -1436,7 +1436,7 @@ theorem invLoop_exec {k u v r s pReg cnt W : ℕ}
         rw [hz] at h₂
         omega
       subst hU0
-      exact ⟨st, _, _, _, .while_done .skip hz, ⟨V, R, S, hinv, hss⟩,
+      exact ⟨st, _, _, _, .while_done .skip hz, ⟨V, R, S, hinv, hss, fun _ => rfl⟩,
         fun _ _ => rfl, rfl, rfl⟩
     · obtain ⟨st₁, t₁, d₁, p₁, hex₁, hpres₁, hbuf₁, hcap₁, hdone, hstep⟩ :=
         invBody_exec (C := C) hpc hcu huv hvr hrs hsW hp hpR h1 hz hinv
@@ -1446,7 +1446,7 @@ theorem invLoop_exec {k u v r s pReg cnt W : ℕ}
         subst hU0
         exact ⟨st₁, _, _, _,
           .while_step .skip hz hex₁ (.while_done .skip hcnt₁),
-          ⟨V, R, S, hinv, hss₁⟩, hpres₁, hbuf₁, hcap₁⟩
+          ⟨V, R, S, hinv, hss₁, fun _ => rfl⟩, hpres₁, hbuf₁, hcap₁⟩
       · obtain ⟨hcnt₁, hu₁, hv₁, hr₁, hs₁, hp₁⟩ := hstep hU0
         have hsz := gcdRow_size (a := a) hinv hU0
         have hsize₀ := hsize hU0
@@ -1455,7 +1455,9 @@ theorem invLoop_exec {k u v r s pReg cnt W : ℕ}
         obtain ⟨st', t', d', p', hex', hres, hpres', hbuf', hcap'⟩ :=
           ih (gcdRow_inv hp h1 hinv) (by omega) (fun _ => by omega)
             hu₁ hv₁ hr₁ hs₁ hp₁
-        refine ⟨st', _, _, _, .while_step .skip hz hex₁ hex', hres, ?_,
+        obtain ⟨V₂, R₂, S₂, hinv₂, hss₂, -⟩ := hres
+        refine ⟨st', _, _, _, .while_step .skip hz hex₁ hex',
+          ⟨V₂, R₂, S₂, hinv₂, hss₂, fun h => absurd h hU0⟩, ?_,
           hbuf'.trans hbuf₁, hcap'.trans hcap₁⟩
         intro q hq
         rw [hpres' q hq, hpres₁ q hq]
@@ -1471,7 +1473,7 @@ theorem invLimbs_exec {k a pReg w : ℕ}
     (hp : p % 2 = 1) (hpR : p < 2 ^ (64 * k)) (h1 : 1 < p) (hA : A < p)
     (har : RegsEnc st a k A) (hpr : RegsEnc st pReg k p) :
     ∃ st' t dd pp, Exec C (invLimbs k a pReg w) st st' t dd pp ∧
-      (∃ S, RegsEnc st' (invOut k w) k S ∧ S < p ∧
+      (∃ S, RegsEnc st' (invOut k w) k S ∧ S < p ∧ (A = 0 → S = 0) ∧
         (Nat.gcd A p = 1 → S * A ≡ 1 [MOD p])) ∧
       (∀ q, q < w → st'.regs q = st.regs q) ∧
       st'.bufs = st.bufs ∧ st'.caps = st.caps := by
@@ -1514,14 +1516,15 @@ theorem invLimbs_exec {k a pReg w : ℕ}
     omega
   have hsizep : Nat.size p ≤ 64 * k := Nat.size_le.mpr hpR
   have hsizeA : Nat.size A ≤ 64 * k := Nat.size_le.mpr (by omega)
-  obtain ⟨st', t', d', q', hex', ⟨V', R', S', hinv', hres'⟩, hpres', hbuf', hcap'⟩ :=
+  obtain ⟨st', t', d', q', hex', ⟨V', R', S', hinv', hres', hzero'⟩, hpres', hbuf',
+      hcap'⟩ :=
     invLoop_exec (C := C) (u := w + 1) (v := w + 1 + k) (r := w + 1 + 2 * k)
       (s := w + 1 + 3 * k) (W := w + 1 + 4 * k) (a := A) hmod (by omega) (by omega)
       (by omega) (by omega) (by omega) hp hpR h1 (128 * k)
       (gcdInv_init hp h1 hA) (by omega) (fun _ => by omega) hu₅ hv₅ hr₅ hs₅ hp₅
   refine ⟨st', _, _, _,
     .seq hex₁ (.seq hex₂ (.seq hex₃ (.seq hex₄ (.seq hexi hex')))),
-    ⟨S', hres', hinv'.slt, fun hcop => gcdInv_result hinv' hcop⟩, ?_, ?_, ?_⟩
+    ⟨S', hres', hinv'.slt, hzero', fun hcop => gcdInv_result hinv' hcop⟩, ?_, ?_, ?_⟩
   · intro q hq
     rw [hpres' q hq, h₅, regs_setReg_ne _ _ (show q ≠ w by omega),
       hlow₄ _ (by omega), hlow₃ _ (by omega), hpres₂ _ (by omega),
