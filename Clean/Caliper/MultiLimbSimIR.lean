@@ -279,6 +279,247 @@ theorem compileStepsML_sim :
     exact ⟨s₂, _, _, _, .seq hex₁ hex₂, hs₂, hL₂,
       hbf₂.trans hbf₁, hcp₂.trans hcp₁⟩
 
+/-! ### Output-code fold lemmas
+
+`compileVML` emits one unrolled block per output element; these lemmas run the fold
+over the generation-time element list, tracking the output buffer. All are stated with
+an already-executed prefix `c₀` (instantiated with `.skip` at the top level) because
+`List.foldl` accumulates code on the left. -/
+
+/-- Fold lemma for `.lit` outputs. -/
+theorem compileVML_lit_fold (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L : ℕ)
+    (hL : LocalsMatch Γ locals) :
+    ∀ (l : List (FExpr (F p))) {c₀ : Stmt 64} {s s₀ : State 64} {t₀ : ℕ} {d₀ p₀ : ℤ},
+      Exec C c₀ s s₀ t₀ d₀ p₀ →
+      l.all (FExpr.compilable Γ) = true → l.all (FExpr.envBound N) = true →
+      StateEncML k pv L envArr locals 0 (tmpBase k L) s₀ →
+      (s₀.bufs 1).size + l.length * k ≤ s₀.caps 1 →
+      ∃ s' t d pp,
+        Exec C (l.foldl (fun c e =>
+            c ;; (compileFML k L e (tmpBase k L)).1 ;;
+              pushLimbs k (compileFML k L e (tmpBase k L)).2.1) c₀) s s' t d pp ∧
+        s'.bufs 1 = s₀.bufs 1 ++
+          (encFlat k (l.map fun e => FExpr.eval { env, locals } e)).toArray ∧
+        StateEncML k pv L envArr locals 0 (tmpBase k L) s' ∧
+        (∀ b, b ≠ 1 → s'.bufs b = s₀.bufs b) ∧ s'.caps = s₀.caps := by
+  intro l
+  induction l with
+  | nil =>
+    intro c₀ s s₀ t₀ d₀ p₀ hex₀ _ _ hs _
+    exact ⟨s₀, t₀, d₀, p₀, hex₀, by simp, hs, fun _ _ => rfl, rfl⟩
+  | cons e l ih =>
+    intro c₀ s s₀ t₀ d₀ p₀ hex₀ hc hb hs hcap
+    simp only [List.all_cons, Bool.and_eq_true] at hc hb
+    simp only [List.length_cons] at hcap
+    rw [show (l.length + 1) * k = l.length * k + k by ring] at hcap
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileFML_sim hf env N envArr henv hNk Γ locals 0 L hL e (tmpBase k L) s₀
+        hc.1 hb.1 hs
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hout₂, hbo₂, hrg₂, hcp₂⟩ :=
+      pushLimbs_exec (C := C) hr₁ (by rw [hbf₁, hcp₁]; omega)
+    have hs₂ : StateEncML k pv L envArr locals 0 (tmpBase k L) s₂ :=
+      StateEncML_frame hs (fun q hq => by rw [hrg₂]; exact hp₁ q hq)
+        (by rw [hbo₂ 0 (by decide), hbf₁])
+    obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
+      ih (.seq hex₀ (.seq hex₁ hex₂)) hc.2 hb.2 hs₂
+        (by rw [hout₂, hcp₂, hcp₁, hbf₁]
+            have hl : (s₀.bufs 1 ++ (encWords k
+                (montVal k (FExpr.eval { env, locals } e))).toArray).size
+                = (s₀.bufs 1).size + k := by simp [encWords_length]
+            omega)
+    refine ⟨s', t', d', pp', hex', ?_, hs', ?_, ?_⟩
+    · rw [hout', hout₂, hbf₁, List.map_cons, encFlat_cons]
+      exact append_toArray_assoc _ _ _
+    · intro b hb1
+      rw [hbo' b hb1, hbo₂ b hb1, hbf₁]
+    · rw [hcp', hcp₂, hcp₁]
+
+/-- Fold lemma for `.mapRange` outputs: each block points the index register at the
+element index, evaluates the body there and pushes the result. -/
+theorem compileVML_mapRange_fold (Γ : List VSort) (locals : Array (F p ⊕ UInt64))
+    (L : ℕ) (hL : LocalsMatch Γ locals) (body : FExpr (F p))
+    (hcb : FExpr.compilable Γ body = true) (hbb : FExpr.envBound N body = true) :
+    ∀ (is : List ℕ) {c₀ : Stmt 64} {s s₀ : State 64} {t₀ : ℕ} {d₀ p₀ : ℤ} {j₀ : ℕ},
+      Exec C c₀ s s₀ t₀ d₀ p₀ →
+      StateEncML k pv L envArr locals j₀ (tmpBase k L) s₀ →
+      (s₀.bufs 1).size + is.length * k ≤ s₀.caps 1 →
+      ∃ s' t d pp j',
+        Exec C (is.foldl (fun c i =>
+            c ;; .imm (idxReg k L) (BitVec.ofNat 64 i) ;;
+              (compileFML k L body (tmpBase k L)).1 ;;
+              pushLimbs k (compileFML k L body (tmpBase k L)).2.1) c₀) s s' t d pp ∧
+        s'.bufs 1 = s₀.bufs 1 ++
+          (encFlat k (is.map fun i =>
+            FExpr.eval { env, locals, idx := i } body)).toArray ∧
+        StateEncML k pv L envArr locals j' (tmpBase k L) s' ∧
+        (∀ b, b ≠ 1 → s'.bufs b = s₀.bufs b) ∧ s'.caps = s₀.caps := by
+  intro is
+  induction is with
+  | nil =>
+    intro c₀ s s₀ t₀ d₀ p₀ j₀ hex₀ hs _
+    exact ⟨s₀, t₀, d₀, p₀, j₀, hex₀, by simp, hs, fun _ _ => rfl, rfl⟩
+  | cons i is ih =>
+    intro c₀ s s₀ t₀ d₀ p₀ j₀ hex₀ hs hcap
+    simp only [List.length_cons] at hcap
+    rw [show (is.length + 1) * k = is.length * k + k by ring] at hcap
+    have hs₁ : StateEncML k pv L envArr locals i (tmpBase k L)
+        (s₀.setReg (idxReg k L) (BitVec.ofNat 64 i)) :=
+      StateEncML_setIdx hf.limbs_pos hs i
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      compileFML_sim hf env N envArr henv hNk Γ locals i L hL body (tmpBase k L) _
+        hcb hbb hs₁
+    obtain ⟨s₃, t₃, d₃, p₃, hex₃, hout₃, hbo₃, hrg₃, hcp₃⟩ :=
+      pushLimbs_exec (C := C) hr₂ (by
+        rw [hbf₂, hcp₂]; simp only [bufs_setReg, caps_setReg]; omega)
+    have hs₃ : StateEncML k pv L envArr locals i (tmpBase k L) s₃ :=
+      StateEncML_frame hs₁ (fun q hq => by rw [hrg₃]; exact hp₂ q hq)
+        (by rw [hbo₃ 0 (by decide), hbf₂])
+    obtain ⟨s', t', d', pp', j', hex', hout', hs', hbo', hcp'⟩ :=
+      ih (.seq hex₀ (.seq .imm (.seq hex₂ hex₃))) hs₃
+        (by rw [hout₃, hcp₃, hcp₂, hbf₂]
+            simp only [bufs_setReg, caps_setReg]
+            have hl : (s₀.bufs 1 ++ (encWords k
+                (montVal k (FExpr.eval { env, locals, idx := i } body))).toArray).size
+                = (s₀.bufs 1).size + k := by simp [encWords_length]
+            omega)
+    refine ⟨s', t', d', pp', j', hex', ?_, hs', ?_, ?_⟩
+    · rw [hout', hout₃, hbf₂, bufs_setReg, List.map_cons, encFlat_cons]
+      exact append_toArray_assoc _ _ _
+    · intro b hb1
+      rw [hbo' b hb1, hbo₃ b hb1, hbf₂, bufs_setReg]
+    · rw [hcp', hcp₃, hcp₂, caps_setReg]
+
+omit [Fact p.Prime] hf in
+/-- Fold lemma for `.envRange` outputs: each block loads one element's limbs from the
+environment buffer and pushes them. -/
+theorem compileVML_envRange_fold (locals : Array (F p ⊕ UInt64))
+    (L : ℕ) (offset : ℕ) :
+    ∀ (is : List ℕ), (∀ i ∈ is, offset + i < N) →
+      ∀ {c₀ : Stmt 64} {s s₀ : State 64} {t₀ : ℕ} {d₀ p₀ : ℤ},
+      Exec C c₀ s s₀ t₀ d₀ p₀ →
+      StateEncML k pv L envArr locals 0 (tmpBase k L) s₀ →
+      (s₀.bufs 1).size + is.length * k ≤ s₀.caps 1 →
+      ∃ s' t d pp,
+        Exec C (is.foldl (fun c i =>
+            c ;; envLimbs k (tmpBase k L + 1) ((offset + i) * k) (tmpBase k L) ;;
+              pushLimbs k (tmpBase k L + 1)) c₀) s s' t d pp ∧
+        s'.bufs 1 = s₀.bufs 1 ++
+          (encFlat k (is.map fun i => env.get (offset + i))).toArray ∧
+        StateEncML k pv L envArr locals 0 (tmpBase k L) s' ∧
+        (∀ b, b ≠ 1 → s'.bufs b = s₀.bufs b) ∧ s'.caps = s₀.caps := by
+  intro is
+  induction is with
+  | nil =>
+    intro _ c₀ s s₀ t₀ d₀ p₀ hex₀ hs _
+    exact ⟨s₀, t₀, d₀, p₀, hex₀, by simp, hs, fun _ _ => rfl, rfl⟩
+  | cons i is ih =>
+    intro his c₀ s s₀ t₀ d₀ p₀ hex₀ hs hcap
+    simp only [List.length_cons] at hcap
+    rw [show (is.length + 1) * k = is.length * k + k by ring] at hcap
+    have hoi : offset + i < N := his i (List.mem_cons_self ..)
+    have hmul : (offset + i + 1) * k ≤ N * k := Nat.mul_le_mul_right k (by omega)
+    have hexp : (offset + i + 1) * k = (offset + i) * k + k := by ring
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hval₁, hlow₁, hhigh₁, hbf₁, hcp₁⟩ :=
+      loadLimbs_exec (C := C) (base := tmpBase k L + 1) (idx := (offset + i) * k)
+        (sc := tmpBase k L) (by omega) k
+        (show (offset + i) * k + k ≤ 2 ^ 64 by omega)
+        (show (offset + i) * k + k ≤ (s₀.bufs 0).size by rw [hs.env, henv.1]; omega)
+    have hr₁ : RegsEnc s₁ (tmpBase k L + 1) k (montVal k (env.get (offset + i))) := by
+      intro j hj
+      rw [hval₁ j hj, hs.env]
+      exact henv.2 (offset + i) hoi j hj
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hout₂, hbo₂, hrg₂, hcp₂⟩ :=
+      pushLimbs_exec (C := C) hr₁ (by rw [hbf₁, hcp₁]; omega)
+    have hs₂ : StateEncML k pv L envArr locals 0 (tmpBase k L) s₂ :=
+      StateEncML_frame hs
+        (fun q hq => by rw [hrg₂, hlow₁ q (by omega) (by omega)])
+        (by rw [hbo₂ 0 (by decide), hbf₁])
+    obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
+      ih (fun j hj => his j (List.mem_cons_of_mem _ hj))
+        (.seq hex₀ (.seq hex₁ hex₂)) hs₂
+        (by rw [hout₂, hcp₂, hcp₁, hbf₁]
+            have hl : (s₀.bufs 1 ++ (encWords k
+                (montVal k (env.get (offset + i)))).toArray).size
+                = (s₀.bufs 1).size + k := by simp [encWords_length]
+            omega)
+    refine ⟨s', t', d', pp', hex', ?_, hs', ?_, ?_⟩
+    · rw [hout', hout₂, hbf₁, List.map_cons, encFlat_cons]
+      exact append_toArray_assoc _ _ _
+    · intro b hb1
+      rw [hbo' b hb1, hbo₂ b hb1, hbf₁]
+    · rw [hcp', hcp₂, hcp₁]
+
+omit henv hNk in
+/-- Fold lemma for `.bitsOf` outputs: with the canonical value at `a` and the
+Montgomery forms of `0` and `1` at `W` and `W + k`, each block extracts one bit,
+selects between the two constants and pushes the result. -/
+theorem compileVML_bitsOf_fold (locals : Array (F p ⊕ UInt64))
+    (L : ℕ) {a W : ℕ} (haW : a + k ≤ W) (hwL : tmpBase k L ≤ W) (x : F p) :
+    ∀ (is : List ℕ) {c₀ : Stmt 64} {s s₀ : State 64} {t₀ : ℕ} {d₀ p₀ : ℤ},
+      Exec C c₀ s s₀ t₀ d₀ p₀ →
+      RegsEnc s₀ a k (ZMod.val x) → RegsEnc s₀ W k 0 →
+      RegsEnc s₀ (W + k) k (2 ^ (64 * k) % p) →
+      StateEncML k pv L envArr locals 0 (tmpBase k L) s₀ →
+      (s₀.bufs 1).size + is.length * k ≤ s₀.caps 1 →
+      ∃ s' t d pp,
+        Exec C (is.foldl (fun c i =>
+            c ;; bitLimb k a i (W + 2 * k) ;;
+              selectLimbs k (W + 2 * k + 3) (W + k) W (bitOut (W + 2 * k))
+                (W + 2 * k + 2) ;;
+              pushLimbs k (W + 2 * k + 3)) c₀) s s' t d pp ∧
+        s'.bufs 1 = s₀.bufs 1 ++
+          (encFlat k (is.map fun i =>
+            (FiniteField.fromNat (ZMod.val x >>> i % 2) : F p))).toArray ∧
+        StateEncML k pv L envArr locals 0 (tmpBase k L) s' ∧
+        (∀ b, b ≠ 1 → s'.bufs b = s₀.bufs b) ∧ s'.caps = s₀.caps := by
+  intro is
+  induction is with
+  | nil =>
+    intro c₀ s s₀ t₀ d₀ p₀ hex₀ _ _ _ hs _
+    exact ⟨s₀, t₀, d₀, p₀, hex₀, by simp, hs, fun _ _ => rfl, rfl⟩
+  | cons i is ih =>
+    intro c₀ s s₀ t₀ d₀ p₀ hex₀ hxa hz ho hs hcap
+    simp only [List.length_cons] at hcap
+    rw [show (is.length + 1) * k = is.length * k + k by ring] at hcap
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hflag₁, hp₁, hbf₁, hcp₁⟩ :=
+      bitLimb_exec (C := C) (k := k) (a := a) (i := i) (w := W + 2 * k)
+        (by omega) (lt_trans (ZMod.val_lt x) hf.bound) hxa
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hsel₂, hp₂, hbf₂, hcp₂⟩ :=
+      selectLimbs_exec (C := C) (k := k) (d := W + 2 * k + 3) (a := W + k) (b := W)
+        (f := bitOut (W + 2 * k)) (sc := W + 2 * k + 2)
+        ⟨by omega, by omega, by simp only [bitOut]; omega, by omega⟩
+        (show (if (ZMod.val x).testBit i then 1 else 0) ≤ 1 by split <;> omega)
+        (fun j hj => by rw [hp₁ _ (by omega)]; exact ho j hj)
+        (fun j hj => by rw [hp₁ _ (by omega)]; exact hz j hj)
+        hflag₁
+    have hsel : RegsEnc s₂ (W + 2 * k + 3) k
+        (montVal k (FiniteField.fromNat (ZMod.val x >>> i % 2) : F p)) := by
+      rw [← montVal_bit k (ZMod.val x) i]
+      exact hsel₂
+    obtain ⟨s₃, t₃, d₃, p₃, hex₃, hout₃, hbo₃, hrg₃, hcp₃⟩ :=
+      pushLimbs_exec (C := C) hsel (by rw [hbf₂, hbf₁, hcp₂, hcp₁]; omega)
+    have hpres : ∀ q, q < W + 2 * k → s₃.regs q = s₀.regs q := fun q hq => by
+      rw [hrg₃, hp₂ q (by omega), hp₁ q hq]
+    have hs₃ : StateEncML k pv L envArr locals 0 (tmpBase k L) s₃ :=
+      StateEncML_frame hs (fun q hq => hpres q (by omega))
+        (by rw [hbo₃ 0 (by decide), hbf₂, hbf₁])
+    obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
+      ih (.seq hex₀ (.seq hex₁ (.seq hex₂ hex₃)))
+        (fun j hj => by rw [hpres _ (by omega)]; exact hxa j hj)
+        (fun j hj => by rw [hpres _ (by omega)]; exact hz j hj)
+        (fun j hj => by rw [hpres _ (by omega)]; exact ho j hj) hs₃
+        (by rw [hout₃, hcp₃, hcp₂, hcp₁, hbf₂, hbf₁]
+            have hl : (s₀.bufs 1 ++ (encWords k (montVal k
+                (FiniteField.fromNat (ZMod.val x >>> i % 2) : F p))).toArray).size
+                = (s₀.bufs 1).size + k := by simp [encWords_length]
+            omega)
+    refine ⟨s', t', d', pp', hex', ?_, hs', ?_, ?_⟩
+    · rw [hout', hout₃, hbf₂, hbf₁, List.map_cons, encFlat_cons]
+      exact append_toArray_assoc _ _ _
+    · intro b hb1
+      rw [hbo' b hb1, hbo₃ b hb1, hbf₂, hbf₁]
+    · rw [hcp', hcp₃, hcp₂, hcp₁]
+
 end Sim
 
 end Caliper.MultiLimb

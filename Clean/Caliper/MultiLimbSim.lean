@@ -515,6 +515,31 @@ theorem encB_bit (m i : ℕ) :
     BitVec.ofNat 64 (if m.testBit i then 1 else 0) = encB (m.testBit i) := by
   cases m.testBit i <;> rfl
 
+/-- Montgomery form of `0` and `1`. -/
+theorem montVal_zero (k : ℕ) : montVal k (0 : F p) = 0 := by
+  simp [montVal, ZMod.val_zero]
+
+theorem montVal_one (k : ℕ) : montVal k (1 : F p) = 2 ^ (64 * k) % p := by
+  have h2 := (Fact.out (p := p.Prime)).two_le
+  simp only [montVal, ZMod.val_one_eq_one_mod, Nat.mod_eq_of_lt (show 1 < p by omega),
+    one_mul]
+
+/-- What a selected bit is worth in Montgomery form. -/
+theorem montVal_bit (k m i : ℕ) :
+    (if (if m.testBit i then 1 else 0) = 1 then 2 ^ (64 * k) % p else 0)
+      = montVal k (FiniteField.fromNat (m >>> i % 2) : F p) := by
+  have hsh : m >>> i = m / 2 ^ i := Nat.shiftRight_eq_div_pow m i
+  by_cases hb : m.testBit i
+  · have h1 : m >>> i % 2 = 1 := by
+      rw [Nat.testBit_eq_decide_div_mod_eq, decide_eq_true_eq] at hb
+      rw [hsh]; exact hb
+    rw [if_pos hb, if_pos rfl, h1, FiniteField.fromNat_one, montVal_one]
+  · have h0 : m >>> i % 2 = 0 := by
+      rw [Nat.testBit_eq_decide_div_mod_eq, decide_eq_true_eq] at hb
+      have := Nat.mod_lt (m / 2 ^ i) (show 0 < 2 by norm_num)
+      rw [hsh]; omega
+    rw [if_neg hb, if_neg (by decide), h0, FiniteField.fromNat_zero, montVal_zero]
+
 end FieldGadgets
 
 end Caliper.MultiLimb
