@@ -4,6 +4,7 @@ import Clean.Caliper.RegOnly
 import Clean.Caliper.GcdArith
 import Clean.Caliper.MultiLimbInv
 import Clean.Caliper.MultiLimbIR
+import Clean.Caliper.MultiLimbSim
 import Clean.Caliper.MultiLimbEntry
 import Clean.Caliper.MultiLimbBench
 import Clean.Caliper.MultiLimb
