@@ -2672,7 +2672,8 @@ theorem montMulSOS_exec {k' a b pReg pinv w : ℕ}
     {s : State 64} {p pv A B : ℕ}
     (hp : 0 < p) (hpR : p < 2 ^ (64 * (k' + 1)))
     (hpinv : (p * pv + 1) % 2 ^ 64 = 0)
-    (hA : A < p) (hB : B < p)
+    (hA : A < 2 ^ (64 * (k' + 1))) (hB : B < 2 ^ (64 * (k' + 1)))
+    (hAB : A * B < p * 2 ^ (64 * (k' + 1)))
     (hpr : RegsEnc s pReg (k' + 2) p) (hcr : s.regs pinv = BitVec.ofNat 64 pv)
     (har : RegsEnc s a (k' + 1) A) (hbr : RegsEnc s b (k' + 1) B) :
     ∃ s' tt dd pp, Exec C (montMulSOS (k' + 1) a b pReg pinv w) s s' tt dd pp ∧
@@ -2691,9 +2692,9 @@ theorem montMulSOS_exec {k' a b pReg pinv w : ℕ}
     mulLimbs_exec (C := C) hmul (by omega) (by omega) har hbr
   have hABlt : A * B < 2 ^ (64 * (2 * (k' + 1))) := by
     rw [hpow2]
-    calc A * B < p * p := Nat.mul_lt_mul_of_lt_of_le hA (le_of_lt hB) hp
+    calc A * B < p * 2 ^ (64 * (k' + 1)) := hAB
       _ < 2 ^ (64 * (k' + 1)) * 2 ^ (64 * (k' + 1)) :=
-          Nat.mul_lt_mul_of_lt_of_le hpR (le_of_lt hpR) (Nat.two_pow_pos _)
+          Nat.mul_lt_mul_of_lt_of_le hpR (le_refl _) (Nat.two_pow_pos _)
   -- the reduction
   have hredc : RedcLayout (k' + 1) (w + 9) pReg pinv w (w + 1) (w + 2) (w + 3) :=
     ⟨by omega, by omega, by omega, by omega, by omega, by omega⟩
@@ -2708,9 +2709,7 @@ theorem montMulSOS_exec {k' a b pReg pinv w : ℕ}
   rw [← hVdef] at hV₂
   obtain ⟨hVlt, hVmod⟩ : V < 2 * p ∧ V * 2 ^ (64 * (k' + 1)) ≡ A * B [MOD p] := by
     rw [hVdef]
-    refine redcAcc_spec hp hpinv ?_
-    calc A * B < p * p := Nat.mul_lt_mul_of_lt_of_le hA (le_of_lt hB) hp
-      _ ≤ p * 2 ^ (64 * (k' + 1)) := Nat.mul_le_mul_left _ (le_of_lt hpR)
+    exact redcAcc_spec hp hpinv hAB
   have hVM : V < 2 ^ (64 * (k' + 1 + 1)) := by
     rw [hpowM]
     calc V < 2 * p := hVlt

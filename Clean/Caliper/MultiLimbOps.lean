@@ -68,7 +68,7 @@ theorem montMulConst_exec {k' c a pReg pinv w : ℕ}
     {s : State 64} {p pv A : ℕ}
     (hp : 0 < p) (hpR : p < 2 ^ (64 * (k' + 1)))
     (hpinv : (p * pv + 1) % 2 ^ 64 = 0)
-    (hA : A < p) (hc : c < p)
+    (hA : A < 2 ^ (64 * (k' + 1))) (hc : c < p)
     (hpr : RegsEnc s pReg (k' + 2) p) (hcr : s.regs pinv = BitVec.ofNat 64 pv)
     (har : RegsEnc s a (k' + 1) A) :
     ∃ s' tt dd pp, Exec C (montMulConst (k' + 1) c a pReg pinv w) s s' tt dd pp ∧
@@ -85,10 +85,14 @@ theorem montMulConst_exec {k' c a pReg pinv w : ℕ}
     intro j hj; rw [hlow₁ _ (by omega)]; exact hpr j hj
   have hpinv₁ : s₁.regs pinv = BitVec.ofNat 64 pv := by
     rw [hlow₁ _ (by omega)]; exact hcr
+  have hAc : A * c < p * 2 ^ (64 * (k' + 1)) := by
+    have h := Nat.mul_lt_mul_of_lt_of_le hA (le_of_lt hc) hp
+    rwa [Nat.mul_comm (2 ^ (64 * (k' + 1))) p] at h
   have hsos : SOSLayout (k' + 1) a w pReg pinv (w + (k' + 1)) :=
     ⟨by omega, by omega, by omega, by omega⟩
   obtain ⟨s₂, t₂, d₂, p₂, hex₂, hout, hpres₂, hbuf₂, hcap₂⟩ :=
-    montMulSOS_exec (C := C) hsos hp hpR hpinv hA hc hpr₁ hpinv₁ har₁ hcr₁
+    montMulSOS_exec (C := C) hsos hp hpR hpinv hA (lt_trans hc hpR) hAc
+      hpr₁ hpinv₁ har₁ hcr₁
   exact ⟨s₂, _, _, _, .seq hex₁ hex₂, hout,
     fun q hq => (hpres₂ q (by omega)).trans (hlow₁ q hq),
     hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩

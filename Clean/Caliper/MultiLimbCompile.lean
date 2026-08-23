@@ -33,7 +33,11 @@ registers. `pReg` holds the modulus's limbs (`k + 1` of them, the top one zero) 
 result's base register, and the next free register. -/
 def compileExprML (k pReg pinv : ℕ) : Expression F → Reg → Stmt 64 × Reg × Reg
   | .var v, next => (loadLimbs (next + 1) (v.index * k) next k, next + 1, next + 1 + k)
-  | .const c, next => (immLimbs next (FiniteField.val c) k, next, next + k)
+  | .const c, next =>
+    -- constants are converted to Montgomery form at generation time, matching the
+    -- form `montAdd` and `montMulSOS` read their operands in
+    (immLimbs next (FiniteField.val c * 2 ^ (64 * k) % FiniteField.size F) k,
+     next, next + k)
   | .add x y, next =>
     let (cx, rx, n₁) := compileExprML k pReg pinv x next
     let (cy, ry, n₂) := compileExprML k pReg pinv y n₁
@@ -76,7 +80,8 @@ theorem compileExprML_staticTime (k' pReg pinv : ℕ) :
     simp [exprCostML, CostModel.unit]
     ring
   | .const c, next => by
-    show (immLimbs next (FiniteField.val c) (k' + 1)).staticTime CostModel.unit = _
+    show (immLimbs next (FiniteField.val c * 2 ^ (64 * (k' + 1)) % FiniteField.size F)
+      (k' + 1)).staticTime CostModel.unit = _
     rw [immLimbs_staticTime]
     simp [exprCostML, CostModel.unit]
   | .add x y, next => by
