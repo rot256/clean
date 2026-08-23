@@ -1,5 +1,6 @@
 import Clean.Caliper.RegOnly
 import Clean.Caliper.MultiLimbOps
+import Clean.Caliper.GcdArith
 
 /-!
 # Multi-limb inversion by binary extended GCD
@@ -786,6 +787,181 @@ theorem shr1Limbs_exec {k d a sc : ℕ} (hasc : a + k + 1 ≤ sc) (hscd : sc + 4
       regs_setReg_ne _ _ (show q ≠ sc by omega)]
   · rw [hbuf₁, hs₀]; simp
   · rw [hcap₁, hs₀]; simp
+
+/-! ### Halving modulo the modulus -/
+
+theorem word_umod_two (x : ℕ) :
+    (BitVec.ofNat 64 x % BitVec.ofNat 64 2 : Word 64) = BitVec.ofNat 64 (x % 2) := by
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_umod, show (BitVec.ofNat 64 2).toNat = 2 from rfl]
+  simp only [BitVec.toNat_ofNat]
+  omega
+
+/-- **Halving modulo the modulus is correct.** -/
+theorem halfModP_exec {k a pReg w : ℕ} (hopA : a + k ≤ w) (hmod : pReg + k ≤ w)
+    {s : State 64} {p A : ℕ} (hp : p % 2 = 1) (hpR : p < 2 ^ (64 * k)) (hA : A < p)
+    (har : RegsEnc s a k A) (hpr : RegsEnc s pReg k p) :
+    ∃ s' t dd pp, Exec C (halfModP k a pReg w) s s' t dd pp ∧
+      RegsEnc s' (halfModPOut k w) k (halfMod p A) ∧
+      (∀ q, q < w → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hRpos : (0:ℕ) < 2 ^ (64 * k) := Nat.two_pow_pos _
+  have hk : 0 < k := by
+    rcases Nat.eq_zero_or_pos k with h | h
+    · subst h; simp at hpR; omega
+    · exact h
+  -- the zero block
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hz₁, hlow₁, hhigh₁, hbuf₁, hcap₁⟩ :=
+    immLimbs_exec (C := C) w 0 (s := s) k
+  -- the parity bit
+  set s₂ := s₁.setReg (w + k + 1) (BitVec.ofNat 64 2) with hs₂
+  have hpar : (BinOp.eval .umod (s₂.regs a) (s₂.regs (w + k + 1)) : Word 64)
+      = BitVec.ofNat 64 (A % 2) := by
+    have ha0 : s₂.regs a = BitVec.ofNat 64 (limb 64 A 0) := by
+      rw [hs₂, regs_setReg_ne _ _ (show a ≠ w + k + 1 by omega),
+        hlow₁ a (by omega)]
+      have := har 0 hk; simpa using this
+    have h2 : s₂.regs (w + k + 1) = BitVec.ofNat 64 2 := by rw [hs₂]; simp
+    rw [ha0, h2]
+    show (BitVec.ofNat 64 (limb 64 A 0) % BitVec.ofNat 64 2 : Word 64) = _
+    rw [word_umod_two (limb 64 A 0)]
+    congr 1
+    simp only [limb, Nat.mul_zero, pow_zero, Nat.div_one]
+    omega
+  set s₃ := s₂.setReg (w + k) (BitVec.ofNat 64 (A % 2)) with hs₃
+  have hex₃ : Exec C (.bin .umod (w + k) a (w + k + 1)) s₂ s₃ (C.bin .umod) 0 0 := by
+    rw [hs₃, ← hpar]; exact .bin
+  -- the conditional modulus
+  have hsel : SelLayout k (w + k + 3) pReg w (w + k) (w + k + 2) :=
+    ⟨by omega, by omega, by omega, by omega⟩
+  have hpr₃ : RegsEnc s₃ pReg k p := by
+    intro j hj
+    rw [hs₃, regs_setReg_ne _ _ (show pReg + j ≠ w + k by omega), hs₂,
+      regs_setReg_ne _ _ (show pReg + j ≠ w + k + 1 by omega), hlow₁ _ (by omega)]
+    exact hpr j hj
+  have hz₃ : RegsEnc s₃ w k 0 := by
+    intro j hj
+    rw [hs₃, regs_setReg_ne _ _ (show w + j ≠ w + k by omega), hs₂,
+      regs_setReg_ne _ _ (show w + j ≠ w + k + 1 by omega)]
+    exact hz₁ j hj
+  have hflag₃ : s₃.regs (w + k) = BitVec.ofNat 64 (A % 2) := by rw [hs₃]; simp
+  obtain ⟨s₄, t₄, d₄, p₄, hex₄, hsel₄, hpres₄, hbuf₄, hcap₄⟩ :=
+    selectLimbs_exec (C := C) hsel (show A % 2 ≤ 1 by omega) hpr₃ hz₃ hflag₃
+  -- the sum
+  set pz := if A % 2 = 1 then p else 0 with hpz
+  have hpzlt : pz < 2 ^ (64 * k) := by rw [hpz]; split_ifs <;> omega
+  have hsel₄' : RegsEnc s₄ (w + k + 3) k pz := hsel₄
+  have har₄ : RegsEnc s₄ a k A := by
+    intro j hj
+    rw [hpres₄ _ (by omega), hs₃, regs_setReg_ne _ _ (show a + j ≠ w + k by omega),
+      hs₂, regs_setReg_ne _ _ (show a + j ≠ w + k + 1 by omega), hlow₁ _ (by omega)]
+    exact har j hj
+  have hadd : AddLayout k (w + 2 * k + 7) a (w + k + 3) (w + 2 * k + 3) :=
+    ⟨by omega, by omega, by omega⟩
+  obtain ⟨s₅, t₅, d₅, p₅, hex₅, hsum₅, hcar₅, hpres₅, hbuf₅, hcap₅⟩ :=
+    addLimbs_exec (C := C) hadd (by omega) hpzlt har₄ hsel₄'
+  -- the carry becomes the top limb
+  have hAplt : A + pz < 2 ^ (64 * (k + 1)) := by
+    have hpow : (2:ℕ) ^ (64 * (k + 1)) = 2 ^ (64 * k) * 2 ^ 64 := by
+      rw [← pow_add]; ring_nf
+    have h2 : (2:ℕ) ≤ 2 ^ 64 := by norm_num
+    have : (2:ℕ) * 2 ^ (64 * k) ≤ 2 ^ (64 * k) * 2 ^ 64 := by
+      rw [Nat.mul_comm]; exact Nat.mul_le_mul_left _ h2
+    rw [hpow]; rw [hpz]; split_ifs <;> omega
+  have hlimbs₆ : ∀ j < k + 1,
+      (s₅.setReg (w + 3 * k + 7) (s₅.regs (w + 2 * k + 3))).regs (w + 2 * k + 7 + j)
+        = BitVec.ofNat 64 (limb 64 (A + pz) j) := by
+    intro j hj
+    rcases Nat.lt_or_ge j k with hlt | hge
+    · rw [regs_setReg_ne _ _ (show w + 2 * k + 7 + j ≠ w + 3 * k + 7 by omega)]
+      exact hsum₅ j hlt
+    · have hjk : j = k := by omega
+      rw [hjk, show w + 2 * k + 7 + k = w + 3 * k + 7 by ring, regs_setReg_self,
+        hcar₅, limb_top hAplt]
+  -- the shift
+  obtain ⟨s₇, t₇, d₇, p₇, hex₇, hd₇, hpres₇, hhigh₇, hbuf₇, hcap₇⟩ :=
+    shr1Limbs_exec (C := C) (k := k) (d := w + 3 * k + 12) (a := w + 2 * k + 7)
+      (sc := w + 3 * k + 8) (by omega) (by omega) hlimbs₆
+  have hhalf : (A + pz) / 2 = halfMod p A := by
+    rw [hpz]; unfold halfMod; split_ifs <;> omega
+  refine ⟨s₇, _, _, _,
+    .seq hex₁ (.seq .imm (.seq hex₃ (.seq hex₄ (.seq hex₅ (.seq .mov hex₇))))),
+    ?_, ?_, ?_, ?_⟩
+  · rw [show halfModPOut k w = w + 3 * k + 12 from rfl, ← hhalf]; exact hd₇
+  · intro q hq
+    rw [hpres₇ q (by omega), regs_setReg_ne _ _ (show q ≠ w + 3 * k + 7 by omega),
+      hpres₅ q (by omega), hpres₄ q (by omega), hs₃,
+      regs_setReg_ne _ _ (show q ≠ w + k by omega), hs₂,
+      regs_setReg_ne _ _ (show q ≠ w + k + 1 by omega), hlow₁ q hq]
+  · rw [hbuf₇]; simp only [bufs_setReg]; rw [hbuf₅, hbuf₄, hs₃, hs₂]; simpa using hbuf₁
+  · rw [hcap₇]; simp only [caps_setReg]; rw [hcap₅, hcap₄, hs₃, hs₂]; simpa using hcap₁
+
+/-! ### The three updates a row performs -/
+
+theorem shrCopy_exec {k dst src w : ℕ} (hsrc : src + k ≤ w) (hdst : dst + k ≤ w)
+    {st : State 64} {A : ℕ} (hA : A < 2 ^ (64 * k)) (har : RegsEnc st src k A) :
+    ∃ st' t dd pp, Exec C (shrCopy k dst src w) st st' t dd pp ∧
+      RegsEnc st' dst k (A / 2) ∧
+      (∀ q, q < w → (q < dst ∨ dst + k ≤ q) → st'.regs q = st.regs q) ∧
+      st'.bufs = st.bufs ∧ st'.caps = st.caps := by
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ :=
+    movLimbs_exec (C := C) (d := w) (a := src) (Or.inr hsrc) har
+  set s₂ := s₁.setReg (w + k) (0 : Word 64) with hs₂
+  have hlimbs : ∀ j < k + 1, s₂.regs (w + j) = BitVec.ofNat 64 (limb 64 A j) := by
+    intro j hj
+    rcases Nat.lt_or_ge j k with hlt | hge
+    · rw [hs₂, regs_setReg_ne _ _ (show w + j ≠ w + k by omega)]; exact hd₁ j hlt
+    · have hjk : j = k := by omega
+      rw [hjk, hs₂, regs_setReg_self, show limb 64 A k = 0 by
+        simp only [limb]; rw [Nat.div_eq_of_lt hA]; simp]
+      rfl
+  obtain ⟨s₃, t₃, d₃, p₃, hex₃, hd₃, hpres₃, hhigh₃, hbuf₃, hcap₃⟩ :=
+    shr1Limbs_exec (C := C) (k := k) (d := w + k + 5) (a := w) (sc := w + k + 1)
+      (by omega) (by omega) hlimbs
+  obtain ⟨s₄, t₄, d₄, p₄, hex₄, hd₄, hpres₄, hbuf₄, hcap₄⟩ :=
+    movLimbs_exec (C := C) (d := dst) (a := w + k + 5) (Or.inl (by omega)) hd₃
+  refine ⟨s₄, _, _, _, .seq hex₁ (.seq .imm (.seq hex₃ hex₄)), hd₄, ?_, ?_, ?_⟩
+  · intro q hqw hqd
+    rw [hpres₄ q hqd, hpres₃ q (by omega), hs₂,
+      regs_setReg_ne _ _ (show q ≠ w + k by omega), hpres₁ q (Or.inl hqw)]
+  · rw [hbuf₄, hbuf₃, hs₂]; simpa using hbuf₁
+  · rw [hcap₄, hcap₃, hs₂]; simpa using hcap₁
+
+theorem halfCopy_exec {k dst src pReg w : ℕ} (hsrc : src + k ≤ w)
+    (hmod : pReg + k ≤ w) (hdst : dst + k ≤ w)
+    {st : State 64} {p A : ℕ} (hp : p % 2 = 1) (hpR : p < 2 ^ (64 * k)) (hA : A < p)
+    (har : RegsEnc st src k A) (hpr : RegsEnc st pReg k p) :
+    ∃ st' t dd pp, Exec C (halfCopy k dst src pReg w) st st' t dd pp ∧
+      RegsEnc st' dst k (halfMod p A) ∧
+      (∀ q, q < w → (q < dst ∨ dst + k ≤ q) → st'.regs q = st.regs q) ∧
+      st'.bufs = st.bufs ∧ st'.caps = st.caps := by
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ :=
+    halfModP_exec (C := C) hsrc hmod hp hpR hA har hpr
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hd₂, hpres₂, hbuf₂, hcap₂⟩ :=
+    movLimbs_exec (C := C) (d := dst) (a := halfModPOut k w)
+      (Or.inl (by simp only [halfModPOut]; omega)) hd₁
+  refine ⟨s₂, _, _, _, .seq hex₁ hex₂, hd₂, ?_, hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+  intro q hqw hqd
+  rw [hpres₂ q hqd, hpres₁ q hqw]
+
+theorem subModCopy_exec {k dst x y pReg w : ℕ} (hx : x + k ≤ w) (hy : y + k ≤ w)
+    (hmod : pReg + k ≤ w) (hdst : dst + k ≤ w)
+    {st : State 64} {p X Y : ℕ} (hp : 0 < p) (hpR : p < 2 ^ (64 * k))
+    (hX : X < p) (hY : Y < p)
+    (hxr : RegsEnc st x k X) (hyr : RegsEnc st y k Y) (hpr : RegsEnc st pReg k p) :
+    ∃ st' t dd pp, Exec C (subModCopy k dst x y pReg w) st st' t dd pp ∧
+      RegsEnc st' dst k (subMod p X Y) ∧
+      (∀ q, q < w → (q < dst ∨ dst + k ≤ q) → st'.regs q = st.regs q) ∧
+      st'.bufs = st.bufs ∧ st'.caps = st.caps := by
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ :=
+    montSub_exec (C := C) ⟨hx, hy, hmod⟩ hp hpR hX hY hpr hxr hyr
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hd₂, hpres₂, hbuf₂, hcap₂⟩ :=
+    movLimbs_exec (C := C) (d := dst) (a := montSubOut k w)
+      (Or.inl (by simp only [montSubOut]; omega)) hd₁
+  refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_, ?_, hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+  · exact hd₂.congr (by simp [subMod])
+  · intro q hqw hqd
+    rw [hpres₂ q hqd, hpres₁ q hqw]
 
 /-! ## The time bound
 
