@@ -58,6 +58,22 @@ theorem ltOut_lt (k n : ℕ) : LT.lt (α := ℕ) (ltOut k n) (n + ltFrame k) := 
 theorem bitOut_lt (n : ℕ) : LT.lt (α := ℕ) (bitOut n) (n + bitFrame) := by
   simp only [bitOut, bitFrame]; omega
 
+theorem le_montAddOut (k n : ℕ) : n ≤ montAddOut k n := by
+  simp only [montAddOut]; omega
+
+theorem le_montOut (k n : ℕ) : n ≤ montOut k n := by
+  simp only [montOut]; omega
+
+theorem le_montMulConstOut (k n : ℕ) : n ≤ montMulConstOut k n := by
+  simp only [montMulConstOut, montOut]; omega
+
+theorem localReg_le_localReg {k i m : ℕ} (h : i < m) :
+    localReg k i + k ≤ localReg k m := by
+  simp only [localReg]
+  have hm : (i + 1) * k ≤ m * k := Nat.mul_le_mul_right k (by omega)
+  have he : k + 2 + i * k + k = k + 2 + (i + 1) * k := by ring
+  omega
+
 theorem localReg_le {k i L : ℕ} (h : i < L) : localReg k i + k ≤ tmpBase k L := by
   simp only [localReg, tmpBase]
   have hm : (i + 1) * k ≤ L * k := Nat.mul_le_mul_right k (by omega)
@@ -87,19 +103,23 @@ theorem compileExprML_bounds (k pReg pinv : ℕ) :
     ∀ (e : Expression F) (next : ℕ),
       next ≤ (compileExprML k pReg pinv e next).2.2 ∧
         LE.le (α := ℕ) ((compileExprML k pReg pinv e next).2.1 + k)
-          (compileExprML k pReg pinv e next).2.2
-  | .var _, next => ⟨le_add_of_le (le_add_of_le (Nat.le_refl next)), Nat.le_refl _⟩
-  | .const _, _ => ⟨Nat.le_add_right _ _, Nat.le_refl _⟩
+          (compileExprML k pReg pinv e next).2.2 ∧
+        next ≤ (compileExprML k pReg pinv e next).2.1
+  | .var _, next =>
+    ⟨le_add_of_le (le_add_of_le (Nat.le_refl next)), Nat.le_refl _, Nat.le_succ _⟩
+  | .const _, _ => ⟨Nat.le_add_right _ _, Nat.le_refl _, Nat.le_refl _⟩
   | .add x y, next =>
     have h₁ := compileExprML_bounds k pReg pinv x next
     have h₂ := compileExprML_bounds k pReg pinv y
       (compileExprML k pReg pinv x next).2.2
-    ⟨le_add_of_le (Nat.le_trans h₁.1 h₂.1), montAddOut_le k _⟩
+    ⟨le_add_of_le (Nat.le_trans h₁.1 h₂.1), montAddOut_le k _,
+      Nat.le_trans (Nat.le_trans h₁.1 h₂.1) (le_montAddOut k _)⟩
   | .mul x y, next =>
     have h₁ := compileExprML_bounds k pReg pinv x next
     have h₂ := compileExprML_bounds k pReg pinv y
       (compileExprML k pReg pinv x next).2.2
-    ⟨le_add_of_le (Nat.le_trans h₁.1 h₂.1), montOut_le k _⟩
+    ⟨le_add_of_le (Nat.le_trans h₁.1 h₂.1), montOut_le k _,
+      Nat.le_trans (Nat.le_trans h₁.1 h₂.1) (le_montOut k _)⟩
 
 mutual
 
@@ -108,32 +128,43 @@ theorem compileFML_bounds {Γ : List VSort} (k L : ℕ) (hk : 0 < k) (hΓ : Γ.l
     ∀ (e : FExpr F) (next : ℕ), FExpr.compilable Γ e = true →
       LE.le (α := ℕ) (tmpBase k L) next →
       next ≤ (compileFML k L e next).2.2 ∧
-        LE.le (α := ℕ) ((compileFML k L e next).2.1 + k) (compileFML k L e next).2.2
-  | .expr e, next, _, _ => compileExprML_bounds k 0 (k + 1) e next
-  | .const _, next, _, _ => ⟨Nat.le_add_right _ _, Nat.le_refl _⟩
+        LE.le (α := ℕ) ((compileFML k L e next).2.1 + k) (compileFML k L e next).2.2 ∧
+        (next ≤ (compileFML k L e next).2.1 ∨
+          LE.le (α := ℕ) ((compileFML k L e next).2.1 + k) (localReg k Γ.length))
+  | .expr e, next, _, _ =>
+    ⟨(compileExprML_bounds k 0 (k + 1) e next).1,
+      (compileExprML_bounds k 0 (k + 1) e next).2.1,
+      Or.inl (compileExprML_bounds k 0 (k + 1) e next).2.2⟩
+  | .const _, next, _, _ => ⟨Nat.le_add_right _ _, Nat.le_refl _, Or.inl (Nat.le_refl _)⟩
   | .localVar i, next, hc, hLn => by
     simp only [FExpr.compilable, beq_iff_eq] at hc
     exact ⟨Nat.le_refl next,
       Nat.le_trans (localReg_le (Nat.lt_of_lt_of_le
-        (lt_length_of_getElem?_fld hc) hΓ)) hLn⟩
+        (lt_length_of_getElem?_fld hc) hΓ)) hLn,
+      Or.inr (localReg_le_localReg (lt_length_of_getElem?_fld hc))⟩
   | .add x y, next, hc, hLn => by
     simp only [FExpr.compilable, Bool.and_eq_true] at hc
     have h₁ := compileFML_bounds k L hk hΓ x next hc.1 hLn
     have h₂ := compileFML_bounds k L hk hΓ y (compileFML k L x next).2.2 hc.2
       (Nat.le_trans hLn h₁.1)
-    exact ⟨le_add_of_le (Nat.le_trans h₁.1 h₂.1), montAddOut_le k _⟩
+    exact ⟨le_add_of_le (Nat.le_trans h₁.1 h₂.1), montAddOut_le k _,
+      Or.inl (Nat.le_trans (Nat.le_trans h₁.1 h₂.1) (le_montAddOut k _))⟩
   | .mul x y, next, hc, hLn => by
     simp only [FExpr.compilable, Bool.and_eq_true] at hc
     have h₁ := compileFML_bounds k L hk hΓ x next hc.1 hLn
     have h₂ := compileFML_bounds k L hk hΓ y (compileFML k L x next).2.2 hc.2
       (Nat.le_trans hLn h₁.1)
-    exact ⟨le_add_of_le (Nat.le_trans h₁.1 h₂.1), montOut_le k _⟩
+    exact ⟨le_add_of_le (Nat.le_trans h₁.1 h₂.1), montOut_le k _,
+      Or.inl (Nat.le_trans (Nat.le_trans h₁.1 h₂.1) (le_montOut k _))⟩
   | .inv x, next, hc, hLn =>
     have h₁ := compileFML_bounds k L hk hΓ x next hc hLn
-    ⟨le_add_of_le (le_add_of_le (le_add_of_le h₁.1)), montMulConstOut_le k _⟩
+    ⟨le_add_of_le (le_add_of_le (le_add_of_le h₁.1)), montMulConstOut_le k _,
+      Or.inl (Nat.le_trans (le_add_of_le (le_add_of_le h₁.1))
+        (le_montMulConstOut k _))⟩
   | .ofU64 n, next, hc, hLn =>
     have h₁ := compileUML_bounds k L hk hΓ n next hc hLn
-    ⟨le_add_of_le (le_add_of_le h₁.1), montMulConstOut_le k _⟩
+    ⟨le_add_of_le (le_add_of_le h₁.1), montMulConstOut_le k _,
+      Or.inl (Nat.le_trans (le_add_of_le h₁.1) (le_montMulConstOut k _))⟩
   | .ite c t e, next, hc, hLn => by
     simp only [FExpr.compilable, Bool.and_eq_true] at hc
     have h₁ := compileBML_bounds k L hk hΓ c next hc.1.1 hLn
@@ -143,10 +174,14 @@ theorem compileFML_bounds {Γ : List VSort} (k L : ℕ) (hk : 0 < k) (hΓ : Γ.l
       (compileFML k L t (compileBML k L c next).2.2).2.2 hc.2
       (Nat.le_trans hLn (Nat.le_trans h₁.1 h₂.1))
     exact ⟨le_add_of_le (le_add_of_le
-      (Nat.le_trans h₁.1 (Nat.le_trans h₂.1 h₃.1))), Nat.le_refl _⟩
-  | .listGet .., next, _, _ => ⟨Nat.le_add_right _ _, Nat.le_refl _⟩
-  | .dataGet .., next, _, _ => ⟨Nat.le_add_right _ _, Nat.le_refl _⟩
-  | .hintGet .., next, _, _ => ⟨Nat.le_add_right _ _, Nat.le_refl _⟩
+      (Nat.le_trans h₁.1 (Nat.le_trans h₂.1 h₃.1))), Nat.le_refl _,
+      Or.inl (le_add_of_le (Nat.le_trans h₁.1 (Nat.le_trans h₂.1 h₃.1)))⟩
+  | .listGet .., next, _, _ =>
+    ⟨Nat.le_add_right _ _, Nat.le_refl _, Or.inl (Nat.le_refl _)⟩
+  | .dataGet .., next, _, _ =>
+    ⟨Nat.le_add_right _ _, Nat.le_refl _, Or.inl (Nat.le_refl _)⟩
+  | .hintGet .., next, _, _ =>
+    ⟨Nat.le_add_right _ _, Nat.le_refl _, Or.inl (Nat.le_refl _)⟩
 
 /-- `compileUML` register bounds. -/
 theorem compileUML_bounds {Γ : List VSort} (k L : ℕ) (hk : 0 < k) (hΓ : Γ.length ≤ L) :
