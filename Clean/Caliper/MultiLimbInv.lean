@@ -48,7 +48,7 @@ yet; it is the one gap left in the multi-limb field layer.
 
 namespace Caliper.MultiLimb
 
-open Caliper
+open Caliper Caliper.Limbs
 
 variable {C : CostModel}
 
@@ -256,8 +256,8 @@ theorem nzLimbs_staticTime_unit (k a w : ℕ) :
 theorem halfModP_staticTime_unit (k a pReg w : ℕ) :
     (halfModP k a pReg w).staticTime CostModel.unit = 12 * k + 6 := by
   show (immLimbs w 0 k).staticTime CostModel.unit
-    + ((Stmt.imm (w + k + 1) 1).staticTime CostModel.unit
-      + ((Stmt.bin .and (w + k) a (w + k + 1)).staticTime CostModel.unit
+    + ((Stmt.imm (w + k + 1) (2 : Word 64)).staticTime CostModel.unit
+      + ((Stmt.bin (w := 64) .umod (w + k) a (w + k + 1)).staticTime CostModel.unit
         + ((selectLimbs k (w + k + 3) pReg w (w + k) (w + k + 2)).staticTime
               CostModel.unit
           + ((addLimbs k (w + 2 * k + 7) a (w + k + 3) (w + 2 * k + 3)).staticTime
@@ -546,6 +546,246 @@ theorem invStep_writesAbove {k u v r s pReg W lo : ℕ} (hW : lo ≤ W) (hu : lo
 theorem invBody_regOnly (k u v r s pReg cnt W : ℕ) :
     (invBody k u v r s pReg cnt W).RegOnly :=
   ⟨nzLimbs_regOnly .., ⟨trivial, trivial, invStep_regOnly ..⟩, trivial⟩
+
+/-! ## What the gadgets compute
+
+The time bound above needs none of this. What follows is the value side: each gadget's
+`Exec` spec, built up to `invLimbs_exec`. -/
+
+theorem movLoop_exec {k d a : ℕ} (hdis : d + k ≤ a ∨ a + k ≤ d)
+    {s : State 64} {A : ℕ} (har : RegsEnc s a k A) :
+    ∀ n ≤ k, ∃ s' t dd pp, Exec C (movLoop d a n) s s' t dd pp ∧
+      (∀ j < n, s'.regs (d + j) = BitVec.ofNat 64 (limb 64 A j)) ∧
+      (∀ q, q < d ∨ d + n ≤ q → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  intro n
+  induction n with
+  | zero =>
+    intro _
+    exact ⟨s, 0, 0, 0, .skip, fun _ hj => absurd hj (by omega), fun _ _ => rfl, rfl, rfl⟩
+  | succ n ih =>
+    intro hn
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ := ih (by omega)
+    have hsrc : s₁.regs (a + n) = BitVec.ofNat 64 (limb 64 A n) := by
+      rw [hpres₁ (a + n) (by omega)]; exact har n (by omega)
+    refine ⟨_, _, _, _, .seq hex₁ .mov, ?_, ?_, ?_, ?_⟩
+    · intro j hj
+      rcases Nat.lt_or_ge j n with hlt | hge
+      · rw [regs_setReg_ne _ _ (show d + j ≠ d + n by omega)]; exact hd₁ j hlt
+      · have : j = n := by omega
+        subst this
+        rw [regs_setReg_self]; exact hsrc
+    · intro q hq
+      rw [regs_setReg_ne _ _ (show q ≠ d + n by omega), hpres₁ q (by omega)]
+    · simpa using hbuf₁
+    · simpa using hcap₁
+
+/-- A copy moves the value, and touches nothing outside its destination. -/
+theorem movLimbs_exec {k d a : ℕ} (hdis : d + k ≤ a ∨ a + k ≤ d)
+    {s : State 64} {A : ℕ} (har : RegsEnc s a k A) :
+    ∃ s' t dd pp, Exec C (movLimbs k d a) s s' t dd pp ∧
+      RegsEnc s' d k A ∧
+      (∀ q, q < d ∨ d + k ≤ q → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps :=
+  movLoop_exec hdis har k le_rfl
+
+/-! ### The zero test -/
+
+theorem orLoop_exec {k a w : ℕ} (hopA : a + k ≤ w) {s : State 64}
+    (hacc : s.regs (w + 1) = 0) :
+    ∀ n ≤ k, ∃ s' t dd pp, Exec C (orLoop (w + 1) a n) s s' t dd pp ∧
+      (s'.regs (w + 1) = 0 ↔ ∀ j < n, s.regs (a + j) = 0) ∧
+      (∀ q, q ≠ w + 1 → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  intro n
+  induction n with
+  | zero =>
+    intro _
+    exact ⟨s, 0, 0, 0, .skip, ⟨fun _ j hj => absurd hj (by omega), fun _ => hacc⟩,
+      fun _ _ => rfl, rfl, rfl⟩
+  | succ n ih =>
+    intro hn
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hiff, hpres₁, hbuf₁, hcap₁⟩ := ih (by omega)
+    refine ⟨_, _, _, _, .seq hex₁ .bin, ?_, ?_, ?_, ?_⟩
+    · rw [regs_setReg_self, hpres₁ (a + n) (by omega)]
+      show ((s₁.regs (w + 1) ||| s.regs (a + n) : Word 64) = 0) ↔ _
+      rw [word_or_eq_zero, hiff]
+      constructor
+      · rintro ⟨h1, h2⟩ j hj
+        rcases Nat.lt_or_ge j n with hlt | hge
+        · exact h1 j hlt
+        · have : j = n := by omega
+          subst this; exact h2
+      · intro h; exact ⟨fun j hj => h j (by omega), h n (by omega)⟩
+    · intro q hq
+      rw [regs_setReg_ne _ _ hq, hpres₁ q hq]
+    · simpa using hbuf₁
+    · simpa using hcap₁
+
+/-- **The zero test is correct.** -/
+theorem nzLimbs_exec {k a w : ℕ} (hopA : a + k ≤ w)
+    {s : State 64} {A : ℕ} (hA : A < 2 ^ (64 * k)) (har : RegsEnc s a k A) :
+    ∃ s' t dd pp, Exec C (nzLimbs k a w) s s' t dd pp ∧
+      s'.regs (nzOut w) = BitVec.ofNat 64 (if A = 0 then 0 else 1) ∧
+      (∀ q, q ≠ w + 1 → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  have hacc : (s.setReg (w + 1) (0 : Word 64)).regs (w + 1) = 0 := by simp
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hiff, hpres₁, hbuf₁, hcap₁⟩ :=
+    orLoop_exec (C := C) hopA hacc k le_rfl
+  have hzero : (∀ j < k, (s.setReg (w + 1) (0 : Word 64)).regs (a + j) = 0) ↔ A = 0 := by
+    constructor
+    · intro h
+      refine eq_of_limbs hA (Nat.two_pow_pos _) fun j hj => ?_
+      have := h j hj
+      rw [regs_setReg_ne _ _ (show a + j ≠ w + 1 by omega), har j hj] at this
+      have hnat := congrArg BitVec.toNat this
+      have hlt := limb_lt 64 A j
+      have hz : (0 : Word 64).toNat = 0 := rfl
+      have hz2 : limb 64 0 j = 0 := by simp [limb]
+      simp only [BitVec.toNat_ofNat] at hnat
+      omega
+    · rintro rfl j hj
+      rw [regs_setReg_ne _ _ (show a + j ≠ w + 1 by omega), har j hj]
+      simp [limb]
+  refine ⟨_, _, _, _, .seq .imm (.seq hex₁ .un), ?_, ?_, ?_, ?_⟩
+  · rw [show nzOut w = w + 1 from rfl, regs_setReg_self]
+    show (if s₁.regs (w + 1) = 0 then 0 else 1 : Word 64) = _
+    by_cases hA0 : A = 0
+    · rw [if_pos (hiff.mpr (hzero.mpr hA0)), if_pos hA0]; simp
+    · rw [if_neg (fun h => hA0 (hzero.mp (hiff.mp h))), if_neg hA0]; simp
+  · intro q hq
+    rw [regs_setReg_ne _ _ hq, hpres₁ q hq, regs_setReg_ne _ _ hq]
+  · simpa using hbuf₁
+  · simpa using hcap₁
+
+/-! ### The limb arithmetic of a shift
+
+Shifting a value down one place moves each limb's top bits down and pulls in the low
+bit of the limb above — which is exactly the two halves the step computes, and they
+occupy disjoint bits, so adding them is combining them. -/
+
+theorem limb_div_two (A j : ℕ) :
+    limb 64 (A / 2) j = limb 64 A j / 2 + limb 64 A (j + 1) % 2 * 2 ^ 63 := by
+  have hpow : (2:ℕ) ^ (64 * (j + 1)) = 2 ^ (64 * j) * 2 ^ 64 := by
+    rw [← pow_add]; ring_nf
+  have hd : A / 2 / 2 ^ (64 * j) = A / 2 ^ (64 * j) / 2 := by
+    rw [Nat.div_div_eq_div_mul, Nat.div_div_eq_div_mul, Nat.mul_comm]
+  have hd2 : A / 2 ^ (64 * (j + 1)) = A / 2 ^ (64 * j) / 2 ^ 64 := by
+    rw [hpow, ← Nat.div_div_eq_div_mul]
+  simp only [limb, hd, hd2]
+  omega
+
+/-! ### The shift itself -/
+
+theorem word_shr_one {x : ℕ} (hx : x < 2 ^ 64) :
+    (BitVec.ofNat 64 x) >>> ((BitVec.ofNat 64 1).toNat)
+      = BitVec.ofNat 64 (x / 2) := by
+  rw [show (BitVec.ofNat 64 1).toNat = 1 from rfl]
+  apply BitVec.eq_of_toNat_eq
+  simp only [BitVec.toNat_ushiftRight, BitVec.toNat_ofNat, Nat.shiftRight_eq_div_pow]
+  omega
+
+theorem word_shl_63 (y : ℕ) :
+    (BitVec.ofNat 64 y) <<< ((BitVec.ofNat 64 63).toNat)
+      = BitVec.ofNat 64 (y % 2 * 2 ^ 63) := by
+  rw [show (BitVec.ofNat 64 63).toNat = 63 from rfl]
+  apply BitVec.eq_of_toNat_eq
+  simp only [BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq_mul_pow]
+  omega
+
+theorem shr1Loop_exec {k d a sc : ℕ} (hasc : a + k + 1 ≤ sc) (hscd : sc + 4 ≤ d)
+    {s : State 64} {A : ℕ}
+    (har : ∀ j < k + 1, s.regs (a + j) = BitVec.ofNat 64 (limb 64 A j))
+    (h1 : s.regs sc = BitVec.ofNat 64 1)
+    (h63 : s.regs (sc + 1) = BitVec.ofNat 64 63) :
+    ∀ n ≤ k, ∃ s' t dd pp, Exec C (shr1Loop d a sc n) s s' t dd pp ∧
+      (∀ j < n, s'.regs (d + j) = BitVec.ofNat 64 (limb 64 (A / 2) j)) ∧
+      (∀ q, q ≠ sc + 2 → q ≠ sc + 3 → (q < d ∨ d + n ≤ q) →
+        s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  intro n
+  induction n with
+  | zero =>
+    intro _
+    exact ⟨s, 0, 0, 0, .skip, fun _ hj => absurd hj (by omega),
+      fun _ _ _ _ => rfl, rfl, rfl⟩
+  | succ n ih =>
+    intro hn
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ := ih (by omega)
+    have hxj : s₁.regs (a + n) = BitVec.ofNat 64 (limb 64 A n) := by
+      rw [hpres₁ _ (by omega) (by omega) (by omega)]; exact har n (by omega)
+    have hxj1 : s₁.regs (a + n + 1) = BitVec.ofNat 64 (limb 64 A (n + 1)) := by
+      rw [hpres₁ _ (by omega) (by omega) (by omega),
+        show a + n + 1 = a + (n + 1) by ring]
+      exact har (n + 1) (by omega)
+    have hsc : s₁.regs sc = BitVec.ofNat 64 1 := by
+      rw [hpres₁ _ (by omega) (by omega) (by omega)]; exact h1
+    have hsc1 : s₁.regs (sc + 1) = BitVec.ofNat 64 63 := by
+      rw [hpres₁ _ (by omega) (by omega) (by omega)]; exact h63
+    have hbound : limb 64 A n / 2 + limb 64 A (n + 1) % 2 * 2 ^ 63 < 2 ^ 64 := by
+      have := limb_lt 64 A n
+      omega
+    refine ⟨_, _, _, _, .seq hex₁ (.seq .bin (.seq .bin .bin)), ?_, ?_, ?_, ?_⟩
+    · intro j hj
+      rcases Nat.lt_or_ge j n with hlt | hge
+      · rw [regs_setReg_ne _ _ (show d + j ≠ d + n by omega),
+          regs_setReg_ne _ _ (show d + j ≠ sc + 3 by omega),
+          regs_setReg_ne _ _ (show d + j ≠ sc + 2 by omega)]
+        exact hd₁ j hlt
+      · have hjn : j = n := by omega
+        rw [hjn, regs_setReg_self]
+        show (BinOp.eval .add
+          (((s₁.setReg (sc + 2) _).setReg (sc + 3) _).regs (sc + 2))
+          (((s₁.setReg (sc + 2) _).setReg (sc + 3) _).regs (sc + 3)) : Word 64) = _
+        rw [regs_setReg_ne _ _ (show sc + 2 ≠ sc + 3 by omega), regs_setReg_self,
+          regs_setReg_self, regs_setReg_ne _ _ (show a + n + 1 ≠ sc + 2 by omega),
+          regs_setReg_ne _ _ (show sc + 1 ≠ sc + 2 by omega), hxj, hxj1, hsc, hsc1]
+        show ((BitVec.ofNat 64 (limb 64 A n) >>> (BitVec.ofNat 64 1).toNat
+          + (BitVec.ofNat 64 (limb 64 A (n + 1))) <<< (BitVec.ofNat 64 63).toNat
+          : Word 64)) = _
+        rw [word_shr_one (limb_lt 64 A n), word_shl_63 (limb 64 A (n + 1)),
+          word_add, Nat.mod_eq_of_lt hbound, limb_div_two]
+    · intro q hq2 hq3 hq
+      rw [regs_setReg_ne _ _ (show q ≠ d + n by omega),
+        regs_setReg_ne _ _ hq3, regs_setReg_ne _ _ hq2,
+        hpres₁ q hq2 hq3 (by omega)]
+    · simpa using hbuf₁
+    · simpa using hcap₁
+
+/-- **The shift is correct.** From `k + 1` limbs of `A`, the destination's `k` limbs
+hold `A / 2`. -/
+theorem shr1Limbs_exec {k d a sc : ℕ} (hasc : a + k + 1 ≤ sc) (hscd : sc + 4 ≤ d)
+    {s : State 64} {A : ℕ}
+    (har : ∀ j < k + 1, s.regs (a + j) = BitVec.ofNat 64 (limb 64 A j)) :
+    ∃ s' t dd pp, Exec C (shr1Limbs k d a sc) s s' t dd pp ∧
+      RegsEnc s' d k (A / 2) ∧
+      (∀ q, q < sc → s'.regs q = s.regs q) ∧
+      (∀ q, d + k ≤ q → s'.regs q = s.regs q) ∧
+      s'.bufs = s.bufs ∧ s'.caps = s.caps := by
+  set s₀ := (s.setReg sc (BitVec.ofNat 64 1)).setReg (sc + 1) (BitVec.ofNat 64 63)
+    with hs₀
+  have har₀ : ∀ j < k + 1, s₀.regs (a + j) = BitVec.ofNat 64 (limb 64 A j) := by
+    intro j hj
+    rw [hs₀, regs_setReg_ne _ _ (show a + j ≠ sc + 1 by omega),
+      regs_setReg_ne _ _ (show a + j ≠ sc by omega)]
+    exact har j hj
+  have h1₀ : s₀.regs sc = BitVec.ofNat 64 1 := by
+    rw [hs₀, regs_setReg_ne _ _ (show sc ≠ sc + 1 by omega), regs_setReg_self]
+  have h63₀ : s₀.regs (sc + 1) = BitVec.ofNat 64 63 := by
+    rw [hs₀, regs_setReg_self]
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hd₁, hpres₁, hbuf₁, hcap₁⟩ :=
+    shr1Loop_exec (C := C) hasc hscd har₀ h1₀ h63₀ k le_rfl
+  refine ⟨s₁, _, _, _, .seq .imm (.seq .imm hex₁), hd₁, ?_, ?_, ?_, ?_⟩
+  · intro q hq
+    rw [hpres₁ q (by omega) (by omega) (by omega), hs₀,
+      regs_setReg_ne _ _ (show q ≠ sc + 1 by omega),
+      regs_setReg_ne _ _ (show q ≠ sc by omega)]
+  · intro q hq
+    rw [hpres₁ q (by omega) (by omega) (by omega), hs₀,
+      regs_setReg_ne _ _ (show q ≠ sc + 1 by omega),
+      regs_setReg_ne _ _ (show q ≠ sc by omega)]
+  · rw [hbuf₁, hs₀]; simp
+  · rw [hcap₁, hs₀]; simp
 
 /-! ## The time bound
 
