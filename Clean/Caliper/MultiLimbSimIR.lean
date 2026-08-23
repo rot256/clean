@@ -389,7 +389,7 @@ theorem compileVML_mapRange_fold (Γ : List VSort) (locals : Array (F p ⊕ UInt
       rw [hbo' b hb1, hbo₃ b hb1, hbf₂, bufs_setReg]
     · rw [hcp', hcp₃, hcp₂, caps_setReg]
 
-omit [Fact p.Prime] hf in
+set_option linter.unusedSectionVars false in
 /-- Fold lemma for `.envRange` outputs: each block loads one element's limbs from the
 environment buffer and pushes them. -/
 theorem compileVML_envRange_fold (locals : Array (F p ⊕ UInt64))
@@ -449,7 +449,7 @@ theorem compileVML_envRange_fold (locals : Array (F p ⊕ UInt64))
       rw [hbo' b hb1, hbo₂ b hb1, hbf₁]
     · rw [hcp', hcp₂, hcp₁]
 
-omit henv hNk in
+set_option linter.unusedSectionVars false in
 /-- Fold lemma for `.bitsOf` outputs: with the canonical value at `a` and the
 Montgomery forms of `0` and `1` at `W` and `W + k`, each block extracts one bit,
 selects between the two constants and pushes the result. -/
@@ -519,6 +519,151 @@ theorem compileVML_bitsOf_fold (locals : Array (F p ⊕ UInt64))
     · intro b hb1
       rw [hbo' b hb1, hbo₃ b hb1, hbf₂, hbf₁]
     · rw [hcp', hcp₃, hcp₂, hcp₁]
+
+set_option linter.unusedSectionVars false in
+/-- The list a `Vector.mapRange` flattens to. -/
+theorem toList_mapRange {α : Type} (n : ℕ) (g : ℕ → α) :
+    (Vector.mapRange n g).toList = (List.range n).map g := by
+  refine List.ext_getElem (by simp) fun i h₁ h₂ => ?_
+  simp [Vector.getElem_mapRange]
+
+/-- Simulation for vector outputs: the compiled block appends exactly the reference
+output's Montgomery limbs to the output buffer. -/
+theorem compileVML_sim (Γ : List VSort) (locals : Array (F p ⊕ UInt64)) (L : ℕ)
+    (hL : LocalsMatch Γ locals) :
+    ∀ {n : ℕ} (v : VExpr (F p) n) (s : State 64),
+      VExpr.compilable Γ v = true → VExpr.envBound N v = true →
+      StateEncML k pv L envArr locals 0 (tmpBase k L) s →
+      (s.bufs 1).size + n * k ≤ s.caps 1 →
+      ∃ s' t d pp, Exec C (compileVML k L v) s s' t d pp ∧
+        s'.bufs 1 = s.bufs 1 ++
+          (encFlat k (VExpr.eval { env, locals } v).toList).toArray ∧
+        StateEncML k pv L envArr locals 0 (tmpBase k L) s' ∧
+        (∀ b, b ≠ 1 → s'.bufs b = s.bufs b) ∧ s'.caps = s.caps
+  | _, .lit es, s, hc, hb, hs, hcap => by
+    simp only [VExpr.compilable] at hc
+    simp only [VExpr.envBound] at hb
+    obtain ⟨s', t, d, pp, hex, hout, hs', hbo, hcp⟩ :=
+      compileVML_lit_fold hf env N envArr henv hNk Γ locals L hL es.toList
+        (.skip (s := s)) hc hb hs (by rw [Vector.length_toList]; exact hcap)
+    refine ⟨s', t, d, pp, hex, ?_, hs', hbo, hcp⟩
+    rw [hout]
+    congr 2
+    simp [VExpr.eval, Vector.toList_map]
+  | _, .mapRange n body, s, hc, hb, hs, hcap => by
+    simp only [VExpr.compilable] at hc
+    simp only [VExpr.envBound] at hb
+    obtain ⟨s₁, t, d, pp, j', hex, hout, hs₁, hbo, hcp⟩ :=
+      compileVML_mapRange_fold hf env N envArr henv hNk Γ locals L hL body hc hb
+        (List.range n) (.skip (s := s)) hs (by rw [List.length_range]; exact hcap)
+    refine ⟨s₁.setReg (idxReg k L) 0, _, _, _, .seq hex .imm, ?_, ?_, ?_, ?_⟩
+    · rw [bufs_setReg, hout]
+      congr 2
+      rw [show (VExpr.eval { env, locals } (VExpr.mapRange n body)).toList
+          = (List.range n).map fun i =>
+            FExpr.eval { env, locals, idx := i } body from by
+        simp only [VExpr.eval]; exact toList_mapRange hf env N envArr henv hNk n _]
+    · have := StateEncML_setIdx (pv := pv) hf.limbs_pos hs₁ 0
+      simpa using this
+    · intro b hb1
+      rw [bufs_setReg]; exact hbo b hb1
+    · rw [caps_setReg]; exact hcp
+  | n, .envRange offset, s, hc, hb, hs, hcap => by
+    simp only [VExpr.envBound, decide_eq_true_eq] at hb
+    obtain ⟨s', t, d, pp, hex, hout, hs', hbo, hcp⟩ :=
+      compileVML_envRange_fold hf env N envArr henv hNk locals L offset
+        (List.range n) (fun i hi => by have := List.mem_range.mp hi; omega)
+        (.skip (s := s)) hs (by rw [List.length_range]; exact hcap)
+    refine ⟨s', t, d, pp, hex, ?_, hs', hbo, hcp⟩
+    rw [hout]
+    congr 2
+    rw [show (VExpr.eval { env, locals } (VExpr.envRange (n := n) offset)).toList
+        = (List.range n).map fun i => env.get (offset + i) from by
+      simp only [VExpr.eval]; exact toList_mapRange hf env N envArr henv hNk n _]
+  | n, .bitsOf x, s, hc, hb, hs, hcap => by
+    simp only [VExpr.compilable] at hc
+    simp only [VExpr.envBound] at hb
+    have hΓ : Γ.length ≤ L := by rw [hL.1]; exact hs.size
+    have hk : 0 < k := hf.limbs_pos
+    rcases hE : compileFML k L x (tmpBase k L) with ⟨cx, rx, n₁⟩
+    have hbd := compileFML_bounds k L hk hΓ x (tmpBase k L) hc (Nat.le_refl _)
+    simp only [hE] at hbd
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hr₁, hp₁, hbf₁, hcp₁⟩ :=
+      compileFML_sim hf env N envArr henv hNk Γ locals 0 L hL x (tmpBase k L) s
+        hc hb hs
+    simp only [hE] at hex₁ hr₁
+    have hs₁ := StateEncML_mono hs hbd.1 hp₁ (by rw [hbf₁])
+    have hfr₁ : k + 3 + L * k ≤ n₁ := by
+      have := hs₁.frame; simp only [tmpBase] at this; exact this
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hr₂, hp₂, hbf₂, hcp₂⟩ :=
+      leaveMont_field (C := C) (w := n₁) (a := rx) hk hf.two_lt hf.bound hf.const
+        hs₁.pre (by omega) (by omega) hr₁
+    have hmc : montMulConstOut k n₁ + k ≤ n₁ + montMulConstFrame k :=
+      montMulConstOut_le k n₁
+    obtain ⟨s₃, t₃, d₃, p₃, hex₃, hz₃, hlow₃, hhigh₃, hbf₃, hcp₃⟩ :=
+      immLimbs_exec (C := C) (n₁ + montMulConstFrame k) 0 (s := s₂) k
+    obtain ⟨s₄, t₄, d₄, p₄, hex₄, ho₄, hlow₄, hhigh₄, hbf₄, hcp₄⟩ :=
+      immLimbs_exec (C := C) (n₁ + montMulConstFrame k + k)
+        (2 ^ (64 * k) % FiniteField.size (F p)) (s := s₃) k
+    have hpres₄ : ∀ q, q < n₁ + montMulConstFrame k → s₄.regs q = s₂.regs q :=
+      fun q hq => by
+        rw [hlow₄ q (Nat.lt_of_lt_of_le hq (Nat.le_add_right _ _)), hlow₃ q hq]
+    have hxa : RegsEnc s₄ (montMulConstOut k n₁) k (ZMod.val
+        (FExpr.eval { env, locals } x)) := fun j hj => by
+      have hlt : montMulConstOut k n₁ + j < n₁ + montMulConstFrame k :=
+        Nat.lt_of_lt_of_le (Nat.add_lt_add_left hj _) hmc
+      rw [hpres₄ (montMulConstOut k n₁ + j) hlt]; exact hr₂ j hj
+    have hz : RegsEnc s₄ (n₁ + montMulConstFrame k) k 0 := fun j hj => by
+      have hlt : n₁ + montMulConstFrame k + j < n₁ + montMulConstFrame k + k :=
+        Nat.add_lt_add_left hj _
+      rw [hlow₄ (n₁ + montMulConstFrame k + j) hlt]; exact hz₃ j hj
+    have hs₄ : StateEncML k pv L envArr locals 0 (tmpBase k L) s₄ :=
+      StateEncML_frame hs (fun q hq => by
+        rw [hpres₄ q (show q < n₁ + montMulConstFrame k by omega),
+          hp₂ q (show q < n₁ by omega), hp₁ q hq])
+        (by rw [hbf₄, hbf₃, hbf₂, hbf₁])
+    obtain ⟨s', t', d', pp', hex', hout', hs', hbo', hcp'⟩ :=
+      compileVML_bitsOf_fold hf env N envArr henv hNk locals L hmc
+        (show tmpBase k L ≤ n₁ + montMulConstFrame k by omega)
+        (FExpr.eval { env, locals } x) (List.range n) (.skip (s := s₄)) hxa hz ho₄ hs₄
+        (by rw [hbf₄, hbf₃, hbf₂, hbf₁, hcp₄, hcp₃, hcp₂, hcp₁, List.length_range]
+            exact hcap)
+    simp only [compileVML, hE]
+    refine ⟨s', _, _, _,
+      .seq hex₁ (.seq hex₂ (.seq hex₃ (.seq hex₄ hex'))), ?_, hs', ?_, ?_⟩
+    · rw [hout', hbf₄, hbf₃, hbf₂, hbf₁]
+      congr 2
+      rw [show (VExpr.eval { env, locals } (VExpr.bitsOf (n := n) x)).toList
+          = (List.range n).map fun i =>
+            (FiniteField.fromNat (ZMod.val (FExpr.eval { env, locals } x) >>> i % 2)
+              : F p) from by
+        simp only [VExpr.eval]; exact toList_mapRange hf env N envArr henv hNk n _]
+    · intro b hb1
+      rw [hbo' b hb1, hbf₄, hbf₃, hbf₂, hbf₁]
+    · rw [hcp', hcp₄, hcp₃, hcp₂, hcp₁]
+  | _, .append a b, s, hc, hb, hs, hcap => by
+    simp only [VExpr.compilable, Bool.and_eq_true] at hc
+    simp only [VExpr.envBound, Bool.and_eq_true] at hb
+    rw [show ∀ m n : ℕ, (m + n) * k = m * k + n * k from fun m n => by ring] at hcap
+    obtain ⟨s₁, t₁, d₁, p₁, hex₁, hout₁, hs₁, hbo₁, hcp₁⟩ :=
+      compileVML_sim Γ locals L hL a s hc.1 hb.1 hs (by omega)
+    obtain ⟨s₂, t₂, d₂, p₂, hex₂, hout₂, hs₂, hbo₂, hcp₂⟩ :=
+      compileVML_sim Γ locals L hL b s₁ hc.2 hb.2 hs₁
+        (by rw [hout₁, hcp₁]
+            simp only [Array.size_append, List.size_toArray, encFlat_length,
+              Vector.length_toList]
+            omega)
+    refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_, hs₂, ?_, ?_⟩
+    · rw [hout₂, hout₁]
+      rw [show (VExpr.eval { env, locals } (VExpr.append a b)).toList
+          = (VExpr.eval { env, locals } a).toList
+            ++ (VExpr.eval { env, locals } b).toList from by
+        simp [VExpr.eval]]
+      rw [encFlat_append]
+      exact append_toArray_assoc _ _ _
+    · intro bb hb1
+      rw [hbo₂ bb hb1, hbo₁ bb hb1]
+    · rw [hcp₂, hcp₁]
 
 end Sim
 
