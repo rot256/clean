@@ -963,6 +963,338 @@ theorem subModCopy_exec {k dst x y pReg w : ℕ} (hx : x + k ≤ w) (hy : y + k 
   · intro q hqw hqd
     rw [hpres₂ q hqd, hpres₁ q hqw]
 
+/-! ### The shape the branches share
+
+All four branches shift one value down a place and rework one coefficient. Stating
+the two shapes once, with the untouched blocks left anonymous — preservation is
+"everything below the frame that is outside the two destinations" — is what keeps the
+row's case analysis to its four cases rather than sixteen. -/
+
+theorem word_ofNat_eq_zero {x : ℕ} (hx : x < 2 ^ 64) :
+    (BitVec.ofNat 64 x = 0) ↔ x = 0 := by
+  constructor
+  · intro h
+    have hn := congrArg BitVec.toNat h
+    have hz : (0 : Word 64).toNat = 0 := rfl
+    simp only [BitVec.toNat_ofNat] at hn
+    omega
+  · rintro rfl; rfl
+
+/-- Shift one value, halve one coefficient. -/
+theorem shrHalf_exec {k X Xsrc Y pReg W : ℕ}
+    (hmod : pReg + k ≤ X) (hmodW : pReg + k ≤ W) (hsrc : Xsrc + k ≤ W)
+    (hXW : X + k ≤ W) (hYW : Y + k ≤ W) (hXY : X + k ≤ Y ∨ Y + k ≤ X)
+    {st : State 64} {p A B : ℕ}
+    (hp : p % 2 = 1) (hpR : p < 2 ^ (64 * k)) (hA : A < 2 ^ (64 * k)) (hB : B < p)
+    (hXr : RegsEnc st Xsrc k A) (hYr : RegsEnc st Y k B) (hpr : RegsEnc st pReg k p) :
+    ∃ st' t dd pp,
+      Exec C (shrCopy k X Xsrc W ;; halfCopy k Y Y pReg (W + shrCopyFrame k))
+        st st' t dd pp ∧
+      RegsEnc st' X k (A / 2) ∧ RegsEnc st' Y k (halfMod p B) ∧
+      (∀ q, q < W → (q < X ∨ X + k ≤ q) → (q < Y ∨ Y + k ≤ q) →
+        st'.regs q = st.regs q) ∧
+      st'.bufs = st.bufs ∧ st'.caps = st.caps := by
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hX₁, hpres₁, hbuf₁, hcap₁⟩ :=
+    shrCopy_exec (C := C) hsrc hXW hA hXr
+  have hY₁ : RegsEnc s₁ Y k B := by
+    intro j hj; rw [hpres₁ _ (by omega) (by omega)]; exact hYr j hj
+  have hp₁ : RegsEnc s₁ pReg k p := by
+    intro j hj; rw [hpres₁ _ (by omega) (by omega)]; exact hpr j hj
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hY₂, hpres₂, hbuf₂, hcap₂⟩ :=
+    halfCopy_exec (C := C) (w := W + shrCopyFrame k)
+      (show Y + k ≤ W + shrCopyFrame k by omega)
+      (show pReg + k ≤ W + shrCopyFrame k by omega)
+      (show Y + k ≤ W + shrCopyFrame k by omega) hp hpR hB hY₁ hp₁
+  refine ⟨s₂, _, _, _, .seq hex₁ hex₂, ?_, hY₂, ?_,
+    hbuf₂.trans hbuf₁, hcap₂.trans hcap₁⟩
+  · intro j hj; rw [hpres₂ _ (by omega) (by omega)]; exact hX₁ j hj
+  · intro q hqW hqX hqY
+    rw [hpres₂ q (by omega) hqY, hpres₁ q hqW hqX]
+
+/-- Shift one value, and rework one coefficient against another. -/
+theorem shrSubHalf_exec {k X Xsrc Y Z pReg W : ℕ}
+    (hmod : pReg + k ≤ X) (hmodY : pReg + k ≤ Y) (hmodW : pReg + k ≤ W)
+    (hsrc : Xsrc + k ≤ W)
+    (hXW : X + k ≤ W) (hYW : Y + k ≤ W) (hZW : Z + k ≤ W)
+    (hXY : X + k ≤ Y ∨ Y + k ≤ X) (hXZ : X + k ≤ Z ∨ Z + k ≤ X)
+    (hYZ : Y + k ≤ Z ∨ Z + k ≤ Y)
+    {st : State 64} {p A B D : ℕ}
+    (hp : p % 2 = 1) (hpR : p < 2 ^ (64 * k)) (hA : A < 2 ^ (64 * k))
+    (hB : B < p) (hD : D < p)
+    (hXr : RegsEnc st Xsrc k A) (hYr : RegsEnc st Y k B) (hZr : RegsEnc st Z k D)
+    (hpr : RegsEnc st pReg k p) :
+    ∃ st' t dd pp,
+      Exec C (shrCopy k X Xsrc W ;;
+        subModCopy k Y Y Z pReg (W + shrCopyFrame k) ;;
+        halfCopy k Y Y pReg (W + shrCopyFrame k + subModCopyFrame k)) st st' t dd pp ∧
+      RegsEnc st' X k (A / 2) ∧ RegsEnc st' Y k (halfMod p (subMod p B D)) ∧
+      (∀ q, q < W → (q < X ∨ X + k ≤ q) → (q < Y ∨ Y + k ≤ q) →
+        st'.regs q = st.regs q) ∧
+      st'.bufs = st.bufs ∧ st'.caps = st.caps := by
+  obtain ⟨s₁, t₁, d₁, p₁, hex₁, hX₁, hpres₁, hbuf₁, hcap₁⟩ :=
+    shrCopy_exec (C := C) hsrc hXW hA hXr
+  have hY₁ : RegsEnc s₁ Y k B := by
+    intro j hj; rw [hpres₁ _ (by omega) (by omega)]; exact hYr j hj
+  have hZ₁ : RegsEnc s₁ Z k D := by
+    intro j hj; rw [hpres₁ _ (by omega) (by omega)]; exact hZr j hj
+  have hp₁ : RegsEnc s₁ pReg k p := by
+    intro j hj; rw [hpres₁ _ (by omega) (by omega)]; exact hpr j hj
+  obtain ⟨s₂, t₂, d₂, p₂, hex₂, hY₂, hpres₂, hbuf₂, hcap₂⟩ :=
+    subModCopy_exec (C := C) (w := W + shrCopyFrame k)
+      (show Y + k ≤ W + shrCopyFrame k by omega)
+      (show Z + k ≤ W + shrCopyFrame k by omega)
+      (show pReg + k ≤ W + shrCopyFrame k by omega)
+      (show Y + k ≤ W + shrCopyFrame k by omega)
+      (show 0 < p by omega) hpR hB hD hY₁ hZ₁ hp₁
+  have hp₂ : RegsEnc s₂ pReg k p := by
+    intro j hj; rw [hpres₂ _ (by omega) (by omega)]; exact hp₁ j hj
+  obtain ⟨s₃, t₃, d₃, p₃, hex₃, hY₃, hpres₃, hbuf₃, hcap₃⟩ :=
+    halfCopy_exec (C := C) (w := W + shrCopyFrame k + subModCopyFrame k)
+      (show Y + k ≤ W + shrCopyFrame k + subModCopyFrame k by omega)
+      (show pReg + k ≤ W + shrCopyFrame k + subModCopyFrame k by omega)
+      (show Y + k ≤ W + shrCopyFrame k + subModCopyFrame k by omega)
+      hp hpR (subMod_lt (show 0 < p by omega)) hY₂ hp₂
+  refine ⟨s₃, _, _, _, .seq hex₁ (.seq hex₂ hex₃), ?_, hY₃, ?_,
+    hbuf₃.trans (hbuf₂.trans hbuf₁), hcap₃.trans (hcap₂.trans hcap₁)⟩
+  · intro j hj
+    rw [hpres₃ _ (by omega) (by omega), hpres₂ _ (by omega) (by omega)]
+    exact hX₁ j hj
+  · intro q hqW hqX hqY
+    rw [hpres₃ q (by omega) hqY, hpres₂ q (by omega) hqY, hpres₁ q hqW hqX]
+
+/-! ### One row
+
+The four cases of `gcdRow`, each carried by one of the two shapes above. The parity
+bits are `umod 2` rather than a mask, and the comparison is the subtraction's own
+no-borrow bit, so nothing here needs bit-level reasoning. -/
+
+theorem sub_flag {k A B : ℕ} (hA : A < 2 ^ (64 * k)) (hB : B < 2 ^ (64 * k)) :
+    (A + 2 ^ (64 * k) - B) / 2 ^ (64 * k) = if B ≤ A then 1 else 0 := by
+  split_ifs with hle
+  · exact Nat.div_eq_of_lt_le (by omega) (by omega)
+  · exact Nat.div_eq_of_lt (by omega)
+
+/-- **One row is correct.** -/
+theorem invStep_exec {k u v r s pReg W : ℕ}
+    (hpu : pReg + k ≤ u) (huv : u + k ≤ v) (hvr : v + k ≤ r) (hrs : r + k ≤ s)
+    (hsW : s + k ≤ W)
+    {st : State 64} {p a U V R S : ℕ}
+    (hp : p % 2 = 1) (hpR : p < 2 ^ (64 * k)) (h1 : 1 < p)
+    (hinv : GcdInv p a U V R S)
+    (hur : RegsEnc st u k U) (hvv : RegsEnc st v k V)
+    (hrr : RegsEnc st r k R) (hss : RegsEnc st s k S)
+    (hpr : RegsEnc st pReg k p) :
+    ∃ st' t dd pp, Exec C (invStep k u v r s pReg W) st st' t dd pp ∧
+      RegsEnc st' u k (gcdRow p U V R S).1 ∧
+      RegsEnc st' v k (gcdRow p U V R S).2.1 ∧
+      RegsEnc st' r k (gcdRow p U V R S).2.2.1 ∧
+      RegsEnc st' s k (gcdRow p U V R S).2.2.2 ∧
+      RegsEnc st' pReg k p ∧
+      (∀ q, q < u → st'.regs q = st.regs q) ∧
+      st'.bufs = st.bufs ∧ st'.caps = st.caps := by
+  obtain ⟨hV0, hUlt, hVle, hRlt, hSlt, hpar, hg, hru, hsv⟩ := hinv
+  have hk : 0 < k := by
+    rcases Nat.eq_zero_or_pos k with h | h
+    · subst h; simp at hpR; omega
+    · exact h
+  have hUb : U < 2 ^ (64 * k) := by omega
+  have hVb : V < 2 ^ (64 * k) := by omega
+  -- the parity bits
+  set st₁ := st.setReg W (BitVec.ofNat 64 2) with h₁
+  have hu0 : st₁.regs u = BitVec.ofNat 64 (limb 64 U 0) := by
+    rw [h₁, regs_setReg_ne _ _ (show u ≠ W by omega)]
+    have := hur 0 hk; simpa using this
+  have hW1 : st₁.regs W = BitVec.ofNat 64 2 := by rw [h₁]; simp
+  have hval1 : (BinOp.eval .umod (st₁.regs u) (st₁.regs W) : Word 64)
+      = BitVec.ofNat 64 (U % 2) := by
+    rw [hu0, hW1]
+    show (BitVec.ofNat 64 (limb 64 U 0) % BitVec.ofNat 64 2 : Word 64) = _
+    rw [word_umod_two]
+    congr 1
+    simp only [limb, Nat.mul_zero, pow_zero, Nat.div_one]
+    omega
+  set st₂ := st₁.setReg (W + 1) (BitVec.ofNat 64 (U % 2)) with h₂
+  have hex₂ : Exec C (.bin .umod (W + 1) u W) st₁ st₂ (C.bin .umod) 0 0 := by
+    rw [h₂, ← hval1]; exact .bin
+  have hv0 : st₂.regs v = BitVec.ofNat 64 (limb 64 V 0) := by
+    rw [h₂, regs_setReg_ne _ _ (show v ≠ W + 1 by omega), h₁,
+      regs_setReg_ne _ _ (show v ≠ W by omega)]
+    have := hvv 0 hk; simpa using this
+  have hW2 : st₂.regs W = BitVec.ofNat 64 2 := by
+    rw [h₂, regs_setReg_ne _ _ (show W ≠ W + 1 by omega)]; exact hW1
+  have hval2 : (BinOp.eval .umod (st₂.regs v) (st₂.regs W) : Word 64)
+      = BitVec.ofNat 64 (V % 2) := by
+    rw [hv0, hW2]
+    show (BitVec.ofNat 64 (limb 64 V 0) % BitVec.ofNat 64 2 : Word 64) = _
+    rw [word_umod_two]
+    congr 1
+    simp only [limb, Nat.mul_zero, pow_zero, Nat.div_one]
+    omega
+  set st₃ := st₂.setReg (W + 2) (BitVec.ofNat 64 (V % 2)) with h₃
+  have hex₃ : Exec C (.bin .umod (W + 2) v W) st₂ st₃ (C.bin .umod) 0 0 := by
+    rw [h₃, ← hval2]; exact .bin
+  -- everything below `W` survives the prologue
+  have hpres₃ : ∀ q, q < W → st₃.regs q = st.regs q := by
+    intro q hq
+    rw [h₃, regs_setReg_ne _ _ (show q ≠ W + 2 by omega), h₂,
+      regs_setReg_ne _ _ (show q ≠ W + 1 by omega), h₁,
+      regs_setReg_ne _ _ (show q ≠ W by omega)]
+  have hu₃ : RegsEnc st₃ u k U := fun j hj => by
+    rw [hpres₃ _ (by omega)]; exact hur j hj
+  have hv₃ : RegsEnc st₃ v k V := fun j hj => by
+    rw [hpres₃ _ (by omega)]; exact hvv j hj
+  have hr₃ : RegsEnc st₃ r k R := fun j hj => by
+    rw [hpres₃ _ (by omega)]; exact hrr j hj
+  have hs₃ : RegsEnc st₃ s k S := fun j hj => by
+    rw [hpres₃ _ (by omega)]; exact hss j hj
+  have hp₃ : RegsEnc st₃ pReg k p := fun j hj => by
+    rw [hpres₃ _ (by omega)]; exact hpr j hj
+  have hf1 : st₃.regs (W + 1) = BitVec.ofNat 64 (U % 2) := by
+    rw [h₃, regs_setReg_ne _ _ (show W + 1 ≠ W + 2 by omega), h₂]; simp
+  have hf2 : st₃.regs (W + 2) = BitVec.ofNat 64 (V % 2) := by rw [h₃]; simp
+  by_cases hue : U % 2 = 0
+  · -- `u` is even
+    have hrow : gcdRow p U V R S = (U / 2, V, halfMod p R, S) := by
+      unfold gcdRow; rw [if_pos hue]
+    obtain ⟨st', t', d', p', hex', hX, hY, hpres', hbuf', hcap'⟩ :=
+      shrHalf_exec (C := C) (X := u) (Xsrc := u) (Y := r) (W := W + 3)
+        (by omega) (by omega) (by omega) (by omega) (by omega) (Or.inl (by omega))
+        hp hpR hUb (by omega) hu₃ hr₃ hp₃
+    refine ⟨st', _, _, _,
+      .seq .imm (.seq hex₂ (.seq hex₃
+        (.ifNZ_false (by rw [hf1, hue]; rfl) hex'))), ?_, ?_, ?_, ?_, ?_, ?_,
+      hbuf'.trans (by rw [h₃, h₂, h₁]; simp),
+      hcap'.trans (by rw [h₃, h₂, h₁]; simp)⟩
+    · rw [hrow]; exact hX
+    · rw [hrow]; exact fun j hj => by
+        rw [hpres' _ (by omega) (by omega) (by omega)]; exact hv₃ j hj
+    · rw [hrow]; exact hY
+    · rw [hrow]; exact fun j hj => by
+        rw [hpres' _ (by omega) (by omega) (by omega)]; exact hs₃ j hj
+    · exact fun j hj => by
+        rw [hpres' _ (by omega) (by omega) (by omega)]; exact hp₃ j hj
+    · intro q hq
+      rw [hpres' q (by omega) (by omega) (by omega), hpres₃ q (by omega)]
+  · by_cases hve : V % 2 = 0
+    · -- `u` odd, `v` even
+      have hrow : gcdRow p U V R S = (U, V / 2, R, halfMod p S) := by
+        unfold gcdRow; rw [if_neg hue, if_pos hve]
+      obtain ⟨st', t', d', p', hex', hX, hY, hpres', hbuf', hcap'⟩ :=
+        shrHalf_exec (C := C) (X := v) (Xsrc := v) (Y := s) (W := W + 3)
+          (by omega) (by omega) (by omega) (by omega) (by omega) (Or.inl (by omega))
+          hp hpR hVb (by omega) hv₃ hs₃ hp₃
+      refine ⟨st', _, _, _,
+        .seq .imm (.seq hex₂ (.seq hex₃
+          (.ifNZ_true (by rw [hf1]; simpa using (word_ofNat_eq_zero
+            (show U % 2 < 2 ^ 64 by omega)).not.mpr hue)
+            (.ifNZ_false (by rw [hf2, hve]; rfl) hex')))), ?_, ?_, ?_, ?_, ?_, ?_,
+        hbuf'.trans (by rw [h₃, h₂, h₁]; simp),
+        hcap'.trans (by rw [h₃, h₂, h₁]; simp)⟩
+      · rw [hrow]; exact fun j hj => by
+          rw [hpres' _ (by omega) (by omega) (by omega)]; exact hu₃ j hj
+      · rw [hrow]; exact hX
+      · rw [hrow]; exact fun j hj => by
+          rw [hpres' _ (by omega) (by omega) (by omega)]; exact hr₃ j hj
+      · rw [hrow]; exact hY
+      · exact fun j hj => by
+          rw [hpres' _ (by omega) (by omega) (by omega)]; exact hp₃ j hj
+      · intro q hq
+        rw [hpres' q (by omega) (by omega) (by omega), hpres₃ q (by omega)]
+    · -- both odd: subtract both ways, then take the smaller difference
+      have hsubl₁ : SubLayout k (W + 3 + k + 4) u v (W + 3) (W + 3 + k) :=
+        ⟨by omega, by omega, by omega, by omega⟩
+      obtain ⟨sa, ta, da, pa, hexa, hda, hfa, hpresa, hbufa, hcapa⟩ :=
+        subLimbs_exec (C := C) hsubl₁ hUb hVb hu₃ hv₃
+      have hsubl₂ : SubLayout k (W + 3 + 3 * k + 8) v u (W + 3 + 2 * k + 4)
+          (W + 3 + 3 * k + 4) := ⟨by omega, by omega, by omega, by omega⟩
+      obtain ⟨sb, tb, db, pb, hexb, hdb, hfb, hpresb, hbufb, hcapb⟩ :=
+        subLimbs_exec (C := C) hsubl₂ hVb hUb
+          (fun j hj => by rw [hpresa _ (by omega)]; exact hv₃ j hj)
+          (fun j hj => by rw [hpresa _ (by omega)]; exact hu₃ j hj)
+      have hpresab : ∀ q, q < W + 3 → sb.regs q = st₃.regs q := by
+        intro q hq; rw [hpresb q (by omega), hpresa q (by omega)]
+      have hu_b : RegsEnc sb u k U := fun j hj => by
+        rw [hpresab _ (by omega)]; exact hu₃ j hj
+      have hv_b : RegsEnc sb v k V := fun j hj => by
+        rw [hpresab _ (by omega)]; exact hv₃ j hj
+      have hr_b : RegsEnc sb r k R := fun j hj => by
+        rw [hpresab _ (by omega)]; exact hr₃ j hj
+      have hs_b : RegsEnc sb s k S := fun j hj => by
+        rw [hpresab _ (by omega)]; exact hs₃ j hj
+      have hp_b : RegsEnc sb pReg k p := fun j hj => by
+        rw [hpresab _ (by omega)]; exact hp₃ j hj
+      have hflag : sb.regs (W + 3 + k) = BitVec.ofNat 64 (if V ≤ U then 1 else 0) := by
+        rw [hpresb _ (by omega), hfa, sub_flag hUb hVb]
+      by_cases hvu : V ≤ U
+      · have hrow : gcdRow p U V R S
+            = ((U - V) / 2, V, halfMod p (subMod p R S), S) := by
+          unfold gcdRow; rw [if_neg hue, if_neg hve, if_pos hvu]
+        have hD0 : RegsEnc sb (W + 3 + k + 4) k (U + 2 ^ (64 * k) - V) := fun j hj => by
+          rw [hpresb _ (by omega)]; exact hda j hj
+        have hD : RegsEnc sb (W + 3 + k + 4) k (U - V) :=
+          hD0.congr (by rw [show U + 2 ^ (64 * k) - V = (U - V) + 2 ^ (64 * k) by omega,
+            Nat.add_mod_right])
+        obtain ⟨st', t', d', p', hex', hX, hY, hpres', hbuf', hcap'⟩ :=
+          shrSubHalf_exec (C := C) (X := u) (Xsrc := W + 3 + k + 4) (Y := r) (Z := s)
+            (W := W + 3 + 4 * k + 8) (by omega) (by omega) (by omega) (by omega)
+            (by omega) (by omega) (by omega) (Or.inl (by omega)) (Or.inl (by omega))
+            (Or.inl (by omega)) hp hpR (by omega) (by omega) (by omega)
+            hD hr_b hs_b hp_b
+        refine ⟨st', _, _, _,
+          .seq .imm (.seq hex₂ (.seq hex₃
+            (.ifNZ_true (by rw [hf1]; simpa using (word_ofNat_eq_zero
+              (show U % 2 < 2 ^ 64 by omega)).not.mpr hue)
+              (.ifNZ_true (by rw [hf2]; simpa using (word_ofNat_eq_zero
+                (show V % 2 < 2 ^ 64 by omega)).not.mpr hve)
+                (.seq hexa (.seq hexb (.ifNZ_true (by
+                  rw [hflag, if_pos hvu]; simp) hex'))))))), ?_, ?_, ?_, ?_, ?_, ?_,
+          hbuf'.trans (hbufb.trans (hbufa.trans (by rw [h₃, h₂, h₁]; simp))),
+          hcap'.trans (hcapb.trans (hcapa.trans (by rw [h₃, h₂, h₁]; simp)))⟩
+        · rw [hrow]; exact hX
+        · rw [hrow]; exact fun j hj => by
+            rw [hpres' _ (by omega) (by omega) (by omega)]; exact hv_b j hj
+        · rw [hrow]; exact hY
+        · rw [hrow]; exact fun j hj => by
+            rw [hpres' _ (by omega) (by omega) (by omega)]; exact hs_b j hj
+        · exact fun j hj => by
+            rw [hpres' _ (by omega) (by omega) (by omega)]; exact hp_b j hj
+        · intro q hq
+          rw [hpres' q (by omega) (by omega) (by omega), hpresab q (by omega),
+            hpres₃ q (by omega)]
+      · have hrow : gcdRow p U V R S
+            = (U, (V - U) / 2, R, halfMod p (subMod p S R)) := by
+          unfold gcdRow; rw [if_neg hue, if_neg hve, if_neg hvu]
+        have hD : RegsEnc sb (W + 3 + 3 * k + 8) k (V - U) :=
+          hdb.congr (by rw [show V + 2 ^ (64 * k) - U = (V - U) + 2 ^ (64 * k) by omega,
+            Nat.add_mod_right])
+        obtain ⟨st', t', d', p', hex', hX, hY, hpres', hbuf', hcap'⟩ :=
+          shrSubHalf_exec (C := C) (X := v) (Xsrc := W + 3 + 3 * k + 8) (Y := s)
+            (Z := r) (W := W + 3 + 4 * k + 8) (by omega) (by omega) (by omega)
+            (by omega) (by omega) (by omega) (by omega) (Or.inl (by omega))
+            (Or.inl (by omega)) (Or.inr (by omega)) hp hpR (by omega) (by omega)
+            (by omega) hD hs_b hr_b hp_b
+        refine ⟨st', _, _, _,
+          .seq .imm (.seq hex₂ (.seq hex₃
+            (.ifNZ_true (by rw [hf1]; simpa using (word_ofNat_eq_zero
+              (show U % 2 < 2 ^ 64 by omega)).not.mpr hue)
+              (.ifNZ_true (by rw [hf2]; simpa using (word_ofNat_eq_zero
+                (show V % 2 < 2 ^ 64 by omega)).not.mpr hve)
+                (.seq hexa (.seq hexb (.ifNZ_false (by
+                  rw [hflag, if_neg hvu]; rfl) hex'))))))), ?_, ?_, ?_, ?_, ?_, ?_,
+          hbuf'.trans (hbufb.trans (hbufa.trans (by rw [h₃, h₂, h₁]; simp))),
+          hcap'.trans (hcapb.trans (hcapa.trans (by rw [h₃, h₂, h₁]; simp)))⟩
+        · rw [hrow]; exact fun j hj => by
+            rw [hpres' _ (by omega) (by omega) (by omega)]; exact hu_b j hj
+        · rw [hrow]; exact hX
+        · rw [hrow]; exact fun j hj => by
+            rw [hpres' _ (by omega) (by omega) (by omega)]; exact hr_b j hj
+        · rw [hrow]; exact hY
+        · exact fun j hj => by
+            rw [hpres' _ (by omega) (by omega) (by omega)]; exact hp_b j hj
+        · intro q hq
+          rw [hpres' q (by omega) (by omega) (by omega), hpresab q (by omega),
+            hpres₃ q (by omega)]
+
 /-! ## The time bound
 
 The measure is the counter, so `whileNZ_measure` needs three facts and no arithmetic:
