@@ -61,12 +61,14 @@ def movLoop (d a : ℕ) : ℕ → Stmt 64
 /-- `d ← a` over `k` limbs. -/
 def movLimbs (k d a : ℕ) : Stmt 64 := movLoop d a k
 
-/-- One limb of a right shift by one: the limb's own top bits, plus the low bit of
-the limb above. -/
+/-- One limb of a right shift by one: the limb's own top bits, plus the low bit of the
+limb above. The two halves occupy disjoint bits, so they are combined with `add` rather
+than `or` — same instruction count, and an addition is what the limb arithmetic
+already knows how to reason about. -/
 def shr1Step (d a sc j : ℕ) : Stmt 64 :=
   .bin .shr (sc + 2) (a + j) sc ;;
   .bin .shl (sc + 3) (a + j + 1) (sc + 1) ;;
-  .bin .or (d + j) (sc + 2) (sc + 3)
+  .bin .add (d + j) (sc + 2) (sc + 3)
 
 def shr1Loop (d a sc : ℕ) : ℕ → Stmt 64
   | 0 => .skip
@@ -99,8 +101,8 @@ addition's scratch at `2k + 3`, the `k + 1`-word sum at `2k + 7`, the shift's sc
 at `3k + 8`, and the result at `3k + 12`. -/
 def halfModP (k a pReg w : ℕ) : Stmt 64 :=
   immLimbs w 0 k ;;
-  .imm (w + k + 1) 1 ;;
-  .bin .and (w + k) a (w + k + 1) ;;
+  .imm (w + k + 1) 2 ;;
+  .bin .umod (w + k) a (w + k + 1) ;;
   selectLimbs k (w + k + 3) pReg w (w + k) (w + k + 2) ;;
   addLimbs k (w + 2 * k + 7) a (w + k + 3) (w + 2 * k + 3) ;;
   .mov (w + 3 * k + 7) (w + 2 * k + 3) ;;
@@ -142,9 +144,9 @@ def subModCopyFrame (k : ℕ) : ℕ := montSubFrame k
 Frame, relative to `W`: the mask immediate at `0`, `u`'s odd bit at `1`, `v`'s at `2`,
 and the branch bodies from `3`. -/
 def invStep (k u v r s pReg W : ℕ) : Stmt 64 :=
-  .imm W 1 ;;
-  .bin .and (W + 1) u W ;;
-  .bin .and (W + 2) v W ;;
+  .imm W 2 ;;
+  .bin .umod (W + 1) u W ;;
+  .bin .umod (W + 2) v W ;;
   .ifNZ (W + 1)
     (.ifNZ (W + 2)
       (-- both odd: subtract both ways, then halve the smaller difference

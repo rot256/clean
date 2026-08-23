@@ -1,6 +1,7 @@
 import Clean.Caliper.MultiLimbCompile
 import Clean.Caliper.MultiLimbOps
 import Clean.Caliper.RegOnly
+import Clean.Caliper.GcdArith
 import Clean.Caliper.MultiLimbInv
 import Clean.Caliper.MultiLimbIR
 import Clean.Caliper.MultiLimbEntry
